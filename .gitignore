@@ -1,6 +1,4 @@
 .zig-cache/
 zig-out/
 dumps/
-oracle/*.o
-oracle/harness_*
-!oracle/harness_*.c
+oracle/build/

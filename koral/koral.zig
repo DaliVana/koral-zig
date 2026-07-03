@@ -29,6 +29,24 @@ pub const Params = params.Params;
 pub const state = @import("state.zig");
 pub const State = state.State;
 
+pub const geometry = @import("geometry.zig");
+pub const Geometry = geometry.Geometry;
+
+pub const math = struct {
+    pub const dual = @import("math/dual.zig");
+    pub const Dual3 = dual.Dual3;
+};
+
+pub const metric = struct {
+    pub const core = @import("metric/metric.zig");
+    pub const forms = @import("metric/forms.zig");
+    pub const coco = @import("metric/coco.zig");
+    pub const precompute = @import("metric/precompute.zig");
+    pub const MetricParams = core.MetricParams;
+    pub const CoordData = core.CoordData;
+    pub const MetricCache = precompute.MetricCache;
+};
+
 pub const comm = struct {
     pub const serial = @import("comm/serial.zig");
     pub const Serial = serial.Serial;
@@ -45,4 +63,12 @@ test {
     _ = params;
     _ = state;
     _ = comm.serial;
+    _ = geometry;
+    _ = math.dual;
+    _ = metric.core;
+    _ = metric.forms;
+    _ = metric.coco;
+    _ = metric.precompute;
+    _ = @import("metric/tests.zig");
+    _ = @import("golden_test.zig");
 }

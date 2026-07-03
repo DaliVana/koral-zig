@@ -1,0 +1,11 @@
+{
+  "koral_lite_sha": "87d73e5",
+  "problem": 147,
+  "compiler": "Apple clang version 21.0.0 (clang-2100.0.123.102)",
+  "generated": "2026-07-03T22:21:52Z",
+  "files": {
+    "metric/metric_points.kgld": "coords,x0..x3 -> gg16 GG16 gdet dlgdet3 Kr64 gttpert",
+    "metric/coco_dxdx.kgld": "co1,co2,x0..x3 -> xout4 dxdx16",
+    "metric/krzysie_grid.kgld": "ix,iy -> x1 x2 Kr64 (MODYFIKUJKRZYSIE-corrected, PUFFY grid)"
+  }
+}

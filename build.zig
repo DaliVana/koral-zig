@@ -9,6 +9,7 @@ pub fn build(b: *std.Build) !void {
     const build_opts = b.addOptions();
     build_opts.addOption(bool, "mpi", use_mpi);
     build_opts.addOption(bool, "slow_tests", slow_tests);
+    build_opts.addOption([]const u8, "golden_dir", b.pathFromRoot("tests/golden"));
 
     const koral = b.addModule("koral", .{
         .root_source_file = b.path("koral/koral.zig"),

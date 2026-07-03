@@ -33,11 +33,27 @@ chaotic). Instead, two families of partial tests:
   plus short forced-dt step comparisons on tiny grids. Regenerate with
   `tools/gen_golden.sh`; committed under `tests/golden/`.
 
+### The two-π caveat (MKS2 tolerances)
+
+KORAL's `ko.h` defines `Pi` as the *truncated* `3.141592654` and the
+Mathematica-exported MKS2 metric expressions use it, while the `coco_*`
+point transforms use exact `M_PI` — and the exports themselves mix full-θ
+and (θ−π/2) forms. Measured from the golden data, C's own MKS2 `g·G − I`
+reaches **4.6e-9** near the polar axis. The Zig metric mirrors C's
+covariant-metric flavor exactly (matches at ~2e-14) and is internally
+consistent at 1e-15, so MKS2 *derived* quantities (inverse, dlgdet,
+Christoffels) gate against C at 1e-8 — that spread is C's, not ours.
+Consequence for later milestones: near-axis step-comparison budgets on the
+PUFFY grid cannot be tighter than ~1e-8 for θ-sensitive quantities.
+
 ## Status
 
 - [x] M0 — skeleton, build system, variable layout (C-index-compatible),
       units, grid/field storage, params loader, serial comm, PUFFY stub
-- [ ] M1 — metric & coordinates (MINK/BL/KS/MKS2)
+- [x] M1 — metric & coordinates (MINK/BL/KS/MKS2): dual-number AD metric
+      layer (exact Christoffels/dlgdet, no Mathematica transcription),
+      coco transforms + Jacobians, precomputed cache with C's gdet-trace
+      Christoffel correction; theory gates + C goldens green
 - [ ] M2 — relele + frames
 - [ ] M3 — p2u + u2p inversion cascade + floors
 - [ ] M4 — reconstruction (minmod/PPM) + LAXF + wavespeeds
