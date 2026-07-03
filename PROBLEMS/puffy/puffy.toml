@@ -1,0 +1,38 @@
+# PUFFY — runtime parameters (from koral_lite/PROBLEMS/PUFFY/define.h)
+
+[physical]
+mass = 10.0        # MASS (solar masses)
+bhspin = 0.0       # BHSPIN — Schwarzschild
+gam = 1.6666666666666667   # GAMMA 5/3
+
+[grid]
+nx = 384           # TNX (radial)
+ny = 360           # TNY (theta)
+nz = 1             # TNZ — 2D axisymmetric
+rmin = 1.85        # RMIN
+rmax = 500.0       # RMAX
+mksr0 = 0.1        # MKSR0
+mksh0 = 0.9        # MKSH0
+miny = 0.001       # MINY
+maxy = 0.999       # MAXY = 1 - 0.001
+minz = -0.7853981633974483   # -pi/4 (PHIWEDGE pi/2)
+maxz = 0.7853981633974483    # +pi/4
+
+[run]
+tstart = 0.0
+tmax = 0.0         # M0: empty loop
+tsteplim = 0.5     # TSTEPLIM
+dtout1 = 100.0     # DTOUT1
+dtout2 = 500.0     # DTOUT2
+out_dir = "dumps/puffy"
+
+[floors]
+rhofloor = 1e-30
+uurhoratiomin = 1e-8
+uurhoratiomax = 1.0
+eerhoratiomin = 1e-20
+eerhoratiomax = 1e4
+b2rhoratiomax = 50.0
+b2uuratiomax = 50.0
+gammamaxhd = 10.0
+gammamaxrad = 10.0
