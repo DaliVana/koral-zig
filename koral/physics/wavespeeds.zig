@@ -17,11 +17,12 @@ const layout = @import("../layout.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 /// Left/right lab-frame speeds per direction, ordered like C's aret[6]:
-/// {axl, axr, ayl, ayr, azl, azr}.
+/// {axl, axr, ayl, ayr, azl, azr}. `wspeed2` is per direction (C passes
+/// wspeed2x/y/z — the gas uses one value, the τ-damped rad speeds differ).
 pub fn lrCore(
     ucon: [4]f64,
     GG: *const [4][5]f64,
-    wspeed2: f64,
+    wspeed2s: [3]f64,
     dims: [3]bool,
 ) [6]f64 {
     var aret: [6]f64 = @splat(0);
@@ -34,6 +35,7 @@ pub fn lrCore(
 
     for (0..3) |dim| {
         if (dims[dim]) {
+            const wspeed2 = wspeed2s[dim];
             var acov: [4]f64 = @splat(0);
             acov[dim + 1] = 1;
             const acon = relele.indices12(acov, GG);
@@ -106,7 +108,7 @@ pub fn gasWavespeedsLr(
     }
 
     const vtot2 = gasWspeed2(pp[L.index(.rho)], pp[L.index(.uu)], bsq, gamma);
-    var a = lrCore(u.con, &geom.GG, vtot2, dims);
+    var a = lrCore(u.con, &geom.GG, .{ vtot2, vtot2, vtot2 }, dims);
 
     // zero 'co-going' velocities (physics.c:602-607)
     for (0..3) |dim| {

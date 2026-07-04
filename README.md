@@ -116,7 +116,17 @@ natural conserved scale.
       Alfvén phase order 2, Balsara-1 with exactly constant Bx); C goldens
       flux_ct 1e-16, calc_BfromA bitwise, ot32/mhdtube64 forced-dt step
       tests at 2e-14/10 steps
-- [ ] M7 — radiation M1 basics
+- [x] M7 — radiation M1 basics: calc_Rij_M1 + fluid-frame Ê (calc_ff_Rtt),
+      closed-form u2p_rad (JCM γ² solution, gamma2a/b cancellation branches,
+      cold γ=1/γmax fallbacks; koral/solve/invert_rad.zig), τ-limited rad
+      wavespeeds (rv2 = (4/3)²/τ², incl. C's rv2z-uses-τ_y quirk rad.c:3702),
+      check_floors_rad; Sim wiring (arad scalars, rad0-based timestep,
+      per-block flux speeds, RADFIXUPFLAG, rad fixup pass — off like PUFFY);
+      theory gates (Eddington, R^μ_μ=0, streaming limit, u2p_rad round-trip
+      1e-13, γ² vs bisection, cold-branch caps, ±1/√3 and 4/(3τ) speeds,
+      floors, uniform rad state static 50 steps) + C goldens (Rij 4e-16,
+      u2p_rad 2e-14 with all 336 branch decisions exact, wavespeeds 2e-16,
+      floors 1e-14)
 - [ ] M8 — opacities + four-force
 - [ ] M9 — implicit radiation–gas solver
 - [ ] M10 — RK2IMEX + radiative shock tubes

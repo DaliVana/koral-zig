@@ -179,7 +179,7 @@ test "wavespeeds: boost along x is relativistic velocity addition" {
     const gam = 1.0 / @sqrt(1.0 - v * v);
     const ucon = [4]f64{ gam, gam * v, 0, 0 };
 
-    const a = wavespeeds.lrCore(ucon, &geo.GG, wspeed2, .{ true, false, false });
+    const a = wavespeeds.lrCore(ucon, &geo.GG, .{ wspeed2, wspeed2, wspeed2 }, .{ true, false, false });
     try expectClose(a[0], (v - c0) / (1.0 - v * c0), 1e-10);
     try expectClose(a[1], (v + c0) / (1.0 + v * c0), 1e-10);
 }

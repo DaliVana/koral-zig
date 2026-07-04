@@ -40,6 +40,8 @@ const flux_mod = @import("physics/flux.zig");
 const wavespeeds = @import("physics/wavespeeds.zig");
 const recon = @import("recon/recon.zig");
 const invert = @import("solve/invert.zig");
+const invert_rad = @import("solve/invert_rad.zig");
+const radiation = @import("physics/radiation.zig");
 const p2u_mod = @import("p2u.zig");
 const laxf_mod = @import("flux/laxf.zig");
 const ct = @import("magn/ct.zig");
@@ -67,7 +69,10 @@ pub const Flag = enum(usize) {
 };
 const n_flags = @typeInfo(Flag).@"enum".fields.len;
 
-/// Cell-scalar slots (C: ahdxl..ahdz global arrays + cell_tstepden/cell_dt).
+/// Cell-scalar slots (C: ahdxl..ahdz, aradxl..aradz global arrays +
+/// cell_tstepden/cell_dt). The arad slots hold the τ-limited speeds used
+/// for the fluxes; the unlimited ones only feed the timestep and are not
+/// stored per cell (finite.c:415-437).
 const Scal = enum(usize) {
     ahdxl,
     ahdxr,
@@ -78,6 +83,15 @@ const Scal = enum(usize) {
     ahdx,
     ahdy,
     ahdz,
+    aradxl,
+    aradxr,
+    aradyl,
+    aradyr,
+    aradzl,
+    aradzr,
+    aradx,
+    arady,
+    aradz,
     tstepden,
     cell_dt,
 };
@@ -85,6 +99,9 @@ const n_scal = @typeInfo(Scal).@"enum".fields.len;
 const ahd_l = [3]Scal{ .ahdxl, .ahdyl, .ahdzl };
 const ahd_r = [3]Scal{ .ahdxr, .ahdyr, .ahdzr };
 const ahd_m = [3]Scal{ .ahdx, .ahdy, .ahdz };
+const arad_l = [3]Scal{ .aradxl, .aradyl, .aradzl };
+const arad_r = [3]Scal{ .aradxr, .aradyr, .aradzr };
+const arad_m = [3]Scal{ .aradx, .arady, .aradz };
 
 /// Face-centered storage for one direction: like Field but with one extra
 /// slice in its own dimension (C: ubx/uby/ubz arrays, set_ubx/get_ub).
@@ -178,6 +195,11 @@ pub fn Sim(comptime cfg: config.Config) type {
             face: BcFace,
         ) [NV]f64;
 
+        /// Total opacity χ = κ + κ_es per cell (C: calc_chi, opacities.c:148)
+        /// — feeds τ = χ·dx for the rad wavespeed limiter. M8 supplies the
+        /// real one; null means optically thin (τ = 0, no damping).
+        pub const ChiFn = *const fn (pp: *const [NV]f64, geom: *const Geometry) f64;
+
         pub const Options = struct {
             coords: config.Coords,
             mp: metric.MetricParams = .{},
@@ -185,7 +207,10 @@ pub fn Sim(comptime cfg: config.Config) type {
             tsteplim: f64 = 0.5, // C: TSTEPLIM
             minmod_theta: f64 = 1.5, // C: MINMOD_THETA
             floors: invert.FloorParams = invert.FloorParams.cdefault,
+            rad: invert_rad.RadParams = invert_rad.RadParams.cdefault,
             do_fixups: bool = true, // C: DOFIXUPS && DOU2PMHDFIXUPS
+            do_u2prad_fixups: bool = false, // C: DOU2PRADFIXUPS (0 everywhere)
+            chi_fn: ?ChiFn = null,
             bc_x: BcKind = .copy,
             bc_y: BcKind = .copy,
             bc_z: BcKind = .copy,
@@ -726,7 +751,40 @@ pub fn Sim(comptime cfg: config.Config) type {
                         self.p.load(ix, iy, iz, &pp);
                         const geom = self.cache.fillGeometry(ix, iy, iz);
                         const aaa = try wavespeeds.gasWavespeedsLr(cfg, pp, &geom, self.opt.gam, dims);
-                        self.saveWavespeeds(ix, iy, iz, aaa);
+
+                        var rad0: [6]f64 = @splat(0);
+                        var radl: [6]f64 = @splat(0);
+                        if (comptime L.hasVar(.ee)) {
+                            // optical depth over the cell (physics.c:549-558);
+                            // ix could be a face index in C, hence the max of
+                            // left/right sizes
+                            var tautot: [3]f64 = @splat(0);
+                            if (self.opt.chi_fn) |chi_fn| {
+                                const chi = chi_fn(&pp, &geom);
+                                const idx3 = [3]i64{ ix, iy, iz };
+                                for (0..3) |d| {
+                                    const sg = @sqrt(geom.gg[d + 1][d + 1]);
+                                    const dxp = @max(
+                                        self.grid.size(idx3[d], d) * sg,
+                                        self.grid.size(idx3[d] + 1, d) * sg,
+                                    );
+                                    tautot[d] = chi * dxp;
+                                }
+                            }
+                            const aval = try radiation.calcRadWavespeeds(cfg, pp, &geom, tautot, dims);
+                            for (0..6) |i| {
+                                rad0[i] = aval[i];
+                                radl[i] = aval[6 + i];
+                            }
+                            // zero 'co-going' velocities (physics.c:609-621)
+                            for (0..3) |d| {
+                                if (radl[2 * d] > 0.0) radl[2 * d] = 0.0;
+                                if (radl[2 * d + 1] < 0.0) radl[2 * d + 1] = 0.0;
+                                if (rad0[2 * d] > 0.0) rad0[2 * d] = 0.0;
+                                if (rad0[2 * d + 1] < 0.0) rad0[2 * d + 1] = 0.0;
+                            }
+                        }
+                        self.saveWavespeeds(ix, iy, iz, aaa, rad0, radl);
                     }
                 }
             }
@@ -734,7 +792,9 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         /// C: save_wavespeeds (finite.c:394) — store per-cell speeds and,
         /// for domain cells, the CFL denominator (feeding the next dt).
-        fn saveWavespeeds(self: *Self, ix: i64, iy: i64, iz: i64, aaa: [6]f64) void {
+        /// rad0 (unlimited by τ) only enters the timestep; radl (τ-limited)
+        /// is what the flux combination reads.
+        fn saveWavespeeds(self: *Self, ix: i64, iy: i64, iz: i64, aaa: [6]f64, rad0: [6]f64, radl: [6]f64) void {
             for (0..3) |d| {
                 self.scSet(ahd_l[d], ix, iy, iz, aaa[2 * d]);
                 self.scSet(ahd_r[d], ix, iy, iz, aaa[2 * d + 1]);
@@ -746,6 +806,21 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.scSet(.ahdy, ix, iy, iz, ay);
             self.scSet(.ahdz, ix, iy, iz, az);
 
+            var wsx = ax;
+            var wsy = ay;
+            var wsz = az;
+            if (comptime L.hasVar(.ee)) {
+                for (0..3) |d| {
+                    self.scSet(arad_l[d], ix, iy, iz, radl[2 * d]);
+                    self.scSet(arad_r[d], ix, iy, iz, radl[2 * d + 1]);
+                    self.scSet(arad_m[d], ix, iy, iz, @max(@abs(radl[2 * d]), @abs(radl[2 * d + 1])));
+                }
+                // timestep uses the wavespeeds NOT limited by optical depth
+                wsx = @max(ax, @max(@abs(rad0[0]), @abs(rad0[1])));
+                wsy = @max(ay, @max(@abs(rad0[2]), @abs(rad0[3])));
+                wsz = @max(az, @max(@abs(rad0[4]), @abs(rad0[5])));
+            }
+
             const in_domain = ix >= 0 and ix < self.nxi() and
                 iy >= 0 and iy < self.nyi() and iz >= 0 and iz < self.nzi();
             if (!in_domain) return;
@@ -755,13 +830,13 @@ pub fn Sim(comptime cfg: config.Config) type {
             const dz = self.grid.size(iz, 2);
             var tsd: f64 = undefined;
             if (self.grid.nz > 1 and self.grid.ny > 1) {
-                tsd = ax / dx + ay / dy + az / dz;
+                tsd = wsx / dx + wsy / dy + wsz / dz;
             } else if (self.grid.nz == 1 and self.grid.ny > 1) {
-                tsd = ax / dx + ay / dy;
+                tsd = wsx / dx + wsy / dy;
             } else if (self.grid.ny == 1 and self.grid.nz > 1) {
-                tsd = ax / dx + az / dz;
+                tsd = wsx / dx + wsz / dz;
             } else {
-                tsd = ax / dx;
+                tsd = wsx / dx;
             }
             tsd /= self.opt.tsteplim;
             self.scSet(.tstepden, ix, iy, iz, tsd);
@@ -807,23 +882,48 @@ pub fn Sim(comptime cfg: config.Config) type {
                         const res = invert.u2pMhd(cfg, uu, &pp, &geom, self.opt.gam, self.opt.floors);
                         if (res.entropy_used) self.setFlag(.entropy, ix, iy, iz, 1);
 
+                        // radiative closed-form inversion (u2p.c:386); runs
+                        // regardless of the MHD outcome, on the same uu
+                        var rad_fixup = false;
+                        if (comptime L.hasVar(.ee)) {
+                            const rr = invert_rad.u2pRad(cfg, uu, &pp, &geom, self.opt.rad);
+                            rad_fixup = rr.corrected;
+                        }
+
                         _ = try invert.checkFloorsMhd(cfg, &pp, &geom, self.opt.gam, self.opt.floors);
+                        if (comptime L.hasVar(.ee)) {
+                            _ = try invert_rad.checkFloorsRad(cfg, &pp, &geom, self.opt.rad);
+                        }
 
                         self.p.store(ix, iy, iz, &pp);
                         self.setFlag(.hd_fixup, ix, iy, iz, if (res.fixup) 1 else 0);
+                        if (comptime L.hasVar(.ee)) {
+                            // C sets RADFIXUPFLAG to −1 (not 1) on request
+                            self.setFlag(.rad_fixup, ix, iy, iz, if (rad_fixup) -1 else 0);
+                        }
                     }
                 }
             }
 
-            try self.cellFixup();
+            try self.cellFixup(.hd_fixup);
+            if (comptime L.hasVar(.ee)) {
+                try self.cellFixup(.rad_fixup);
+            }
             try self.setBc(self.time, false);
         }
 
-        /// C: cell_fixup(FIXUP_U2PMHD) (finite.c:5012). Averages flagged
-        /// cells from their non-flagged in-domain neighbors; magnetic field
-        /// and rho are never averaged (iv != RHO && iv < B1).
-        fn cellFixup(self: *Self) Error!void {
-            if (!self.opt.do_fixups) return;
+        /// C: cell_fixup (finite.c:5012), types FIXUP_U2PMHD / FIXUP_U2PRAD.
+        /// Averages flagged cells from their non-flagged in-domain neighbors.
+        /// U2PMHD never averages rho or the magnetic field (iv != RHO &&
+        /// iv < B1); U2PRAD averages only the radiative block (EE..FZ).
+        fn cellFixup(self: *Self, comptime which: Flag) Error!void {
+            const enabled = switch (which) {
+                // C: DOFIXUPS && DOU2PMHDFIXUPS / DOU2PRADFIXUPS
+                .hd_fixup => self.opt.do_fixups,
+                .rad_fixup => self.opt.do_fixups and self.opt.do_u2prad_fixups,
+                else => @compileError("cellFixup: bad type"),
+            };
+            if (!enabled) return;
 
             @memcpy(self.u_bak.data, self.u.data);
             @memcpy(self.p_bak.data, self.p.data);
@@ -839,7 +939,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                 while (iy < ny) : (iy += 1) {
                     var ix: i64 = 0;
                     while (ix < nx) : (ix += 1) {
-                        if (self.getFlag(.hd_fixup, ix, iy, iz) == 0) continue;
+                        if (self.getFlag(which, ix, iy, iz) == 0) continue;
 
                         var ppn: [6][NV]f64 = undefined;
                         var in_n: usize = 0;
@@ -852,7 +952,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                         for (nbrs) |nb| {
                             if (nb[0] < 0 or nb[0] >= nx or nb[1] < 0 or nb[1] >= ny or
                                 nb[2] < 0 or nb[2] >= nz) continue;
-                            if (self.getFlag(.hd_fixup, nb[0], nb[1], nb[2]) != 0) continue;
+                            if (self.getFlag(which, nb[0], nb[1], nb[2]) != 0) continue;
                             self.p.load(nb[0], nb[1], nb[2], &ppn[in_n]);
                             in_n += 1;
                         }
@@ -866,7 +966,13 @@ pub fn Sim(comptime cfg: config.Config) type {
                         var pp: [NV]f64 = undefined;
                         self.p.load(ix, iy, iz, &pp);
                         for (0..NV) |iv| {
-                            if (iv != L.index(.rho) and iv < b1_bound) {
+                            // `which` is comptime — only the taken arm is analyzed
+                            const fixthis = switch (which) {
+                                .hd_fixup => iv != L.index(.rho) and iv < b1_bound,
+                                .rad_fixup => iv >= L.index(.ee) and iv <= L.index(.fz),
+                                else => unreachable,
+                            };
+                            if (fixthis) {
                                 var s: f64 = 0;
                                 for (0..in_n) |k| s += ppn[k][iv];
                                 pp[iv] = s / @as(f64, @floatFromInt(in_n));
@@ -902,8 +1008,7 @@ pub fn Sim(comptime cfg: config.Config) type {
 
             const rows = [4]usize{ L.index(.uu), L.index(.vx), L.index(.vy), L.index(.vz) };
             if (comptime L.hasVar(.ee)) {
-                const radiation = @import("physics/radiation.zig");
-                const rij_up = radiation.calcRij(cfg, pp, &geom);
+                const rij_up = try radiation.calcRij(cfg, pp, &geom);
                 const rij = relele.indices2221(rij_up, &geom.gg);
                 const rrows = [4]usize{ L.index(.ee), L.index(.fx), L.index(.fy), L.index(.fz) };
                 for (0..4) |k| {
@@ -1076,17 +1181,38 @@ pub fn Sim(comptime cfg: config.Config) type {
                             const uLl = try p2u_mod.p2u(cfg, pLl, &geom, self.opt.gam);
                             const uRl = try p2u_mod.p2u(cfg, pRl, &geom, self.opt.gam);
 
-                            // hydro speeds; radiation rows get their own in M7
+                            // hydro and radiation are two separate systems,
+                            // each combined with its own speeds (finite.c:1549)
                             const ag = @max(ap1, am1);
                             const al = @min(ap1l, am1l);
                             const ar = @max(ap1r, am1r);
 
+                            var agr: f64 = 0;
+                            var alr: f64 = 0;
+                            var arr: f64 = 0;
+                            if (comptime L.hasVar(.ee)) {
+                                const rp1l = self.scGet(arad_l[dim], cf[0], cf[1], cf[2]);
+                                const rp1r = self.scGet(arad_r[dim], cf[0], cf[1], cf[2]);
+                                const rp1 = self.scGet(arad_m[dim], cf[0], cf[1], cf[2]);
+                                const rm1l = self.scGet(arad_l[dim], cm[0], cm[1], cm[2]);
+                                const rm1r = self.scGet(arad_r[dim], cm[0], cm[1], cm[2]);
+                                const rm1 = self.scGet(arad_m[dim], cm[0], cm[1], cm[2]);
+                                agr = @max(rp1, rm1);
+                                alr = @min(rp1l, rm1l);
+                                arr = @max(rp1r, rm1r);
+                            }
+
                             for (0..NV) |iv| {
+                                // C: i < NVMHD → hydro block, else radiation
+                                const is_rad = if (comptime L.hasVar(.ee)) iv >= L.index(.ee) else false;
+                                const vag = if (is_rad) agr else ag;
+                                const val = if (is_rad) alr else al;
+                                const var_ = if (is_rad) arr else ar;
                                 const fl = self.fl_l[dim].get(iv, cf[0], cf[1], cf[2]);
                                 const fr = self.fl_r[dim].get(iv, cf[0], cf[1], cf[2]);
                                 const fstar = switch (comptime cfg.flux) {
-                                    .laxf => laxf_mod.laxf(fl, fr, uLl[iv], uRl[iv], ag),
-                                    .hll => laxf_mod.hll(fl, fr, uLl[iv], uRl[iv], al, ar),
+                                    .laxf => laxf_mod.laxf(fl, fr, uLl[iv], uRl[iv], vag),
+                                    .hll => laxf_mod.hll(fl, fr, uLl[iv], uRl[iv], val, var_),
                                 };
                                 self.flb[dim].set(iv, cf[0], cf[1], cf[2], fstar);
                             }

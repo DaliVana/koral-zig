@@ -7,7 +7,7 @@
 # harnesses, and runs them into tests/golden/.
 #
 # Variants:
-#   puffy    (PROBLEM 147) -> harness_metric/state/flux  -> metric/ state/ flux/
+#   puffy    (PROBLEM 147) -> harness_metric/state/flux/rad -> metric/ state/ flux/ rad/
 #   zigsod   (PROBLEM 200) -> harness_step               -> step/sod64.kstp
 #   zigot    (PROBLEM 201) -> harness_step               -> step/ot32.kstp + flux/ct.kgld + flux/bfroma.kgld
 #   zigmhdtube (PROBLEM 202) -> harness_step             -> step/mhdtube64.kstp
@@ -95,13 +95,15 @@ compile_objs puffy
 build_harness puffy harness_metric
 build_harness puffy harness_state
 build_harness puffy harness_flux
+build_harness puffy harness_rad
 
 echo "== [puffy] running harnesses"
-mkdir -p "$ROOT/tests/golden/metric" "$ROOT/tests/golden/state" "$ROOT/tests/golden/flux"
+mkdir -p "$ROOT/tests/golden/metric" "$ROOT/tests/golden/state" "$ROOT/tests/golden/flux" "$ROOT/tests/golden/rad"
 cd "$BUILD/puffy/src"
 ./harness_metric "$ROOT/tests/golden/metric"
 ./harness_state "$ROOT/tests/golden/state"
 ./harness_flux "$ROOT/tests/golden/flux"
+./harness_rad "$ROOT/tests/golden/rad"
 
 # ---- step-test variants -----------------------------------------------------
 mkdir -p "$ROOT/tests/golden/step"
@@ -148,6 +150,10 @@ cat > "$ROOT/tests/golden/manifest.json" <<EOF
     "flux/recon.kgld": "u5 dx5 param theta -> ul ur (avg2point, INT_ORDER=2 base)",
     "flux/wavespeed.kgld": "geom23 pp13 -> ahd xl,xr,yl,yr (gas wavespeeds)",
     "flux/fluxprime.kgld": "geom23(face) idim pp13 -> ff13 (f_flux_prime, Rijvisc=0)",
+    "rad/rad_rij.kgld": "gg10 GG10 pp13 -> Rij16 Rtt ucon4 (calc_Rij_M1 + calc_ff_Rtt)",
+    "rad/rad_u2prad.kgld": "geom23 uu4 guess4 -> ret cor pp4 (u2p_rad incl. cold branches)",
+    "rad/rad_wavespeeds.kgld": "gg10 GG10 pp13 tau3 -> axl0 axr0 ayl0 ayr0 axl axr ayl ayr",
+    "rad/rad_floors.kgld": "geom23 pp13 -> ret pp13 (check_floors_rad, PUFFY ratios)",
     "flux/ct.kgld": "facedim ix iy fB1 fB2 fB3 -> fB1' fB2' fB3' (flux_ct, ZIGOT 32x32)",
     "flux/bfroma.kgld": "ix iy A1 A2 A3 -> B1 B2 B3 (calc_BfromA overwrite, ZIGOT periodic)",
     "step/sod64.kstp": "ZIGSOD (200): 64x1 SR Sod, MINK PPM RK2IMEX LAXF, 10 steps",
