@@ -65,6 +65,7 @@ pub const physics = struct {
 pub const solve = struct {
     pub const invert = @import("solve/invert.zig");
     pub const invert_rad = @import("solve/invert_rad.zig");
+    pub const implicit = @import("solve/implicit.zig");
 };
 
 pub const recon = @import("recon/recon.zig");
@@ -119,11 +120,13 @@ test {
     _ = sim;
     _ = magn.ct;
     _ = solve.invert_rad;
+    _ = solve.implicit;
     _ = @import("metric/tests.zig");
     _ = @import("evolution_tests.zig");
     _ = @import("mhd_evolution_tests.zig");
     _ = @import("radiation_tests.zig");
     _ = @import("opacity_tests.zig");
+    _ = @import("implicit_tests.zig");
     _ = @import("state_tests.zig");
     _ = @import("flux_tests.zig");
     _ = @import("golden_test.zig");
@@ -131,5 +134,6 @@ test {
     _ = @import("golden_flux_test.zig");
     _ = @import("golden_rad_test.zig");
     _ = @import("golden_opac_test.zig");
+    _ = @import("golden_implicit_test.zig");
     _ = @import("golden_step_test.zig");
 }

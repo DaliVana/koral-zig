@@ -22,6 +22,7 @@ const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const relele = @import("../relele.zig");
 const frames = @import("../frames.zig");
+const hydro = @import("hydro.zig");
 const mhd = @import("mhd.zig");
 const radiation = @import("radiation.zig");
 const thermo = @import("thermo.zig");
@@ -52,6 +53,9 @@ pub const RadState = struct {
     tgas: f64,
     te: f64,
     ti: f64,
+    /// Sgas = kB/(μ_gas m_p) · calc_Sfromu (physics.c:41) — note the
+    /// different normalization from the ENTR primitive
+    sgas: f64,
     ne: f64,
     ucon: [4]f64,
     ucov: [4]f64,
@@ -80,6 +84,7 @@ pub fn fillRadState(
     const rho = pp[L.index(.rho)];
     const uint = pp[L.index(.uu)];
     const temps = thermo.tempsFromUrho(c, uint, rho, gam);
+    const sgas = c.kb_over_mugas_mp * hydro.sFromU(rho, uint, gam);
     const ne = thermo.thermalNe(c, rho);
 
     const u = try relele.uconUcovFromPrims(
@@ -129,6 +134,7 @@ pub fn fillRadState(
         .tgas = temps.tgas,
         .te = temps.te,
         .ti = temps.ti,
+        .sgas = sgas,
         .ne = ne,
         .ucon = u.con,
         .ucov = u.cov,

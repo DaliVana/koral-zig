@@ -41,6 +41,7 @@ const wavespeeds = @import("physics/wavespeeds.zig");
 const recon = @import("recon/recon.zig");
 const invert = @import("solve/invert.zig");
 const invert_rad = @import("solve/invert_rad.zig");
+const implicit = @import("solve/implicit.zig");
 const radiation = @import("physics/radiation.zig");
 const radforce = @import("physics/radforce.zig");
 const p2u_mod = @import("p2u.zig");
@@ -60,13 +61,15 @@ pub const BcKind = enum { periodic, copy, specific };
 /// Which boundary a ghost cell belongs to (C: XBCLO..ZBCHI).
 pub const BcFace = enum { xlo, xhi, ylo, yhi, zlo, zhi };
 
-/// Per-cell integer flags (C: cellflag; only the ones the M5/M6 path uses).
+/// Per-cell integer flags (C: cellflag; only the ones this path uses —
+/// RADSOURCETYPEFLAG is a constant under IMPLICIT_LAB_RAD_SOURCE, skipped).
 pub const Flag = enum(usize) {
     entropy, // ENTROPYFLAG — entropy inversion used this step
     entropy2, // ENTROPYFLAG2 — rad-energy borrowing failed (M7)
     entropy3, // ENTROPYFLAG3 — copy_entropycount snapshot
     hd_fixup, // HDFIXUPFLAG
     rad_fixup, // RADFIXUPFLAG (M7)
+    radimp_fixup, // RADIMPFIXUPFLAG (M9) — implicit solver failed here
 };
 const n_flags = @typeInfo(Flag).@"enum".fields.len;
 
@@ -204,12 +207,15 @@ pub fn Sim(comptime cfg: config.Config) type {
             minmod_theta: f64 = 1.5, // C: MINMOD_THETA
             floors: invert.FloorParams = invert.FloorParams.cdefault,
             rad: invert_rad.RadParams = invert_rad.RadParams.cdefault,
-            /// Opacities for the rad wavespeed τ-limiter (C: calc_chi);
-            /// null means optically thin (τ = 0, no damping). The
-            /// radiative source coupling arrives with M9's op_implicit.
+            /// Opacities for the rad wavespeed τ-limiter (C: calc_chi)
+            /// AND the implicit radiative source coupling (op_implicit).
+            /// null ≡ C's SKIPRADSOURCE: optically thin wavespeeds and no
+            /// implicit operator.
             opac: ?radforce.Params = null,
+            implicit: implicit.ImplicitParams = implicit.ImplicitParams.cdefault,
             do_fixups: bool = true, // C: DOFIXUPS && DOU2PMHDFIXUPS
             do_u2prad_fixups: bool = false, // C: DOU2PRADFIXUPS (0 everywhere)
+            do_radimp_fixups: bool = false, // C: DORADIMPFIXUPS (0 everywhere)
             bc_x: BcKind = .copy,
             bc_y: BcKind = .copy,
             bc_z: BcKind = .copy,
@@ -270,6 +276,9 @@ pub fn Sim(comptime cfg: config.Config) type {
         min_dy: f64 = 0,
         min_dz: f64 = 0,
         nstep: u64 = 0,
+        /// implicit-solver diagnostics (C: global_int_slot counters)
+        n_radimp_failures: u64 = 0,
+        n_radimp_iters: u64 = 0,
 
         pub fn init(a: std.mem.Allocator, g: Grid, opt: Options) !Self {
             var self: Self = undefined;
@@ -283,6 +292,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.tstepdenmax = 0;
             self.tstepdenmin = big;
             self.nstep = 0;
+            self.n_radimp_failures = 0;
+            self.n_radimp_iters = 0;
 
             self.cache = try precompute.MetricCache.init(a, g, .{
                 .coords = opt.coords,
@@ -917,9 +928,10 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// iv < B1); U2PRAD averages only the radiative block (EE..FZ).
         fn cellFixup(self: *Self, comptime which: Flag) Error!void {
             const enabled = switch (which) {
-                // C: DOFIXUPS && DOU2PMHDFIXUPS / DOU2PRADFIXUPS
+                // C: DOFIXUPS && DOU2PMHDFIXUPS / DOU2PRADFIXUPS / DORADIMPFIXUPS
                 .hd_fixup => self.opt.do_fixups,
                 .rad_fixup => self.opt.do_fixups and self.opt.do_u2prad_fixups,
+                .radimp_fixup => self.opt.do_fixups and self.opt.do_radimp_fixups,
                 else => @compileError("cellFixup: bad type"),
             };
             if (!enabled) return;
@@ -969,6 +981,9 @@ pub fn Sim(comptime cfg: config.Config) type {
                             const fixthis = switch (which) {
                                 .hd_fixup => iv != L.index(.rho) and iv < b1_bound,
                                 .rad_fixup => iv >= L.index(.ee) and iv <= L.index(.fz),
+                                // FIXUP_RADIMP: both fluids, never rho/B
+                                .radimp_fixup => iv != L.index(.rho) and
+                                    (iv < b1_bound or (iv >= L.index(.ee) and iv <= L.index(.fz))),
                                 else => unreachable,
                             };
                             if (fixthis) {
@@ -1351,12 +1366,45 @@ pub fn Sim(comptime cfg: config.Config) type {
             }
         }
 
-        /// M9 will put the radiative implicit solve here; the stage
-        /// arithmetic around it is already exact.
-        fn opImplicit(self: *Self, t: f64, dtin: f64) void {
-            _ = self;
+        /// C: op_implicit (finite.c:1400) — the implicit radiative source
+        /// operator: per-cell solve_implicit_lab, RADIMPFIXUPFLAG, then
+        /// cell_fixup(FIXUP_RADIMP). Structural no-op without radiation or
+        /// when opt.opac is null (≡ SKIPRADSOURCE).
+        fn opImplicit(self: *Self, t: f64, dtin: f64) Error!void {
             _ = t;
-            _ = dtin;
+            if (comptime !L.hasVar(.ee)) return;
+            const opp = &(self.opt.opac orelse return);
+            const ImplT = implicit.Impl(cfg);
+
+            var iz: i64 = 0;
+            while (iz < self.nzi()) : (iz += 1) {
+                var iy: i64 = 0;
+                while (iy < self.nyi()) : (iy += 1) {
+                    var ix: i64 = 0;
+                    while (ix < self.nxi()) : (ix += 1) {
+                        var uu: [NV]f64 = undefined;
+                        var pp: [NV]f64 = undefined;
+                        self.u.load(ix, iy, iz, &uu);
+                        self.p.load(ix, iy, iz, &pp);
+
+                        const geom = self.cache.fillGeometry(ix, iy, iz);
+                        const res = ImplT.solveImplicitLab(&uu, &pp, &geom, dtin, self.opt.gam, self.opt.rad, opp, &self.opt.implicit);
+
+                        if (res.ok) {
+                            self.u.store(ix, iy, iz, &uu);
+                            self.p.store(ix, iy, iz, &pp);
+                            self.setFlag(.radimp_fixup, ix, iy, iz, 0);
+                            self.n_radimp_iters += res.iters;
+                        } else {
+                            // C: unchanged u/p, flag for fixups
+                            self.setFlag(.radimp_fixup, ix, iy, iz, -1);
+                            self.n_radimp_failures += 1;
+                        }
+                    }
+                }
+            }
+
+            try self.cellFixup(.radimp_fixup);
         }
 
         /// M11: polar-axis correction (CORRECT_POLARAXIS). No-op until then.
@@ -1389,7 +1437,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             // ---- 1st implicit ----
             copyFull(&self.ut0, &self.u);
             copyFull(&self.ptm1, &self.p);
-            self.opImplicit(t, dt * gam_imex); // U(1) — no-op until M9
+            try self.opImplicit(t, dt * gam_imex); // U(1)
             copyFull(&self.ppostimplicit, &self.p);
             self.stageDeriv(&self.drt1, &self.u, &self.ut0, dt * gam_imex);
 
@@ -1411,7 +1459,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             try self.calcU2p();
             copyFull(&self.ptm1, &self.p);
             self.doCorrect();
-            self.opImplicit(t, gam_imex * dt); // U(2)
+            try self.opImplicit(t, gam_imex * dt); // U(2)
             copyFull(&self.ppostimplicit, &self.p);
             self.stageDeriv(&self.drt2, &self.u, &self.uforget, dt * gam_imex);
 

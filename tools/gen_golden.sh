@@ -7,7 +7,7 @@
 # harnesses, and runs them into tests/golden/.
 #
 # Variants:
-#   puffy    (PROBLEM 147) -> harness_metric/state/flux/rad/opac -> metric/ state/ flux/ rad/
+#   puffy    (PROBLEM 147) -> harness_metric/state/flux/rad/opac/implicit -> metric/ state/ flux/ rad/
 #   zigsod   (PROBLEM 200) -> harness_step               -> step/sod64.kstp
 #   zigot    (PROBLEM 201) -> harness_step               -> step/ot32.kstp + flux/ct.kgld + flux/bfroma.kgld
 #   zigmhdtube (PROBLEM 202) -> harness_step             -> step/mhdtube64.kstp
@@ -97,6 +97,7 @@ build_harness puffy harness_state
 build_harness puffy harness_flux
 build_harness puffy harness_rad
 build_harness puffy harness_opac
+build_harness puffy harness_implicit
 
 echo "== [puffy] running harnesses"
 mkdir -p "$ROOT/tests/golden/metric" "$ROOT/tests/golden/state" "$ROOT/tests/golden/flux" "$ROOT/tests/golden/rad"
@@ -106,6 +107,7 @@ cd "$BUILD/puffy/src"
 ./harness_flux "$ROOT/tests/golden/flux"
 ./harness_rad "$ROOT/tests/golden/rad"
 ./harness_opac "$ROOT/tests/golden/rad"
+./harness_implicit "$ROOT/tests/golden/rad"
 
 # ---- step-test variants -----------------------------------------------------
 mkdir -p "$ROOT/tests/golden/step"
@@ -159,6 +161,7 @@ cat > "$ROOT/tests/golden/manifest.json" <<EOF
     "rad/rad_thermo.kgld": "geom23 pp13 -> Tgas Te ne Ehat TradBB kappaes opac6 kappa (fill_struct_of_state)",
     "rad/rad_opac.kgld": "geom23 pp13 -> kappa kappaes chi (standalone entry points, Trad=Te kappaes)",
     "rad/rad_gi.kgld": "geom23 pp13 -> Gi_lab4 Gi_ff4 (calc_Gi thermal + Comptonization)",
+    "rad/rad_implicit.kgld": "geom23 dt pp13 -> ret prim eq frame iters pp13 (solve_implicit_lab, full ladder)",
     "flux/ct.kgld": "facedim ix iy fB1 fB2 fB3 -> fB1' fB2' fB3' (flux_ct, ZIGOT 32x32)",
     "flux/bfroma.kgld": "ix iy A1 A2 A3 -> B1 B2 B3 (calc_BfromA overwrite, ZIGOT periodic)",
     "step/sod64.kstp": "ZIGSOD (200): 64x1 SR Sod, MINK PPM RK2IMEX LAXF, 10 steps",

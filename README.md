@@ -142,7 +142,24 @@ natural conserved scale.
       uniform state static) + C goldens (state thermo 3e-15, opacities
       8e-15, kappa/kappaes/chi 3e-15, Gi 3e-14 with the Compton ΔT-noise
       term in the normalization)
-- [ ] M9 — implicit radiation–gas solver
+- [x] M9 — implicit radiation–gas solver (koral/solve/implicit.zig): the
+      full rung ladder (energy-LAB → energy-FF → RAD/MHD swap ×2 →
+      entropy-FF ×2), 4-prim Newton with one-sided FD Jacobian (ε=1e-6,
+      sign-retry), SCALE_JACOBIAN row/column scaling, LU inversion
+      mirroring GSL's silent-inf singular path, the damping ladder with
+      energy/Tgas/Trad per-step limiters, the conservation constraint
+      (implicit_apply_constraints) and the 1-D bisection starting guess;
+      wired into Sim.opImplicit (RADIMPFIXUPFLAG, FIXUP_RADIMP pass,
+      opac == null ≡ SKIPRADSOURCE). C bugs transcribed: the 4D entropy
+      residual reads state->Tgas where Sgas is meant (rad.c:1749/1767);
+      the bisect residual's pp0[EE]/ratio (rad.c:1929). Theory gates:
+      internal-uu conservation exact (4e-15), LTE fixed point, 0-D
+      relaxation vs test-local RK45 at 7.8e-8 (gate 1e-6), L-stability at
+      κΔτ=1e6, RAD/MHD branch agreement on residual-verified solutions,
+      3000-state fuzz (no NaN, clean failures). C golden (full wrapper on
+      PUFFY cells, ~10 decades of κΔt): success/failure agreement
+      331/336, rung agreement 267/278, residual-verified primitives at
+      6.8e-8 (gate 1e-6)
 - [ ] M10 — RK2IMEX + radiative shock tubes
 - [ ] M11 — PUFFY problem code (limotorus init, BCs, β normalization)
 - [ ] M12 — dynamo + radiative viscosity + Comptonization
