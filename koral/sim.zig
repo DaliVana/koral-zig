@@ -42,6 +42,7 @@ const recon = @import("recon/recon.zig");
 const invert = @import("solve/invert.zig");
 const invert_rad = @import("solve/invert_rad.zig");
 const radiation = @import("physics/radiation.zig");
+const radforce = @import("physics/radforce.zig");
 const p2u_mod = @import("p2u.zig");
 const laxf_mod = @import("flux/laxf.zig");
 const ct = @import("magn/ct.zig");
@@ -195,11 +196,6 @@ pub fn Sim(comptime cfg: config.Config) type {
             face: BcFace,
         ) [NV]f64;
 
-        /// Total opacity χ = κ + κ_es per cell (C: calc_chi, opacities.c:148)
-        /// — feeds τ = χ·dx for the rad wavespeed limiter. M8 supplies the
-        /// real one; null means optically thin (τ = 0, no damping).
-        pub const ChiFn = *const fn (pp: *const [NV]f64, geom: *const Geometry) f64;
-
         pub const Options = struct {
             coords: config.Coords,
             mp: metric.MetricParams = .{},
@@ -208,9 +204,12 @@ pub fn Sim(comptime cfg: config.Config) type {
             minmod_theta: f64 = 1.5, // C: MINMOD_THETA
             floors: invert.FloorParams = invert.FloorParams.cdefault,
             rad: invert_rad.RadParams = invert_rad.RadParams.cdefault,
+            /// Opacities for the rad wavespeed τ-limiter (C: calc_chi);
+            /// null means optically thin (τ = 0, no damping). The
+            /// radiative source coupling arrives with M9's op_implicit.
+            opac: ?radforce.Params = null,
             do_fixups: bool = true, // C: DOFIXUPS && DOU2PMHDFIXUPS
             do_u2prad_fixups: bool = false, // C: DOU2PRADFIXUPS (0 everywhere)
-            chi_fn: ?ChiFn = null,
             bc_x: BcKind = .copy,
             bc_y: BcKind = .copy,
             bc_z: BcKind = .copy,
@@ -759,8 +758,8 @@ pub fn Sim(comptime cfg: config.Config) type {
                             // ix could be a face index in C, hence the max of
                             // left/right sizes
                             var tautot: [3]f64 = @splat(0);
-                            if (self.opt.chi_fn) |chi_fn| {
-                                const chi = chi_fn(&pp, &geom);
+                            if (self.opt.opac) |*op| {
+                                const chi = try radforce.calcChi(cfg, pp, &geom, self.opt.gam, op);
                                 const idx3 = [3]i64{ ix, iy, iz };
                                 for (0..3) |d| {
                                     const sg = @sqrt(geom.gg[d + 1][d + 1]);

@@ -127,7 +127,21 @@ natural conserved scale.
       floors, uniform rad state static 50 steps) + C goldens (Rij 4e-16,
       u2p_rad 2e-14 with all 336 branch decisions exact, wavespeeds 2e-16,
       floors 1e-14)
-- [ ] M8 — opacities + four-force
+- [x] M8 — opacities + four-force: thermo layer (composition with PUFFY's
+      direct MU_GAS/MU_I/MU_E=1/2/2 overrides, C-shaped constant globals,
+      single-temperature Te=Ti=Tgas with 1e2 K floors), bremsstrahlung +
+      synchrotron absorption channels (Terelfactor suppression — the
+      choices.h bridge functions are commented out), PUFFY kappaes hook
+      with Klein–Nishina, both C kappaes flavors (Trad=Te standalone /
+      Trad=TradBB in-state), calc_chi wired into the Sim τ-limiter, and
+      calc_Gi (thermal four-force + Comptonization; the C return value is
+      uninitialized garbage all callers discard); theory gates (κ_es hand
+      values incl. exact KN half at 4.5e8 K, ρ²/T^-3.5/B² scalings,
+      Kirchhoff at ζ=1, G^μ=0 at LTE, heating/cooling sign, G·u frame
+      invariance @1e-12, Compton exactly zero/linear in ΔT, τ-thick
+      uniform state static) + C goldens (state thermo 3e-15, opacities
+      8e-15, kappa/kappaes/chi 3e-15, Gi 3e-14 with the Compton ΔT-noise
+      term in the normalization)
 - [ ] M9 — implicit radiation–gas solver
 - [ ] M10 — RK2IMEX + radiative shock tubes
 - [ ] M11 — PUFFY problem code (limotorus init, BCs, β normalization)

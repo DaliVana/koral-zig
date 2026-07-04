@@ -57,6 +57,9 @@ pub const physics = struct {
     pub const radiation = @import("physics/radiation.zig");
     pub const wavespeeds = @import("physics/wavespeeds.zig");
     pub const flux = @import("physics/flux.zig");
+    pub const thermo = @import("physics/thermo.zig");
+    pub const opacities = @import("physics/opacities.zig");
+    pub const radforce = @import("physics/radforce.zig");
 };
 
 pub const solve = struct {
@@ -108,6 +111,9 @@ test {
     _ = physics.radiation;
     _ = physics.wavespeeds;
     _ = physics.flux;
+    _ = physics.thermo;
+    _ = physics.opacities;
+    _ = physics.radforce;
     _ = recon;
     _ = riemann.laxf;
     _ = sim;
@@ -117,11 +123,13 @@ test {
     _ = @import("evolution_tests.zig");
     _ = @import("mhd_evolution_tests.zig");
     _ = @import("radiation_tests.zig");
+    _ = @import("opacity_tests.zig");
     _ = @import("state_tests.zig");
     _ = @import("flux_tests.zig");
     _ = @import("golden_test.zig");
     _ = @import("golden_state_test.zig");
     _ = @import("golden_flux_test.zig");
     _ = @import("golden_rad_test.zig");
+    _ = @import("golden_opac_test.zig");
     _ = @import("golden_step_test.zig");
 }
