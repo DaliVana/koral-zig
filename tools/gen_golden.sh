@@ -47,10 +47,15 @@ build_harness() {
 
 echo "== building harnesses"
 build_harness harness_metric
+build_harness harness_state
 
 echo "== running harness_metric"
 mkdir -p "$ROOT/tests/golden/metric"
 ./harness_metric "$ROOT/tests/golden/metric"
+
+echo "== running harness_state"
+mkdir -p "$ROOT/tests/golden/state"
+./harness_state "$ROOT/tests/golden/state"
 
 echo "== writing manifest"
 SHA="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -63,7 +68,14 @@ cat > "$ROOT/tests/golden/manifest.json" <<EOF
   "files": {
     "metric/metric_points.kgld": "coords,x0..x3 -> gg16 GG16 gdet dlgdet3 Kr64 gttpert",
     "metric/coco_dxdx.kgld": "co1,co2,x0..x3 -> xout4 dxdx16",
-    "metric/krzysie_grid.kgld": "ix,iy -> x1 x2 Kr64 (MODYFIKUJKRZYSIE-corrected, PUFFY grid)"
+    "metric/krzysie_grid.kgld": "ix,iy -> x1 x2 Kr64 (MODYFIKUJKRZYSIE-corrected, PUFFY grid)",
+    "state/relele_convvels.kgld": "gg10 GG10 w1 w2 v3 -> u2[4] (all 9 vel pairs)",
+    "state/relele_boost.kgld": "gg10 GG10 vel3 A4 -> L16 boost2_lab2ff4 boost2_ff2lab4",
+    "state/frames_transpall.kgld": "co1 co2 x3 pp13 geom1_20 geom2_20 -> pp2[13]",
+    "state/physics_tij.kgld": "gg10 GG10 pp13 -> Tij16 ucon4 ucov4 bcon4 bcov4 bsq",
+    "state/p2u.kgld": "geom23 pp13 -> uu13",
+    "state/u2p_solver.kgld": "geom23 uu13 guess13 -> ret_hot pp_hot9 ret_entr pp_entr9",
+    "state/floors.kgld": "geom23 pp13 -> ret pp13 (check_floors_mhd, DRIFTFRAME)"
   }
 }
 EOF

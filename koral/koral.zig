@@ -47,6 +47,19 @@ pub const metric = struct {
     pub const MetricCache = precompute.MetricCache;
 };
 
+pub const relele = @import("relele.zig");
+pub const frames = @import("frames.zig");
+pub const p2u = @import("p2u.zig");
+
+pub const physics = struct {
+    pub const mhd = @import("physics/mhd.zig");
+    pub const hydro = @import("physics/hydro.zig");
+};
+
+pub const solve = struct {
+    pub const invert = @import("solve/invert.zig");
+};
+
 pub const comm = struct {
     pub const serial = @import("comm/serial.zig");
     pub const Serial = serial.Serial;
@@ -69,6 +82,14 @@ test {
     _ = metric.forms;
     _ = metric.coco;
     _ = metric.precompute;
+    _ = relele;
+    _ = frames;
+    _ = p2u;
+    _ = physics.mhd;
+    _ = physics.hydro;
+    _ = solve.invert;
     _ = @import("metric/tests.zig");
+    _ = @import("state_tests.zig");
     _ = @import("golden_test.zig");
+    _ = @import("golden_state_test.zig");
 }

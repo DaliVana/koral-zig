@@ -46,6 +46,16 @@ Christoffels) gate against C at 1e-8 — that spread is C's, not ours.
 Consequence for later milestones: near-axis step-comparison budgets on the
 PUFFY grid cannot be tighter than ~1e-8 for θ-sensitive quantities.
 
+### Geometry-in-record goldens (M2+)
+
+State-level golden records (`tests/golden/state/`) embed the geometry the C
+code actually used (gg, GG, gdet, α, gttpert), so the Zig side replays pure
+state algebra with identical inputs — the MKS2 two-π spread never enters
+and gates stay at 1e-13/1e-14. Residual noise between clang-built C and
+Zig comes from FMA contraction (clang fuses, Zig doesn't), which only
+matters in rows that cancel to ~0; those are normalized by their record's
+natural conserved scale.
+
 ## Status
 
 - [x] M0 — skeleton, build system, variable layout (C-index-compatible),
@@ -54,8 +64,16 @@ PUFFY grid cannot be tighter than ~1e-8 for θ-sensitive quantities.
       layer (exact Christoffels/dlgdet, no Mathematica transcription),
       coco transforms + Jacobians, precomputed cache with C's gdet-trace
       Christoffel correction; theory gates + C goldens green
-- [ ] M2 — relele + frames
-- [ ] M3 — p2u + u2p inversion cascade + floors
+- [x] M2 — relele + frames: conv_vels (VEL3/VEL4/VELR, all pairs), index
+      gymnastics, Lorentz boosts lab↔fluid/rad frames, trans2/22_coco,
+      whole-primitive coordinate transforms; C quirks mirrored & pinned by
+      tests (dead α-correction in ff2lab boosts; trans_pall_coco requires
+      aliased in/out in C)
+- [x] M3 — p2u (mhd via cancellation-free utp1, rad M1) + u2p_solver_W
+      (hot/entropy Newton, Noble residual, C's exact iteration path incl.
+      its 1/γ entropy derivative) + cascade + check_floors_mhd (drift-frame
+      B²-floors, γ-ceiling); golden agreement 1e-13..1e-14, solver
+      success/failure outcomes match C record-for-record
 - [ ] M4 — reconstruction (minmod/PPM) + LAXF + wavespeeds
 - [ ] M5 — hydro evolution (op_explicit, RK2), Sod & Bondi
 - [ ] M6 — MHD + constrained transport

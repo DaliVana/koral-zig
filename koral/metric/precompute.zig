@@ -76,6 +76,36 @@ pub fn computeCorrected(coords: Coords, mp: MetricParams, g: *const Grid, ix: i6
     return d;
 }
 
+/// Geometry at an arbitrary point, computed on the fly (C: fill_geometry_arb
+/// without the grid arrays). Christoffels are not part of Geometry, so no
+/// trace correction applies here.
+pub fn geometryAt(coords: Coords, mp: MetricParams, x: [4]f64) Geometry {
+    const d = metric.compute(coords, mp, x);
+    var geo = Geometry{
+        .coords = coords,
+        .ix = 0,
+        .iy = 0,
+        .iz = 0,
+        .ifacedim = -1,
+        .xxvec = .{ 0, x[1], x[2], x[3] },
+        .gg = undefined,
+        .GG = undefined,
+        .gdet = d.gdet,
+        .alpha = undefined,
+        .gttpert = d.gttpert,
+    };
+    for (0..4) |i| {
+        for (0..4) |j| {
+            geo.gg[i][j] = d.gcov[i][j];
+            geo.GG[i][j] = d.gcon[i][j];
+        }
+        geo.gg[i][4] = if (i < 3) d.dlgdet[i] else d.gdet;
+        geo.GG[i][4] = if (i == 3) d.gttpert else 0;
+    }
+    geo.alpha = @sqrt(-1.0 / geo.GG[0][0]);
+    return geo;
+}
+
 pub const MetricCache = struct {
     a: std.mem.Allocator,
     grid: Grid,
