@@ -2,7 +2,7 @@
   "koral_lite_sha": "87d73e5",
   "problem": 147,
   "compiler": "Apple clang version 21.0.0 (clang-2100.0.123.102)",
-  "generated": "2026-07-04T06:29:27Z",
+  "generated": "2026-07-04T07:31:40Z",
   "files": {
     "metric/metric_points.kgld": "coords,x0..x3 -> gg16 GG16 gdet dlgdet3 Kr64 gttpert",
     "metric/coco_dxdx.kgld": "co1,co2,x0..x3 -> xout4 dxdx16",
@@ -13,6 +13,9 @@
     "state/physics_tij.kgld": "gg10 GG10 pp13 -> Tij16 ucon4 ucov4 bcon4 bcov4 bsq",
     "state/p2u.kgld": "geom23 pp13 -> uu13",
     "state/u2p_solver.kgld": "geom23 uu13 guess13 -> ret_hot pp_hot9 ret_entr pp_entr9",
-    "state/floors.kgld": "geom23 pp13 -> ret pp13 (check_floors_mhd, DRIFTFRAME)"
+    "state/floors.kgld": "geom23 pp13 -> ret pp13 (check_floors_mhd, DRIFTFRAME)",
+    "flux/recon.kgld": "u5 dx5 param theta -> ul ur (avg2point, INT_ORDER=2 base)",
+    "flux/wavespeed.kgld": "geom23 pp13 -> ahd xl,xr,yl,yr (gas wavespeeds)",
+    "flux/fluxprime.kgld": "geom23(face) idim pp13 -> ff13 (f_flux_prime, Rijvisc=0)"
   }
 }

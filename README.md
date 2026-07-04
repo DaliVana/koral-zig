@@ -74,7 +74,12 @@ natural conserved scale.
       its 1/γ entropy derivative) + cascade + check_floors_mhd (drift-frame
       B²-floors, γ-ceiling); golden agreement 1e-13..1e-14, solver
       success/failure outcomes match C record-for-record
-- [ ] M4 — reconstruction (minmod/PPM) + LAXF + wavespeeds
+- [x] M4 — reconstruction + LAXF + wavespeeds: avg2point (donor,
+      minmod-θ, non-uniform PPM incl. near-boundary order reduction),
+      gas wavespeeds (fluid-frame c_s²+v_A²−c_s²v_A² boosted per direction,
+      co-going clamps), f_flux_prime (cancellation-free energy row, M1
+      radiative rows; Rijvisc lands in M12), LAXF/HLL face combination;
+      goldens at 3e-16..4e-15
 - [ ] M5 — hydro evolution (op_explicit, RK2), Sod & Bondi
 - [ ] M6 — MHD + constrained transport
 - [ ] M7 — radiation M1 basics

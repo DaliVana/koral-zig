@@ -54,10 +54,19 @@ pub const p2u = @import("p2u.zig");
 pub const physics = struct {
     pub const mhd = @import("physics/mhd.zig");
     pub const hydro = @import("physics/hydro.zig");
+    pub const radiation = @import("physics/radiation.zig");
+    pub const wavespeeds = @import("physics/wavespeeds.zig");
+    pub const flux = @import("physics/flux.zig");
 };
 
 pub const solve = struct {
     pub const invert = @import("solve/invert.zig");
+};
+
+pub const recon = @import("recon/recon.zig");
+
+pub const riemann = struct {
+    pub const laxf = @import("flux/laxf.zig");
 };
 
 pub const comm = struct {
@@ -88,8 +97,15 @@ test {
     _ = physics.mhd;
     _ = physics.hydro;
     _ = solve.invert;
+    _ = physics.radiation;
+    _ = physics.wavespeeds;
+    _ = physics.flux;
+    _ = recon;
+    _ = riemann.laxf;
     _ = @import("metric/tests.zig");
     _ = @import("state_tests.zig");
+    _ = @import("flux_tests.zig");
     _ = @import("golden_test.zig");
     _ = @import("golden_state_test.zig");
+    _ = @import("golden_flux_test.zig");
 }

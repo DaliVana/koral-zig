@@ -48,6 +48,7 @@ build_harness() {
 echo "== building harnesses"
 build_harness harness_metric
 build_harness harness_state
+build_harness harness_flux
 
 echo "== running harness_metric"
 mkdir -p "$ROOT/tests/golden/metric"
@@ -56,6 +57,10 @@ mkdir -p "$ROOT/tests/golden/metric"
 echo "== running harness_state"
 mkdir -p "$ROOT/tests/golden/state"
 ./harness_state "$ROOT/tests/golden/state"
+
+echo "== running harness_flux"
+mkdir -p "$ROOT/tests/golden/flux"
+./harness_flux "$ROOT/tests/golden/flux"
 
 echo "== writing manifest"
 SHA="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -75,7 +80,10 @@ cat > "$ROOT/tests/golden/manifest.json" <<EOF
     "state/physics_tij.kgld": "gg10 GG10 pp13 -> Tij16 ucon4 ucov4 bcon4 bcov4 bsq",
     "state/p2u.kgld": "geom23 pp13 -> uu13",
     "state/u2p_solver.kgld": "geom23 uu13 guess13 -> ret_hot pp_hot9 ret_entr pp_entr9",
-    "state/floors.kgld": "geom23 pp13 -> ret pp13 (check_floors_mhd, DRIFTFRAME)"
+    "state/floors.kgld": "geom23 pp13 -> ret pp13 (check_floors_mhd, DRIFTFRAME)",
+    "flux/recon.kgld": "u5 dx5 param theta -> ul ur (avg2point, INT_ORDER=2 base)",
+    "flux/wavespeed.kgld": "geom23 pp13 -> ahd xl,xr,yl,yr (gas wavespeeds)",
+    "flux/fluxprime.kgld": "geom23(face) idim pp13 -> ff13 (f_flux_prime, Rijvisc=0)"
   }
 }
 EOF
