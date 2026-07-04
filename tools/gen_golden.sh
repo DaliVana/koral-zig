@@ -1,10 +1,16 @@
 #!/bin/bash
 # Regenerate C-oracle golden files from ../koral_lite.
 #
-# Copies the koral_lite sources into oracle/build/src (never touches the
-# original tree), patches PROBLEM -> 147 (PUFFY), compiles the compute
-# objects (no silo, no MPI, no HDF5 -- all ifdef'd out) with clang + GSL,
-# builds the harnesses, and runs them into tests/golden/.
+# Copies the koral_lite sources into oracle/build/<variant>/src (never
+# touches the original tree), patches PROBLEM, compiles the compute objects
+# (no silo, no MPI, no HDF5 -- all ifdef'd out) with clang + GSL, builds the
+# harnesses, and runs them into tests/golden/.
+#
+# Variants:
+#   puffy    (PROBLEM 147) -> harness_metric/state/flux  -> metric/ state/ flux/
+#   zigsod   (PROBLEM 200) -> harness_step               -> step/sod64.kstp
+#   zigot    (PROBLEM 201) -> harness_step               -> step/ot32.kstp + flux/ct.kgld + flux/bfroma.kgld
+#   zigmhdtube (PROBLEM 202) -> harness_step             -> step/mhdtube64.kstp
 #
 # Usage: tools/gen_golden.sh            (KORAL_LITE=<path> to override)
 
@@ -17,57 +23,115 @@ GSL_PREFIX="$(brew --prefix gsl)"
 
 [ -f "$SRC/ko.h" ] || { echo "koral_lite not found at $SRC" >&2; exit 1; }
 
-echo "== copying sources"
-rm -rf "$BUILD"
-mkdir -p "$BUILD/src"
-cp "$SRC"/*.c "$SRC"/*.h "$BUILD/src/"
-cp -R "$SRC/PROBLEMS" "$BUILD/src/PROBLEMS"
-
-echo "== patching PROBLEM -> 147 (PUFFY)"
-sed -i '' 's/^#define PROBLEM .*/#define PROBLEM 147/' "$BUILD/src/problem.h"
-grep -q "^#define PROBLEM 147" "$BUILD/src/problem.h"
-
-cp "$ROOT"/oracle/harness_*.c "$BUILD/src/"
-
-echo "== compiling (clang, serial, GSL only)"
-cd "$BUILD/src"
 OBJS="mpi u2prad magn postproc fileop misc physics finite problem metric relele rad opacities u2p u2p_ff frames p2u nonthermal"
 CFLAGS="-O2 -fcommon -w -I$GSL_PREFIX/include"
-for o in $OBJS; do
-  cc $CFLAGS -c "$o.c" -o "$o.o" &
-done
-wait
+
+# prepare_variant <dir> <problem-number>
+prepare_variant() {
+  local dir="$1" prob="$2"
+  echo "== [$dir] copying sources (PROBLEM $prob)"
+  rm -rf "$BUILD/$dir"
+  mkdir -p "$BUILD/$dir/src"
+  cp "$SRC"/*.c "$SRC"/*.h "$BUILD/$dir/src/"
+  cp -R "$SRC/PROBLEMS" "$BUILD/$dir/src/PROBLEMS"
+  cp -R "$ROOT/oracle/problems/"* "$BUILD/$dir/src/PROBLEMS/"
+
+  # register the koral-zig test problems in problem.h
+  python3 - "$BUILD/$dir/src/problem.h" <<'EOF'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+block = """
+#if(PROBLEM==200)
+#define PR_DEFINE "PROBLEMS/ZIGSOD/define.h"
+#define PR_BC "PROBLEMS/ZIGSOD/bc.c"
+#define PR_INIT "PROBLEMS/ZIGSOD/init.c"
+#endif
+
+#if(PROBLEM==201)
+#define PR_DEFINE "PROBLEMS/ZIGOT/define.h"
+#define PR_BC "PROBLEMS/ZIGOT/bc.c"
+#define PR_INIT "PROBLEMS/ZIGOT/init.c"
+#endif
+
+#if(PROBLEM==202)
+#define PR_DEFINE "PROBLEMS/ZIGMHDTUBE/define.h"
+#define PR_BC "PROBLEMS/ZIGMHDTUBE/bc.c"
+#define PR_INIT "PROBLEMS/ZIGMHDTUBE/init.c"
+#endif
+
+"""
+anchor = "/*********************/\n//including problem specific definitions from PROBLEMS/XXX/define.h"
+assert anchor in text, "problem.h anchor not found"
+open(path, "w").write(text.replace(anchor, block + anchor))
+EOF
+
+  sed -i '' "s/^#define PROBLEM .*/#define PROBLEM $prob/" "$BUILD/$dir/src/problem.h"
+  grep -q "^#define PROBLEM $prob" "$BUILD/$dir/src/problem.h"
+}
+
+compile_objs() {
+  local dir="$1"
+  echo "== [$dir] compiling (clang, serial, GSL only)"
+  cd "$BUILD/$dir/src"
+  for o in $OBJS; do
+    cc $CFLAGS -c "$o.c" -o "$o.o" &
+  done
+  wait
+}
 
 build_harness() {
-  local name="$1"
+  local dir="$1" name="$2"
+  cp "$ROOT/oracle/$name.c" "$BUILD/$dir/src/"
+  cd "$BUILD/$dir/src"
   cc $CFLAGS -c "$name.c" -o "$name.o"
   cc -o "$name" "$name.o" $(for o in $OBJS; do echo "$o.o"; done) \
      -L"$GSL_PREFIX/lib" -lgsl -lgslcblas -lm
 }
 
-echo "== building harnesses"
-build_harness harness_metric
-build_harness harness_state
-build_harness harness_flux
+# ---- PUFFY (147): metric/state/flux function goldens -----------------------
+prepare_variant puffy 147
+compile_objs puffy
+build_harness puffy harness_metric
+build_harness puffy harness_state
+build_harness puffy harness_flux
 
-echo "== running harness_metric"
-mkdir -p "$ROOT/tests/golden/metric"
+echo "== [puffy] running harnesses"
+mkdir -p "$ROOT/tests/golden/metric" "$ROOT/tests/golden/state" "$ROOT/tests/golden/flux"
+cd "$BUILD/puffy/src"
 ./harness_metric "$ROOT/tests/golden/metric"
-
-echo "== running harness_state"
-mkdir -p "$ROOT/tests/golden/state"
 ./harness_state "$ROOT/tests/golden/state"
-
-echo "== running harness_flux"
-mkdir -p "$ROOT/tests/golden/flux"
 ./harness_flux "$ROOT/tests/golden/flux"
+
+# ---- step-test variants -----------------------------------------------------
+mkdir -p "$ROOT/tests/golden/step"
+
+prepare_variant zigsod 200
+compile_objs zigsod
+build_harness zigsod harness_step
+cd "$BUILD/zigsod/src"
+./harness_step "$ROOT/tests/golden/step" sod64.kstp 10
+
+prepare_variant zigot 201
+compile_objs zigot
+build_harness zigot harness_step
+cd "$BUILD/zigot/src"
+./harness_step "$ROOT/tests/golden/step" ot32.kstp 10
+mv "$ROOT/tests/golden/step/ct.kgld" "$ROOT/tests/golden/flux/ct.kgld" 2>/dev/null || true
+mv "$ROOT/tests/golden/step/bfroma.kgld" "$ROOT/tests/golden/flux/bfroma.kgld" 2>/dev/null || true
+
+prepare_variant zigmhdtube 202
+compile_objs zigmhdtube
+build_harness zigmhdtube harness_step
+cd "$BUILD/zigmhdtube/src"
+./harness_step "$ROOT/tests/golden/step" mhdtube64.kstp 10
 
 echo "== writing manifest"
 SHA="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 cat > "$ROOT/tests/golden/manifest.json" <<EOF
 {
   "koral_lite_sha": "$SHA",
-  "problem": 147,
+  "problem": [147, 200, 201, 202],
   "compiler": "$(cc --version | head -1)",
   "generated": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "files": {
@@ -83,7 +147,12 @@ cat > "$ROOT/tests/golden/manifest.json" <<EOF
     "state/floors.kgld": "geom23 pp13 -> ret pp13 (check_floors_mhd, DRIFTFRAME)",
     "flux/recon.kgld": "u5 dx5 param theta -> ul ur (avg2point, INT_ORDER=2 base)",
     "flux/wavespeed.kgld": "geom23 pp13 -> ahd xl,xr,yl,yr (gas wavespeeds)",
-    "flux/fluxprime.kgld": "geom23(face) idim pp13 -> ff13 (f_flux_prime, Rijvisc=0)"
+    "flux/fluxprime.kgld": "geom23(face) idim pp13 -> ff13 (f_flux_prime, Rijvisc=0)",
+    "flux/ct.kgld": "facedim ix iy fB1 fB2 fB3 -> fB1' fB2' fB3' (flux_ct, ZIGOT 32x32)",
+    "flux/bfroma.kgld": "ix iy A1 A2 A3 -> B1 B2 B3 (calc_BfromA overwrite, ZIGOT periodic)",
+    "step/sod64.kstp": "ZIGSOD (200): 64x1 SR Sod, MINK PPM RK2IMEX LAXF, 10 steps",
+    "step/ot32.kstp": "ZIGOT (201): 32x32 SR Orszag-Tang, periodic, VECPOTGIVEN, 10 steps",
+    "step/mhdtube64.kstp": "ZIGMHDTUBE (202): 64x1 Balsara-1 (Gamma=2), 10 steps"
   }
 }
 EOF

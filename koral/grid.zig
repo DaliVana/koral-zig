@@ -80,15 +80,18 @@ pub const Grid = struct {
     }
 
     /// Cell-center internal coordinate. Signed index: ghosts are negative /
-    /// ≥ n (C: get_x(ix,0) = MINX + (ix+0.5)*dx, valid for ghosts too).
+    /// ≥ n. Computed exactly as C does (set_grid, finite.c:1930):
+    /// x(i) = ½(xb(i) + xb(i+1)) — for irrational bounds this differs from
+    /// min + (i+½)dx by an ulp, and everything downstream (metric cache,
+    /// sweeps) must see C's bits.
     pub fn xc(g: Grid, ix: i64) f64 {
-        return g.minx + (@as(f64, @floatFromInt(ix)) + 0.5) * g.dx;
+        return 0.5 * (g.xl(ix) + g.xl(ix + 1));
     }
     pub fn yc(g: Grid, iy: i64) f64 {
-        return g.miny + (@as(f64, @floatFromInt(iy)) + 0.5) * g.dy;
+        return 0.5 * (g.yl(iy) + g.yl(iy + 1));
     }
     pub fn zc(g: Grid, iz: i64) f64 {
-        return g.minz + (@as(f64, @floatFromInt(iz)) + 0.5) * g.dz;
+        return 0.5 * (g.zl(iz) + g.zl(iz + 1));
     }
 
     /// Left-face internal coordinate of cell ix (C: get_xb).
@@ -101,6 +104,20 @@ pub const Grid = struct {
     pub fn zl(g: Grid, iz: i64) f64 {
         return g.minz + @as(f64, @floatFromInt(iz)) * g.dz;
     }
+
+    /// Cell size as C computes it — get_size_x(i,dim) = xb(i+1) − xb(i)
+    /// (finite.c:2457). For irrational bounds this can differ from the
+    /// nominal spacing by an ulp *per cell*, and the C evolution uses this
+    /// per-cell value everywhere, so step-level diffing requires it.
+    pub fn size(g: Grid, i: i64, dim: usize) f64 {
+        return switch (dim) {
+            0 => g.xl(i + 1) - g.xl(i),
+            1 => g.yl(i + 1) - g.yl(i),
+            2 => g.zl(i + 1) - g.zl(i),
+            else => unreachable,
+        };
+    }
+
 };
 
 //

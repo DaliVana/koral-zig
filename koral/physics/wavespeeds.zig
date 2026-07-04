@@ -22,7 +22,7 @@ pub fn lrCore(
     ucon: [4]f64,
     GG: *const [4][5]f64,
     wspeed2: f64,
-    comptime dims: [3]bool,
+    dims: [3]bool,
 ) [6]f64 {
     var aret: [6]f64 = @splat(0);
 
@@ -32,7 +32,7 @@ pub fn lrCore(
     const bu = relele.dot(bcov, ucon);
     const bu2 = bu * bu;
 
-    inline for (0..3) |dim| {
+    for (0..3) |dim| {
         if (dims[dim]) {
             var acov: [4]f64 = @splat(0);
             acov[dim + 1] = 1;
@@ -85,7 +85,7 @@ pub fn gasWavespeedsLr(
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
     gamma: f64,
-    comptime dims: [3]bool,
+    dims: [3]bool,
 ) relele.Error![6]f64 {
     const L = layout.VarLayout(cfg);
 
@@ -109,7 +109,7 @@ pub fn gasWavespeedsLr(
     var a = lrCore(u.con, &geom.GG, vtot2, dims);
 
     // zero 'co-going' velocities (physics.c:602-607)
-    inline for (0..3) |dim| {
+    for (0..3) |dim| {
         if (a[2 * dim] > 0.0) a[2 * dim] = 0.0;
         if (a[2 * dim + 1] < 0.0) a[2 * dim + 1] = 0.0;
     }

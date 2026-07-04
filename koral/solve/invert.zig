@@ -39,6 +39,11 @@ pub const FloorParams = struct {
     b2uuratiomax: f64 = 100.0,
     gammamaxhd: f64 = 100.0,
 
+    /// The bare choices.h defaults (what a define.h without floor overrides
+    /// gets) — used by the M5/M6 oracle problems, whose define.h sets only
+    /// B2RHOFLOORFRAME DRIFTFRAME to match our drift-frame implementation.
+    pub const cdefault = FloorParams{};
+
     /// PROBLEMS/PUFFY/define.h:112-135 (B2RHOFLOORFRAME = DRIFTFRAME).
     pub const puffy = FloorParams{
         .rhofloor = 1.0e-30,

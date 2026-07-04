@@ -55,6 +55,86 @@ pub fn readGolden(a: std.mem.Allocator, comptime relpath: []const u8, nin: usize
     return .{ .nrec = nrec, .nin = nin, .nout = nout, .data = data, .a = a };
 }
 
+/// A forced-dt step file (oracle/harness_step.c):
+/// "KSTP" u32 version, u32 nx,ny,nz,nv, u64 nrec, then per record
+/// {t, dt, u[ncell·nv], p[ncell·nv], flags[2·ncell]} — iv fastest, then
+/// ix, iy, iz; record 0 is the post-init state.
+pub const Kstp = struct {
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    nv: usize,
+    nrec: usize,
+    data: []f64,
+    a: std.mem.Allocator,
+
+    pub fn deinit(self: *Kstp) void {
+        self.a.free(self.data);
+    }
+
+    fn recLen(self: *const Kstp) usize {
+        const ncell = self.nx * self.ny * self.nz;
+        return 2 + 2 * ncell * self.nv + 2 * ncell;
+    }
+
+    pub const Record = struct {
+        t: f64,
+        dt: f64,
+        u: []const f64,
+        p: []const f64,
+        flags: []const f64,
+    };
+
+    pub fn rec(self: *const Kstp, i: usize) Record {
+        const ncell = self.nx * self.ny * self.nz;
+        const base = i * self.recLen();
+        const nu = ncell * self.nv;
+        return .{
+            .t = self.data[base],
+            .dt = self.data[base + 1],
+            .u = self.data[base + 2 .. base + 2 + nu],
+            .p = self.data[base + 2 + nu .. base + 2 + 2 * nu],
+            .flags = self.data[base + 2 + 2 * nu .. base + self.recLen()],
+        };
+    }
+
+    /// flat index of (iv, ix, iy, iz) within a u/p slice
+    pub fn idx(self: *const Kstp, iv: usize, ix: usize, iy: usize, iz: usize) usize {
+        return ((iz * self.ny + iy) * self.nx + ix) * self.nv + iv;
+    }
+};
+
+pub fn readKstp(a: std.mem.Allocator, comptime relpath: []const u8) !Kstp {
+    const path = build_options.golden_dir ++ "/" ++ relpath;
+    const raw = std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1 << 26)) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("golden file missing: {s} (run tools/gen_golden.sh)\n", .{path});
+            return error.SkipZigTest;
+        },
+        else => return err,
+    };
+    defer a.free(raw);
+
+    if (raw.len < 32 or !std.mem.eql(u8, raw[0..4], "KSTP")) return error.BadGoldenFile;
+    if (std.mem.readInt(u32, raw[4..8], .little) != 1) return error.BadGoldenVersion;
+    var k = Kstp{
+        .nx = std.mem.readInt(u32, raw[8..12], .little),
+        .ny = std.mem.readInt(u32, raw[12..16], .little),
+        .nz = std.mem.readInt(u32, raw[16..20], .little),
+        .nv = std.mem.readInt(u32, raw[20..24], .little),
+        .nrec = @intCast(std.mem.readInt(u64, raw[24..32], .little)),
+        .data = undefined,
+        .a = a,
+    };
+    const nvals = k.nrec * k.recLen();
+    if (raw.len != 32 + nvals * 8) return error.BadGoldenFile;
+    k.data = try a.alloc(f64, nvals);
+    for (0..nvals) |i| {
+        k.data[i] = @bitCast(std.mem.readInt(u64, raw[32 + i * 8 ..][0..8], .little));
+    }
+    return k;
+}
+
 /// Accumulates the worst normalized deviation per quantity class, then
 /// asserts a class-level bound — a failure reports the observed maximum
 /// instead of dying on the first element.

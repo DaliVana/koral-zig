@@ -69,6 +69,13 @@ pub const riemann = struct {
     pub const laxf = @import("flux/laxf.zig");
 };
 
+pub const sim = @import("sim.zig");
+pub const Sim = sim.Sim;
+
+pub const magn = struct {
+    pub const ct = @import("magn/ct.zig");
+};
+
 pub const comm = struct {
     pub const serial = @import("comm/serial.zig");
     pub const Serial = serial.Serial;
@@ -102,10 +109,15 @@ test {
     _ = physics.flux;
     _ = recon;
     _ = riemann.laxf;
+    _ = sim;
+    _ = magn.ct;
     _ = @import("metric/tests.zig");
+    _ = @import("evolution_tests.zig");
+    _ = @import("mhd_evolution_tests.zig");
     _ = @import("state_tests.zig");
     _ = @import("flux_tests.zig");
     _ = @import("golden_test.zig");
     _ = @import("golden_state_test.zig");
     _ = @import("golden_flux_test.zig");
+    _ = @import("golden_step_test.zig");
 }

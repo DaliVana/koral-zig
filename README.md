@@ -46,6 +46,27 @@ Christoffels) gate against C at 1e-8 — that spread is C's, not ours.
 Consequence for later milestones: near-axis step-comparison budgets on the
 PUFFY grid cannot be tighter than ~1e-8 for θ-sensitive quantities.
 
+### Forced-dt step tests (M5+)
+
+`tests/golden/step/*.kstp` hold 10-step trajectories of tiny problems run
+by the C oracle (`oracle/harness_step.c`, built with the koral-zig test
+problems `oracle/problems/ZIG{SOD,OT,MHDTUBE}` as PROBLEM 200/201/202).
+The Zig side loads C's post-init state bit-for-bit, forces C's recorded dt
+sequence, and diffs the full domain each step against a budget growing
+from 1e-13 (step 1) to 1e-10 (step 10); Zig's own CFL dt must match C's
+at 1e-12 and the ENTROPYFLAG/HDFIXUPFLAG cell flags exactly. Measured:
+sod64 4.4e-14, ot32 2.5e-14, mhdtube64 1.1e-14 after all 10 steps —
+30-1000× inside budget.
+
+Two C-fidelity notes worth remembering: MPI4CORNERS is force-defined by
+MAGNFIELD (choices.h:790) even in serial builds, so MHD configs sweep ±1
+ghost rows and fill 2D ghost corners while hydro configs skip corners; and
+serial periodic runs fill the 1-deep ghost corner *surfaces* by copying
+the adjacent domain row (finite.c:3213) rather than wrapping, so the
+corner-based divB is exactly preserved in the interior but approximate at
+the domain-edge seam (MPI runs exchange corners exactly). Both behaviors
+are transcribed and pinned by tests.
+
 ### Geometry-in-record goldens (M2+)
 
 State-level golden records (`tests/golden/state/`) embed the geometry the C
@@ -80,8 +101,21 @@ natural conserved scale.
       co-going clamps), f_flux_prime (cancellation-free energy row, M1
       radiative rows; Rijvisc lands in M12), LAXF/HLL face combination;
       goldens at 3e-16..4e-15
-- [ ] M5 — hydro evolution (op_explicit, RK2), Sod & Bondi
-- [ ] M6 — MHD + constrained transport
+- [x] M5 — hydro evolution: Sim(cfg) driver (koral/sim.zig) with the full
+      RK2IMEX stage arithmetic (problem.c:141-402, exact FP expression
+      shapes), op_explicit fused sweep, LAXF/HLL face combination, metric
+      source terms, wavespeed/CFL machinery, generic BCs (periodic/copy/
+      specific + C's 2D ghost-corner filling), u2p driver + neighbor-average
+      fixups, update_entropy; theory gates (uniform static, exact
+      flux telescoping, bitwise mirror symmetry for linear recon, Sod vs
+      exact SR Riemann solver, acoustic dispersion order 2, Bondi/Michel
+      stationarity in KS) + sod64 forced-dt step test vs C at 4e-14/10 steps
+- [x] M6 — MHD + constrained transport: Tóth flux-CT + calc_BfromA + corner
+      divB diagnostic (koral/magn/ct.zig); theory gates (B-from-A div-free
+      1e-16, OT interior divB 8e-15 over 200 steps, uniform-B static, CP
+      Alfvén phase order 2, Balsara-1 with exactly constant Bx); C goldens
+      flux_ct 1e-16, calc_BfromA bitwise, ot32/mhdtube64 forced-dt step
+      tests at 2e-14/10 steps
 - [ ] M7 — radiation M1 basics
 - [ ] M8 — opacities + four-force
 - [ ] M9 — implicit radiation–gas solver
