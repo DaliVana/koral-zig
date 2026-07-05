@@ -21,8 +21,9 @@
 //!    forced-dt step tests can gate at 1e-13.
 //!  * copyi_u (domain+ghosts, no corners) is replaced by full-array copies:
 //!    the slots that differ (ghost corners of stage buffers) are never read.
-//!  * op_implicit is a structural no-op until M9 (no RADIATION here);
-//!    do_correct (polar axis) is a no-op until M11.
+//!  * op_implicit (M9) is a structural no-op when opt.opac is null
+//!    (≡ SKIPRADSOURCE); do_correct → correct_polaraxis (M10) is enabled
+//!    by opt.correct_polaraxis (CORRECT_POLARAXIS, on for PUFFY in M11).
 //!  * upreexplicit/ppreexplicit copies (finite.c:644) are skipped — nothing
 //!    reads them before M12 (radviscosity / entropy mixing).
 
@@ -216,6 +217,12 @@ pub fn Sim(comptime cfg: config.Config) type {
             do_fixups: bool = true, // C: DOFIXUPS && DOU2PMHDFIXUPS
             do_u2prad_fixups: bool = false, // C: DOU2PRADFIXUPS (0 everywhere)
             do_radimp_fixups: bool = false, // C: DORADIMPFIXUPS (0 everywhere)
+            /// C: CORRECT_POLARAXIS (PUFFY define.h:107) — do_correct
+            /// overwrites the most-polar rows and u2p/implicit/fixups skip
+            /// them. Only meaningful on spherical-like coordinates.
+            correct_polaraxis: bool = false,
+            /// C: NCCORRECTPOLAR (PUFFY: 2).
+            nccorrectpolar: i64 = 2,
             bc_x: BcKind = .copy,
             bc_y: BcKind = .copy,
             bc_z: BcKind = .copy,
@@ -426,6 +433,16 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
         pub fn setEmf(self: *Self, comp: usize, ix: i64, iy: i64, iz: i64, v: f64) void {
             self.emf[comp - 1][self.emfIdx(ix, iy, iz)] = v;
+        }
+
+        /// C: is_cell_corrected_polaraxis (finite.c:6132) — within
+        /// NCCORRECTPOLAR of either θ-edge (no HALFTHETA; serial owns both
+        /// tiles). Note C does NOT check the coordinate system here — only
+        /// correct_polaraxis' overwrite does.
+        fn isCellCorrectedPolaraxis(self: *const Self, iy: i64) bool {
+            if (!self.opt.correct_polaraxis) return false;
+            return iy < self.opt.nccorrectpolar or
+                iy > self.nyi() - self.opt.nccorrectpolar - 1;
         }
 
         /// C: if_outsidegc — true for ghost *corner* cells (≥2 dims outside).
@@ -889,6 +906,26 @@ pub fn Sim(comptime cfg: config.Config) type {
                         self.setFlag(.entropy2, ix, iy, iz, 0);
 
                         const geom = self.cache.fillGeometry(ix, iy, iz);
+
+                        if (self.isCellCorrectedPolaraxis(iy)) {
+                            // C: u2p_solver_Bonly (u2p.c:57) — invert only B
+                            // (the rest is overwritten by do_correct); both
+                            // floor checks skipped (u2p.c:80-92); corrected/
+                            // fixups stay 0 so all flags read 0.
+                            if (comptime L.hasVar(.b1)) {
+                                const gdetu_inv = 1.0 / geom.gdet; // GDETIN == 1
+                                pp[L.index(.b1)] = uu[L.index(.b1)] * gdetu_inv;
+                                pp[L.index(.b2)] = uu[L.index(.b2)] * gdetu_inv;
+                                pp[L.index(.b3)] = uu[L.index(.b3)] * gdetu_inv;
+                            }
+                            self.p.store(ix, iy, iz, &pp);
+                            self.setFlag(.hd_fixup, ix, iy, iz, 0);
+                            if (comptime L.hasVar(.ee)) {
+                                self.setFlag(.rad_fixup, ix, iy, iz, 0);
+                            }
+                            continue;
+                        }
+
                         const res = invert.u2pMhd(cfg, uu, &pp, &geom, self.opt.gam, self.opt.floors);
                         if (res.entropy_used) self.setFlag(.entropy, ix, iy, iz, 1);
 
@@ -926,7 +963,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// Averages flagged cells from their non-flagged in-domain neighbors.
         /// U2PMHD never averages rho or the magnetic field (iv != RHO &&
         /// iv < B1); U2PRAD averages only the radiative block (EE..FZ).
-        fn cellFixup(self: *Self, comptime which: Flag) Error!void {
+        pub fn cellFixup(self: *Self, comptime which: Flag) Error!void {
             const enabled = switch (which) {
                 // C: DOFIXUPS && DOU2PMHDFIXUPS / DOU2PRADFIXUPS / DORADIMPFIXUPS
                 .hd_fixup => self.opt.do_fixups,
@@ -950,6 +987,8 @@ pub fn Sim(comptime cfg: config.Config) type {
                 while (iy < ny) : (iy += 1) {
                     var ix: i64 = 0;
                     while (ix < nx) : (ix += 1) {
+                        // C: "do not correct if overwritten later on"
+                        if (self.isCellCorrectedPolaraxis(iy)) continue;
                         if (self.getFlag(which, ix, iy, iz) == 0) continue;
 
                         var ppn: [6][NV]f64 = undefined;
@@ -1370,7 +1409,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// operator: per-cell solve_implicit_lab, RADIMPFIXUPFLAG, then
         /// cell_fixup(FIXUP_RADIMP). Structural no-op without radiation or
         /// when opt.opac is null (≡ SKIPRADSOURCE).
-        fn opImplicit(self: *Self, t: f64, dtin: f64) Error!void {
+        pub fn opImplicit(self: *Self, t: f64, dtin: f64) Error!void {
             _ = t;
             if (comptime !L.hasVar(.ee)) return;
             const opp = &(self.opt.opac orelse return);
@@ -1382,6 +1421,11 @@ pub fn Sim(comptime cfg: config.Config) type {
                 while (iy < self.nyi()) : (iy += 1) {
                     var ix: i64 = 0;
                     while (ix < self.nxi()) : (ix += 1) {
+                        // C: finite.c:1427 — polar-corrected cells skip the
+                        // implicit entirely (is_cell_active ≡ 1 and PUFFY
+                        // defines no SKIPIMPLICIT_* hooks)
+                        if (self.isCellCorrectedPolaraxis(iy)) continue;
+
                         var uu: [NV]f64 = undefined;
                         var pp: [NV]f64 = undefined;
                         self.u.load(ix, iy, iz, &uu);
@@ -1407,9 +1451,82 @@ pub fn Sim(comptime cfg: config.Config) type {
             try self.cellFixup(.radimp_fixup);
         }
 
-        /// M11: polar-axis correction (CORRECT_POLARAXIS). No-op until then.
-        fn doCorrect(self: *Self) void {
-            _ = self;
+        /// C: do_correct (finite.c:594) — CORRECT_POLARAXIS only; the 3D /
+        /// smoothing / NS-surface variants are not PUFFY machinery.
+        pub fn doCorrect(self: *Self) Error!void {
+            if (self.opt.correct_polaraxis) try self.correctPolaraxis();
+        }
+
+        /// C: correct_polaraxis (finite.c:5525) — the NCCORRECTPOLAR
+        /// most-polar rows are not evolved but overwritten per (ix,iz)
+        /// column from row nc: scalars and in-row velocities copied, the
+        /// θ-components scaled by |θ−θ_axis|/|θ_src−θ_axis| (internal x2),
+        /// then p2u at the target geometry rewrites all conserveds. B is
+        /// untouched: PUFFY does not define CORRECTMAGNFIELD. C only acts
+        /// on spherical-like MYCOORDS.
+        fn correctPolaraxis(self: *Self) Error!void {
+            if (comptime cfg.coords == .mink) return;
+            const g = &self.grid;
+            const nc = self.opt.nccorrectpolar;
+            const ny = self.nyi();
+
+            var iz: i64 = 0;
+            while (iz < self.nzi()) : (iz += 1) {
+                var ix: i64 = 0;
+                while (ix < self.nxi()) : (ix += 1) {
+                    // upper axis
+                    {
+                        const thaxis = g.yl(0);
+                        var ic: i64 = 0;
+                        while (ic < nc) : (ic += 1) {
+                            const iy = ic;
+                            const iysrc = nc;
+                            const th = g.yc(iy);
+                            const thsrc = g.yc(iysrc);
+                            const fac = @abs((th - thaxis) / (thsrc - thaxis));
+                            try self.polarOverwriteCell(ix, iy, iz, iysrc, fac);
+                        }
+                    }
+                    // lower axis (no HALFTHETA)
+                    {
+                        const thaxis = g.yl(ny);
+                        var ic: i64 = 0;
+                        while (ic < nc) : (ic += 1) {
+                            const iy = ny - 1 - ic;
+                            const iysrc = ny - 1 - nc;
+                            const th = g.yc(iy);
+                            const thsrc = g.yc(iysrc);
+                            const fac = @abs((th - thaxis) / (thsrc - thaxis));
+                            try self.polarOverwriteCell(ix, iy, iz, iysrc, fac);
+                        }
+                    }
+                }
+            }
+        }
+
+        fn polarOverwriteCell(self: *Self, ix: i64, iy: i64, iz: i64, iysrc: i64, fac: f64) Error!void {
+            var pp: [NV]f64 = undefined;
+            var pps: [NV]f64 = undefined;
+            self.p.load(ix, iy, iz, &pp);
+            self.p.load(ix, iysrc, iz, &pps);
+
+            pp[L.index(.rho)] = pps[L.index(.rho)];
+            pp[L.index(.uu)] = pps[L.index(.uu)];
+            pp[L.index(.entr)] = pps[L.index(.entr)];
+            pp[L.index(.vx)] = pps[L.index(.vx)];
+            pp[L.index(.vz)] = pps[L.index(.vz)];
+            pp[L.index(.vy)] = fac * pps[L.index(.vy)];
+            if (comptime L.hasVar(.ee)) {
+                pp[L.index(.ee)] = pps[L.index(.ee)];
+                pp[L.index(.fx)] = pps[L.index(.fx)];
+                pp[L.index(.fz)] = pps[L.index(.fz)];
+                pp[L.index(.fy)] = fac * pps[L.index(.fy)];
+            }
+
+            const geom = self.cache.fillGeometry(ix, iy, iz);
+            const uu = try p2u_mod.p2u(cfg, pp, &geom, self.opt.gam);
+            self.p.store(ix, iy, iz, &pp);
+            self.u.store(ix, iy, iz, &uu);
         }
 
         // ---- one full RK2IMEX step (problem.c:141-402) ----------------------------
@@ -1444,7 +1561,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             // ---- 1st explicit ----
             copyFull(&self.ut1, &self.u);
             try self.calcU2p();
-            self.doCorrect();
+            try self.doCorrect();
             try self.setBc(t, false);
             try self.opExplicit(t, dt); // F(U(1))
             // apply_dynamo (M12), op_intermediate (electrons) — no-ops
@@ -1458,7 +1575,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             copyFull(&self.uforget, &self.u);
             try self.calcU2p();
             copyFull(&self.ptm1, &self.p);
-            self.doCorrect();
+            try self.doCorrect();
             try self.opImplicit(t, gam_imex * dt); // U(2)
             copyFull(&self.ppostimplicit, &self.p);
             self.stageDeriv(&self.drt2, &self.u, &self.uforget, dt * gam_imex);
@@ -1466,7 +1583,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             // ---- 2nd explicit ----
             copyFull(&self.ut2, &self.u);
             try self.calcU2p();
-            self.doCorrect();
+            try self.doCorrect();
             try self.setBc(t, false);
             try self.opExplicit(t, dt); // F(U(2))
             self.stageDeriv(&self.dut2, &self.u, &self.ut2, dt);
@@ -1478,7 +1595,7 @@ pub fn Sim(comptime cfg: config.Config) type {
 
             // ---- final inversion & bookkeeping ----
             try self.calcU2p();
-            self.doCorrect();
+            try self.doCorrect();
             try self.setBc(t, false);
 
             self.t = t + dt;

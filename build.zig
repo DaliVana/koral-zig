@@ -18,8 +18,13 @@ pub fn build(b: *std.Build) !void {
     });
     koral.addOptions("build_options", build_opts);
 
-    // Library unit tests: `zig build test`
-    const koral_tests = b.addTest(.{ .root_module = koral });
+    // Library unit tests: `zig build test` (-Dtest-filter=... to select)
+    const test_filters = b.option(
+        []const []const u8,
+        "test-filter",
+        "filter unit tests by name substring",
+    ) orelse &.{};
+    const koral_tests = b.addTest(.{ .root_module = koral, .filters = test_filters });
     const run_koral_tests = b.addRunArtifact(koral_tests);
     const test_step = b.step("test", "run koral library tests");
     test_step.dependOn(&run_koral_tests.step);

@@ -136,4 +136,8 @@ test {
     _ = @import("golden_opac_test.zig");
     _ = @import("golden_implicit_test.zig");
     _ = @import("golden_step_test.zig");
+    _ = @import("testing/tubes.zig");
+    _ = @import("polaraxis_tests.zig");
+    _ = @import("radstep_tests.zig");
+    _ = @import("radtube_tests.zig");
 }

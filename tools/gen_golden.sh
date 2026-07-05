@@ -11,6 +11,8 @@
 #   zigsod   (PROBLEM 200) -> harness_step               -> step/sod64.kstp
 #   zigot    (PROBLEM 201) -> harness_step               -> step/ot32.kstp + flux/ct.kgld + flux/bfroma.kgld
 #   zigmhdtube (PROBLEM 202) -> harness_step             -> step/mhdtube64.kstp
+#   zigradtube (PROBLEM 203) -> harness_step             -> step/radtube64.kstp
+#   zigradpulse (PROBLEM 204) -> harness_step            -> step/radpulse64.kstp
 #
 # Usage: tools/gen_golden.sh            (KORAL_LITE=<path> to override)
 
@@ -58,6 +60,20 @@ block = """
 #define PR_DEFINE "PROBLEMS/ZIGMHDTUBE/define.h"
 #define PR_BC "PROBLEMS/ZIGMHDTUBE/bc.c"
 #define PR_INIT "PROBLEMS/ZIGMHDTUBE/init.c"
+#endif
+
+#if(PROBLEM==203)
+#define PR_DEFINE "PROBLEMS/ZIGRADTUBE/define.h"
+#define PR_BC "PROBLEMS/ZIGRADTUBE/bc.c"
+#define PR_INIT "PROBLEMS/ZIGRADTUBE/init.c"
+#define PR_KAPPA "PROBLEMS/ZIGRADTUBE/kappa.c"
+#endif
+
+#if(PROBLEM==204)
+#define PR_DEFINE "PROBLEMS/ZIGRADPULSE/define.h"
+#define PR_BC "PROBLEMS/ZIGRADPULSE/bc.c"
+#define PR_INIT "PROBLEMS/ZIGRADPULSE/init.c"
+#define PR_KAPPA "PROBLEMS/ZIGRADPULSE/kappa.c"
 #endif
 
 """
@@ -132,12 +148,24 @@ build_harness zigmhdtube harness_step
 cd "$BUILD/zigmhdtube/src"
 ./harness_step "$ROOT/tests/golden/step" mhdtube64.kstp 10
 
+prepare_variant zigradtube 203
+compile_objs zigradtube
+build_harness zigradtube harness_step
+cd "$BUILD/zigradtube/src"
+./harness_step "$ROOT/tests/golden/step" radtube64.kstp 10
+
+prepare_variant zigradpulse 204
+compile_objs zigradpulse
+build_harness zigradpulse harness_step
+cd "$BUILD/zigradpulse/src"
+./harness_step "$ROOT/tests/golden/step" radpulse64.kstp 10
+
 echo "== writing manifest"
 SHA="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 cat > "$ROOT/tests/golden/manifest.json" <<EOF
 {
   "koral_lite_sha": "$SHA",
-  "problem": [147, 200, 201, 202],
+  "problem": [147, 200, 201, 202, 203, 204],
   "compiler": "$(cc --version | head -1)",
   "generated": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "files": {
@@ -166,7 +194,9 @@ cat > "$ROOT/tests/golden/manifest.json" <<EOF
     "flux/bfroma.kgld": "ix iy A1 A2 A3 -> B1 B2 B3 (calc_BfromA overwrite, ZIGOT periodic)",
     "step/sod64.kstp": "ZIGSOD (200): 64x1 SR Sod, MINK PPM RK2IMEX LAXF, 10 steps",
     "step/ot32.kstp": "ZIGOT (201): 32x32 SR Orszag-Tang, periodic, VECPOTGIVEN, 10 steps",
-    "step/mhdtube64.kstp": "ZIGMHDTUBE (202): 64x1 Balsara-1 (Gamma=2), 10 steps"
+    "step/mhdtube64.kstp": "ZIGMHDTUBE (202): 64x1 Balsara-1 (Gamma=2), 10 steps",
+    "step/radtube64.kstp": "ZIGRADTUBE (203): 64x1 Farris tube 2, grey kappa=0.2rho, PUFFY implicit block, Dirichlet BC, 10 steps (4 flags)",
+    "step/radpulse64.kstp": "ZIGRADPULSE (204): 64x1 optically thick LTE pulse, grey kappa=10rho, 10 steps (4 flags)"
   }
 }
 EOF

@@ -1,8 +1,8 @@
 {
   "koral_lite_sha": "87d73e5",
-  "problem": [147, 200, 201, 202],
+  "problem": [147, 200, 201, 202, 203, 204],
   "compiler": "Apple clang version 21.0.0 (clang-2100.0.123.102)",
-  "generated": "2026-07-04T17:01:36Z",
+  "generated": "2026-07-04T20:56:41Z",
   "files": {
     "metric/metric_points.kgld": "coords,x0..x3 -> gg16 GG16 gdet dlgdet3 Kr64 gttpert",
     "metric/coco_dxdx.kgld": "co1,co2,x0..x3 -> xout4 dxdx16",
@@ -29,6 +29,8 @@
     "flux/bfroma.kgld": "ix iy A1 A2 A3 -> B1 B2 B3 (calc_BfromA overwrite, ZIGOT periodic)",
     "step/sod64.kstp": "ZIGSOD (200): 64x1 SR Sod, MINK PPM RK2IMEX LAXF, 10 steps",
     "step/ot32.kstp": "ZIGOT (201): 32x32 SR Orszag-Tang, periodic, VECPOTGIVEN, 10 steps",
-    "step/mhdtube64.kstp": "ZIGMHDTUBE (202): 64x1 Balsara-1 (Gamma=2), 10 steps"
+    "step/mhdtube64.kstp": "ZIGMHDTUBE (202): 64x1 Balsara-1 (Gamma=2), 10 steps",
+    "step/radtube64.kstp": "ZIGRADTUBE (203): 64x1 Farris tube 2, grey kappa=0.2rho, PUFFY implicit block, Dirichlet BC, 10 steps (4 flags)",
+    "step/radpulse64.kstp": "ZIGRADPULSE (204): 64x1 optically thick LTE pulse, grey kappa=10rho, 10 steps (4 flags)"
   }
 }

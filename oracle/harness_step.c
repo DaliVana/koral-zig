@@ -9,9 +9,10 @@
  *
  * KSTP format (little-endian):
  *   "KSTP" u32 version=1, u32 nx,ny,nz,nv, u64 nrec(=nsteps+1)
- *   per record: f64 t, f64 dt, u[nx*ny*nz*nv], p[same], flags[2*ncell]
- *   (iv fastest, then ix, iy, iz; flags = ENTROPYFLAG, HDFIXUPFLAG as f64;
- *    record 0 is the post-init state with dt=0)
+ *   per record: f64 t, f64 dt, u[nx*ny*nz*nv], p[same], flags[nf*ncell]
+ *   (iv fastest, then ix, iy, iz; flags = ENTROPYFLAG, HDFIXUPFLAG — plus
+ *    RADFIXUPFLAG, RADIMPFIXUPFLAG for RADIATION builds (nf = 4, else 2) —
+ *    as f64; record 0 is the post-init state with dt=0)
  *
  * PROBLEM==201 additionally emits (after the steps):
  *   ct.kgld     (6/3)  facedim,ix,iy,fB1,fB2,fB3 -> fB1',fB2',fB3'
@@ -24,6 +25,7 @@
 
 #include "ko.h"
 #include <stdint.h>
+#include <gsl/gsl_errno.h>
 
 static FILE *open_kgld(const char *dir, const char *name,
                        uint64_t nrec, uint32_t nin, uint32_t nout)
@@ -73,6 +75,10 @@ static void dump_step(FILE *f, ldouble t, ldouble dtused)
       {
         v = (double)get_cflag(ENTROPYFLAG, ix, iy, iz); fwrite(&v, 8, 1, f);
         v = (double)get_cflag(HDFIXUPFLAG, ix, iy, iz); fwrite(&v, 8, 1, f);
+#ifdef RADIATION
+        v = (double)get_cflag(RADFIXUPFLAG, ix, iy, iz); fwrite(&v, 8, 1, f);
+        v = (double)get_cflag(RADIMPFIXUPFLAG, ix, iy, iz); fwrite(&v, 8, 1, f);
+#endif
       }
 }
 
@@ -82,6 +88,13 @@ int main(int argc, char **argv)
   const char *name = argc > 2 ? argv[2] : "step.kstp";
   int nsteps = argc > 3 ? atoi(argv[3]) : 10;
   int ii, ix, iy, iz, iv;
+
+#ifdef RADIATION
+  /* Zig's LU mirrors GSL-with-handler-off (silent inf on exactly singular
+   * FD Jacobians, rejected by the damping ladder); production C would
+   * abort here. Same call as oracle/harness_implicit.c. */
+  gsl_set_error_handler_off();
+#endif
 
   global_time = 0.;
   init_pointers();

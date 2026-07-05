@@ -166,9 +166,11 @@ pub fn calcOpacitiesFromState(c: *const thermo.Consts, ch: Channels, s: StateIn)
     };
 }
 
+pub const KappaResult = struct { kappa: f64, opac: Opac };
+
 /// C: calc_kappa_from_state (opacities.c:37) — the default (no PR_KAPPA)
 /// path plus the totEmissivity bookkeeping. Returns kappa = kappaGasAbs.
-pub fn kappaFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) struct { kappa: f64, opac: Opac } {
+pub fn kappaFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) KappaResult {
     const b = c.sigma_rad_over_pi * s.te * s.te * s.te * s.te;
     var opac = calcOpacitiesFromState(c, ch, s);
     // kappaGasAbs >= 0 always holds here, so totEmissivity uses it and no

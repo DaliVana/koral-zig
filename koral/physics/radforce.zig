@@ -30,10 +30,35 @@ const opacities = @import("opacities.zig");
 const units_mod = @import("../units.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
+/// C: PR_KAPPA — the per-problem absorption-opacity hook textually included
+/// into calc_kappa_from_state (opacities.c:72). `.default` is the no-PR_KAPPA
+/// branch (calc_opacities_from_state). `.grey` mirrors a problem kappa.c of
+/// the shape `kappa = COEFF*rho;` that also assigns all six opac slots (the
+/// C wrapper otherwise reads UNINITIALIZED stack in its `kappaGasAbs >= 0.`
+/// broadcast test — LRTORUS/kappa.c really does that; our oracle problems
+/// set the slots explicitly to stay deterministic).
+pub const KappaMode = union(enum) {
+    default,
+    /// κ = coeff·ρ (both in geometrical units), all slots equal,
+    /// totEmissivity = κ·4πB.
+    grey: f64,
+};
+
+/// C: PR_KAPPAES — the scattering hook (opacities.c:114/138). Without it C
+/// returns 0; PUFFY's kappaes.c is the Klein–Nishina-corrected Thomson value.
+pub const KappaesMode = union(enum) {
+    none,
+    puffy,
+    /// κ_es = coeff·ρ (both in geometrical units).
+    grey: f64,
+};
+
 /// Everything opacity/four-force evaluation needs besides the state.
 pub const Params = struct {
     c: thermo.Consts,
     ch: opacities.Channels = .{},
+    kappa: KappaMode = .default,
+    kappaes: KappaesMode = .puffy,
 
     pub fn init(u: units_mod.Units, comp: thermo.Composition) Params {
         return .{ .c = thermo.Consts.init(u, comp) };
@@ -43,6 +68,28 @@ pub const Params = struct {
     /// MU_GAS/MU_I/MU_E = 1/2/2 overrides, all channels on.
     pub fn puffy() Params {
         return init(units_mod.Units.init(10.0), thermo.Composition.puffy);
+    }
+
+    /// A grey test problem (radtube/radpulse): PR_KAPPA `kappa = kabs*rho`
+    /// (+ explicit opac-slot assignment) and PR_KAPPAES `return kes*rho`
+    /// (omitted entirely when kes == 0, like C problems without the file).
+    /// COMPTONIZATION is a per-problem define the grey test problems do NOT
+    /// set (unlike PUFFY), so the Compton term is off.
+    pub fn grey(u: units_mod.Units, comp: thermo.Composition, kabs: f64, kes: f64) Params {
+        return .{
+            .c = thermo.Consts.init(u, comp),
+            .ch = .{ .comptonization = false },
+            .kappa = .{ .grey = kabs },
+            .kappaes = if (kes == 0.0) .none else .{ .grey = kes },
+        };
+    }
+
+    fn kappaesAt(self: *const Params, rho: f64, trad: f64) f64 {
+        return switch (self.kappaes) {
+            .none => 0.0,
+            .puffy => opacities.kappaEsPuffy(&self.c, self.ch, rho, trad),
+            .grey => |k| k * rho,
+        };
     }
 };
 
@@ -116,17 +163,38 @@ pub fn fillRadState(
     const tradbb = c.lteTfromE(ehat);
     const trad = tradbb; // no EVOLVEPHOTONNUMBER
 
-    const kappaes = opacities.kappaEsPuffy(c, p.ch, rho, trad);
+    const kappaes = p.kappaesAt(rho, trad);
 
-    const kr = opacities.kappaFromState(c, p.ch, .{
-        .rho = rho,
-        .tgas = temps.tgas,
-        .te = temps.te,
-        .trad = trad,
-        .tradbb = tradbb,
-        .ne = ne,
-        .bsq = bsq,
-    });
+    const kr = switch (p.kappa) {
+        .default => opacities.kappaFromState(c, p.ch, .{
+            .rho = rho,
+            .tgas = temps.tgas,
+            .te = temps.te,
+            .trad = trad,
+            .tradbb = tradbb,
+            .ne = ne,
+            .bsq = bsq,
+        }),
+        // PR_KAPPA grey: kappa = coeff·rho, all slots assigned by the
+        // problem snippet, totEmissivity = kappaGasAbs·4πB
+        // (opacities.c:80 with B = sigma_rad_over_pi·Te⁴).
+        .grey => |coeff| blk: {
+            const kap = coeff * rho;
+            const b = c.sigma_rad_over_pi * temps.te * temps.te * temps.te * temps.te;
+            break :blk opacities.KappaResult{
+                .kappa = kap,
+                .opac = .{
+                    .gas_abs = kap,
+                    .rad_abs = kap,
+                    .gas_num = kap,
+                    .rad_num = kap,
+                    .gas_ross = kap,
+                    .rad_ross = kap,
+                    .tot_emissivity = kap * c.fourpi * b,
+                },
+            };
+        },
+    };
 
     return .{
         .rho = rho,
@@ -245,7 +313,7 @@ pub fn calcKappaes(
     const L = layout.VarLayout(cfg);
     const temps = thermo.tempsFromUrho(&p.c, pp[L.index(.uu)], pp[L.index(.rho)], gam);
     const trad = temps.te;
-    return opacities.kappaEsPuffy(&p.c, p.ch, pp[L.index(.rho)], trad);
+    return p.kappaesAt(pp[L.index(.rho)], trad);
 }
 
 /// C: calc_chi (opacities.c:148) — κ + κ_es for the wavespeed τ-limiter.

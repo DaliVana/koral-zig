@@ -57,14 +57,17 @@ pub fn readGolden(a: std.mem.Allocator, comptime relpath: []const u8, nin: usize
 
 /// A forced-dt step file (oracle/harness_step.c):
 /// "KSTP" u32 version, u32 nx,ny,nz,nv, u64 nrec, then per record
-/// {t, dt, u[ncell·nv], p[ncell·nv], flags[2·ncell]} — iv fastest, then
-/// ix, iy, iz; record 0 is the post-init state.
+/// {t, dt, u[ncell·nv], p[ncell·nv], flags[nf·ncell]} — iv fastest, then
+/// ix, iy, iz; record 0 is the post-init state. nf = 2 (ENTROPYFLAG,
+/// HDFIXUPFLAG) or 4 (+ RADFIXUPFLAG, RADIMPFIXUPFLAG for RADIATION
+/// builds), inferred from the file length.
 pub const Kstp = struct {
     nx: usize,
     ny: usize,
     nz: usize,
     nv: usize,
     nrec: usize,
+    nflags: usize,
     data: []f64,
     a: std.mem.Allocator,
 
@@ -74,7 +77,7 @@ pub const Kstp = struct {
 
     fn recLen(self: *const Kstp) usize {
         const ncell = self.nx * self.ny * self.nz;
-        return 2 + 2 * ncell * self.nv + 2 * ncell;
+        return 2 + 2 * ncell * self.nv + self.nflags * ncell;
     }
 
     pub const Record = struct {
@@ -123,9 +126,18 @@ pub fn readKstp(a: std.mem.Allocator, comptime relpath: []const u8) !Kstp {
         .nz = std.mem.readInt(u32, raw[16..20], .little),
         .nv = std.mem.readInt(u32, raw[20..24], .little),
         .nrec = @intCast(std.mem.readInt(u64, raw[24..32], .little)),
+        .nflags = 0,
         .data = undefined,
         .a = a,
     };
+    // infer the flag count from the file length
+    {
+        const ncell = k.nx * k.ny * k.nz;
+        const per_rec = (raw.len - 32) / 8 / k.nrec;
+        if (per_rec < 2 + 2 * ncell * k.nv) return error.BadGoldenFile;
+        k.nflags = (per_rec - 2 - 2 * ncell * k.nv) / ncell;
+        if (k.nflags != 2 and k.nflags != 4) return error.BadGoldenFile;
+    }
     const nvals = k.nrec * k.recLen();
     if (raw.len != 32 + nvals * 8) return error.BadGoldenFile;
     k.data = try a.alloc(f64, nvals);

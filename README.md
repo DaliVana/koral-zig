@@ -54,9 +54,14 @@ problems `oracle/problems/ZIG{SOD,OT,MHDTUBE}` as PROBLEM 200/201/202).
 The Zig side loads C's post-init state bit-for-bit, forces C's recorded dt
 sequence, and diffs the full domain each step against a budget growing
 from 1e-13 (step 1) to 1e-10 (step 10); Zig's own CFL dt must match C's
-at 1e-12 and the ENTROPYFLAG/HDFIXUPFLAG cell flags exactly. Measured:
-sod64 4.4e-14, ot32 2.5e-14, mhdtube64 1.1e-14 after all 10 steps —
-30-1000× inside budget.
+within the same budget and the ENTROPYFLAG/HDFIXUPFLAG cell flags exactly.
+Measured: sod64 4.4e-14, ot32 2.5e-14, mhdtube64 1.1e-14 after all 10
+steps — 30-1000× inside budget. Radiative problems (M10: radtube64,
+radpulse64; 4 flag maps incl. RADFIXUPFLAG/RADIMPFIXUPFLAG) budget at
+2e-10 → 8e-7 instead: both sides' implicit Newton stops at RADIMPCONV =
+1e-10 residuals, so razor-edge iteration differences legitimately move
+converged cells at the ~1e-10 level (measured plateau ~2e-9; the
+LTE-consistent pulse stays at 2.9e-12).
 
 Two C-fidelity notes worth remembering: MPI4CORNERS is force-defined by
 MAGNFIELD (choices.h:790) even in serial builds, so MHD configs sweep ±1
@@ -160,7 +165,33 @@ natural conserved scale.
       PUFFY cells, ~10 decades of κΔt): success/failure agreement
       331/336, rung agreement 267/278, residual-verified primitives at
       6.8e-8 (gate 1e-6)
-- [ ] M10 — RK2IMEX + radiative shock tubes
+- [x] M10 — full radiative step pipeline: correct_polaraxis + the polar-cell
+      contract (u2p_solver_Bonly + floor skips in calc_u2p, op_implicit
+      skip, cell_fixup target skip — finite.c:5525/1427/5042, u2p.c:57),
+      PR_KAPPA/PR_KAPPAES problem-opacity hooks (grey modes; the C wrapper
+      reads uninitialized stack when a kappa.c leaves the opac slots unset —
+      our oracle problems assign them explicitly), test problems radtube/
+      radpulse (oracle/problems/ZIGRADTUBE 203, ZIGRADPULSE 204; per-tube
+      MASS makes KORAL's Kelvin-based LTE the papers' T = p/ρ convention,
+      koral/testing/tubes.zig). Theory gates: κ=0 ⇒ IMEX ≡ its explicit
+      RK2 at 1.2e-7 (bounded by RADIMPCONVREL = 1e-8 rel-change exits, not
+      bitwise — in C too), temporal order 2.04/2.07 on smooth relaxation,
+      L-stable stiff step at κρΔt = 1e4 (single ~9e-4 nonlinear crossing,
+      then monotone), thin pulse streams at 0.9979c (expect 0.99875),
+      thick scattering pulse diffuses at D = 1/(3χ) to 0.1%; the Farris/
+      Sądowski tube battery evolved to stationarity + dt/5 polish (the
+      IMEX fixed point carries an O(γ·CFL) splitting bias) and validated
+      against the stationary system itself: plateaus at 1e-5..2.7e-3,
+      analytic total-flux constancy 3.8e-3 (4a) / 4.7e-2 (3a, front ~2
+      cells), pointwise ∂ₓR^{xν} = −G^ν in the exchanging core at 0.32
+      (the dt/5 splitting-bias floor, resolution-independent; full battery
+      incl. tubes 1/2/4b + hi-res under -Dslow-tests — tube 3b (κ = 25)
+      excluded: its initial discontinuity carries κρΔx ≈ 40/cell and
+      collapses production C KORAL identically, verified with the C
+      oracle). C goldens: radtube64/radpulse64
+      forced-dt step tests (10 steps, 4 flag maps exact, budget 2e-10 →
+      8e-7; measured plateau ~2e-9 — implicit Newton threshold noise —
+      and 2.9e-12 for the LTE pulse)
 - [ ] M11 — PUFFY problem code (limotorus init, BCs, β normalization)
 - [ ] M12 — dynamo + radiative viscosity + Comptonization
 - [ ] M13 — full PUFFY
