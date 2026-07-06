@@ -192,6 +192,30 @@ natural conserved scale.
       forced-dt step tests (10 steps, 4 flag maps exact, budget 2e-10 →
       8e-7; measured plateau ~2e-9 — implicit Newton threshold noise —
       and 2.9e-12 for the LTE pulse)
-- [ ] M11 — PUFFY problem code (limotorus init, BCs, β normalization)
+- [x] M11 — PUFFY problem code: the limotorus initial conditions
+      (koral/problems/puffy.zig — tools.c's lamBL/rmidlam bisections at 5ε
+      and the ln f integral, with gsl_integration_qags replaced by
+      koral/math/quad.zig adaptive Gauss–Kronrod 21 at rtol 1e-12),
+      prepinit's atmosphere + LTE pressure-split quartic + prad_ff2lab +
+      BL→MKS2 + QUADLOOPS A_φ, init's ENTR/p2u, postinit's global
+      β = 1/20 normalization, and bc.c (XBCHI outflow with r²-rescaling +
+      no-inflow, XBCLO copy, polar reflection). Theory gates: GK21 vs a
+      test-local tanh-sinh at 1e-10, bisection residuals at the 5ε target,
+      the ℓ(λ) broken power law + an independent ω cross-formula, the
+      quartic residual ≤ 1e-11·P, the torus surface (inner edge pinned at
+      LT_RIN, polytropic ρ ∝ ε³ falloff), and on a reduced grid: max β ≡
+      MAXBETA to 1e-12, A-derived B div-free to 1e-12, the full bc.c
+      contract (polar sign-flip maps, XBCLO copy, XBCHI rescaling +
+      no-inflow); the hydro-only limotorus (Γ = Γ_LT = 4/3, its own
+      polytrope) is stationary — L1 ρ drift 8e-5 @ 40², order 2.13 with
+      resolution, exercising correct_polaraxis on a real spherical grid.
+      C keystone (oracle/harness_init.c → tests/golden/init, gzipped): the
+      full ko.c init sequence on the production 384×360 MKS2 grid, three
+      snapshots (A_φ, all 13 primitives post-BfromA, β-normalized B) cell
+      by cell over the domain + ghosts — torus ρ/u/Ê and their derived
+      fields inherit C's qags epsrel 1e-8 (gate 1e-6), confirmed by the
+      epsrel-1e-12 attribution variant collapsing the torus deviation; the
+      analytic atmosphere matches near machine precision (full cell-by-cell
+      + attribution under -Dslow-tests)
 - [ ] M12 — dynamo + radiative viscosity + Comptonization
 - [ ] M13 — full PUFFY

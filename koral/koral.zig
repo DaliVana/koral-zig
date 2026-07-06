@@ -35,6 +35,7 @@ pub const Geometry = geometry.Geometry;
 pub const math = struct {
     pub const dual = @import("math/dual.zig");
     pub const Dual3 = dual.Dual3;
+    pub const quad = @import("math/quad.zig");
 };
 
 pub const metric = struct {
@@ -79,6 +80,15 @@ pub const Sim = sim.Sim;
 
 pub const magn = struct {
     pub const ct = @import("magn/ct.zig");
+};
+
+pub const problems = struct {
+    pub const puffy = @import("problems/puffy.zig");
+};
+
+pub const testing = struct {
+    pub const golden = @import("testing/golden.zig");
+    pub const tubes = @import("testing/tubes.zig");
 };
 
 pub const comm = struct {
@@ -140,4 +150,8 @@ test {
     _ = @import("polaraxis_tests.zig");
     _ = @import("radstep_tests.zig");
     _ = @import("radtube_tests.zig");
+    _ = @import("math/quad.zig");
+    _ = @import("problems/puffy.zig");
+    _ = @import("puffy_tests.zig");
+    _ = @import("golden_puffy_test.zig");
 }

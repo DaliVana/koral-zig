@@ -154,6 +154,13 @@ pub fn tFromUrho(c: *const Consts, uint: f64, rho: f64, gamma: f64) f64 {
     return c.mugas_mp_over_kb * p / rho;
 }
 
+/// C: calc_PEQ_ufromTrho (physics.c:1912) — u from T and ρ
+/// (no CONSISTENTGAMMA).
+pub fn uFromTrho(c: *const Consts, t: f64, rho: f64, gamma: f64) f64 {
+    const p = c.kb_over_mugas_mp * rho * t;
+    return p / (gamma - 1.0);
+}
+
 pub const GasTemps = struct { tgas: f64, te: f64, ti: f64 };
 
 /// C: calc_PEQ_Teifrompp (physics.c:1869), single-temperature branch:

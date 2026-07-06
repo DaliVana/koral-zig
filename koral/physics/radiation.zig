@@ -18,6 +18,8 @@ const relele = @import("../relele.zig");
 const wavespeeds = @import("wavespeeds.zig");
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
+const frames = @import("../frames.zig");
+const invert_rad = @import("../solve/invert_rad.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 const four_third: f64 = 4.0 / 3.0;
@@ -93,6 +95,39 @@ pub fn calcFfEhat(
 ) relele.Error!f64 {
     const r = try calcFfRtt(cfg, pp, geom);
     return -r.rtt;
+}
+
+/// C: prad_ff2lab (frames.c:1890) — fluid-frame radiative primitives
+/// (Ê, û_r = 0 relative to gas) → lab-frame primitives in the same coords.
+/// Rij from the M1 closure on pp, ff→lab boost (the `_with_alpha` variant's
+/// α-correction is dead code: the copy the boost reads is taken before the
+/// scaling, so it reduces to the plain boost), then u2p_rad on gdetu·R^0_μ.
+/// The C caller ignores u2p_rad's return code; so do we. Modifies pp's
+/// EE..FZ slots in place; MHD slots pass through untouched.
+pub fn pradFf2Lab(
+    comptime cfg: config.Config,
+    pp: *[layout.VarLayout(cfg).count]f64,
+    geom: *const Geometry,
+    rp: invert_rad.RadParams,
+) relele.Error!void {
+    const L = layout.VarLayout(cfg);
+    var rij = try calcRij(cfg, pp.*, geom);
+    rij = try frames.boost22Ff2Lab(
+        rij,
+        .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
+        &geom.gg,
+        &geom.GG,
+    );
+    rij = relele.indices2221(rij, &geom.gg);
+
+    const gdetu = geom.gdet; // GDETIN == 1
+    var uu = [_]f64{0} ** L.count;
+    uu[L.index(.ee)] = gdetu * rij[0][0];
+    uu[L.index(.fx)] = gdetu * rij[0][1];
+    uu[L.index(.fy)] = gdetu * rij[0][2];
+    uu[L.index(.fz)] = gdetu * rij[0][3];
+
+    _ = invert_rad.u2pRad(cfg, uu, pp, geom, rp);
 }
 
 /// C: calc_rad_wavespeeds (rad.c:3598) — aval[0..6] are the unlimited

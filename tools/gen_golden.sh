@@ -7,7 +7,8 @@
 # harnesses, and runs them into tests/golden/.
 #
 # Variants:
-#   puffy    (PROBLEM 147) -> harness_metric/state/flux/rad/opac/implicit -> metric/ state/ flux/ rad/
+#   puffy    (PROBLEM 147) -> harness_metric/state/flux/rad/opac/implicit/init -> metric/ state/ flux/ rad/ init/
+#   puffyeps12 (PROBLEM 147, qags epsrel 1e-12) -> harness_init -> init/puffy_t0_eps12
 #   zigsod   (PROBLEM 200) -> harness_step               -> step/sod64.kstp
 #   zigot    (PROBLEM 201) -> harness_step               -> step/ot32.kstp + flux/ct.kgld + flux/bfroma.kgld
 #   zigmhdtube (PROBLEM 202) -> harness_step             -> step/mhdtube64.kstp
@@ -114,9 +115,10 @@ build_harness puffy harness_flux
 build_harness puffy harness_rad
 build_harness puffy harness_opac
 build_harness puffy harness_implicit
+build_harness puffy harness_init
 
 echo "== [puffy] running harnesses"
-mkdir -p "$ROOT/tests/golden/metric" "$ROOT/tests/golden/state" "$ROOT/tests/golden/flux" "$ROOT/tests/golden/rad"
+mkdir -p "$ROOT/tests/golden/metric" "$ROOT/tests/golden/state" "$ROOT/tests/golden/flux" "$ROOT/tests/golden/rad" "$ROOT/tests/golden/init"
 cd "$BUILD/puffy/src"
 ./harness_metric "$ROOT/tests/golden/metric"
 ./harness_state "$ROOT/tests/golden/state"
@@ -124,6 +126,31 @@ cd "$BUILD/puffy/src"
 ./harness_rad "$ROOT/tests/golden/rad"
 ./harness_opac "$ROOT/tests/golden/rad"
 ./harness_implicit "$ROOT/tests/golden/rad"
+
+# ---- PUFFY t=0 keystone (harness_init on the puffy build) -------------------
+echo "== [puffy] running harness_init (keystone t=0)"
+./harness_init "$ROOT/tests/golden/init"
+# the full-grid snapshots are large (~15 MB); gzip for the repo
+for kf in puffy_t0_A puffy_t0_p puffy_t0_pfinal; do
+  gzip -9 -f "$ROOT/tests/golden/init/$kf.kini"
+done
+
+# ---- PUFFY t=0 epsrel-1e-12 variant (isolates C's qags tolerance) ----------
+# same problem, but tools.c qags epsrel tightened 1e-8 -> 1e-12; only the
+# stride-4 domain snapshot is written (attribution, not a hard gate)
+prepare_variant puffyeps12 147
+sed -i '' 's/LT_RIN, rml, 0., 1\.e-8,/LT_RIN, rml, 0., 1.e-12,/' \
+  "$BUILD/puffyeps12/src/PROBLEMS/PUFFY/tools.c"
+grep -q "1.e-12, worksize" "$BUILD/puffyeps12/src/PROBLEMS/PUFFY/tools.c"
+compile_objs puffyeps12
+# compile harness_init with EPS12_VARIANT for this build
+cp "$ROOT/oracle/harness_init.c" "$BUILD/puffyeps12/src/"
+cd "$BUILD/puffyeps12/src"
+cc $CFLAGS -DEPS12_VARIANT -c harness_init.c -o harness_init.o
+cc -o harness_init harness_init.o $(for o in $OBJS; do echo "$o.o"; done) \
+   -L"$GSL_PREFIX/lib" -lgsl -lgslcblas -lm
+./harness_init "$ROOT/tests/golden/init"
+gzip -9 -f "$ROOT/tests/golden/init/puffy_t0_eps12.kini"
 
 # ---- step-test variants -----------------------------------------------------
 mkdir -p "$ROOT/tests/golden/step"
@@ -196,7 +223,11 @@ cat > "$ROOT/tests/golden/manifest.json" <<EOF
     "step/ot32.kstp": "ZIGOT (201): 32x32 SR Orszag-Tang, periodic, VECPOTGIVEN, 10 steps",
     "step/mhdtube64.kstp": "ZIGMHDTUBE (202): 64x1 Balsara-1 (Gamma=2), 10 steps",
     "step/radtube64.kstp": "ZIGRADTUBE (203): 64x1 Farris tube 2, grey kappa=0.2rho, PUFFY implicit block, Dirichlet BC, 10 steps (4 flags)",
-    "step/radpulse64.kstp": "ZIGRADPULSE (204): 64x1 optically thick LTE pulse, grey kappa=10rho, 10 steps (4 flags)"
+    "step/radpulse64.kstp": "ZIGRADPULSE (204): 64x1 optically thick LTE pulse, grey kappa=10rho, 10 steps (4 flags)",
+    "init/puffy_t0_A.kini.gz": "PUFFY (147) t=0 keystone snapshot 0: A_phi in B slots after set_bc, full 384x360 + ghosts",
+    "init/puffy_t0_p.kini.gz": "PUFFY (147) t=0 keystone snapshot 1: all 13 primitives after calc_BfromA + set_bc, full grid + ghosts",
+    "init/puffy_t0_pfinal.kini.gz": "PUFFY (147) t=0 keystone snapshot 2: beta-normalized B slots (domain scaled, ghosts stale)",
+    "init/puffy_t0_eps12.kini.gz": "PUFFY (147) t=0 with qags epsrel 1e-12: stride-4 domain, all 13 prims (quadrature attribution)"
   }
 }
 EOF

@@ -1,0 +1,751 @@
+//! The PUFFY problem (C: PROBLEMS/PUFFY, PROBLEM 147): 2D axisymmetric
+//! radiation-MHD limotorus around a 10 M☉ Schwarzschild hole in MKS2.
+//!
+//! This module transcribes the problem-side C files:
+//!   tools.c     — limotorus solver (lamBL/rmidlam bisections at 5ε, the
+//!                 ln f quadrature; gsl_integration_qags epsrel 1e-8 is
+//!                 replaced by math/quad.zig adaptive GK21 at rtol 1e-12,
+//!                 so the C diff is bounded by C's own epsrel — pinned by
+//!                 the epsrel-1e-12 oracle variant)
+//!   prepinit.c  — per-cell initial primitives (torus + atmospheres, LTE
+//!                 pressure split P = bT + aT⁴, prad_ff2lab, BL→MKS2,
+//!                 QUADLOOPS vector potential in the B slots)
+//!   init.c      — ENTR from calc_Sfromu + p2u
+//!   postinit.c  — global β normalization: fac = √(MAXBETA/maxβ),
+//!                 BETANORMFULL (max over the whole domain)
+//!   bc.c        — XBCHI outflow with r-rescaling + no-inflow, XBCLO copy
+//!                 (RMIN=1.85 < r_horizon=2 skips the inflow check),
+//!                 YBC polar reflection (VY/B2/FY sign flip)
+//! and the ko.c init sequence (ko.c:140-263): prepinit+init → set_bc →
+//! calc_BfromA(p,1) → set_bc → postinit. No BC refresh after postinit —
+//! ghost B keeps the pre-scaling values, exactly as in C.
+//!
+//! C recomputes the angular-momentum breaks and inner-edge constants for
+//! every cell (tools.c:239-253); they are cell-independent, so we compute
+//! them once (TorusConsts) — bitwise the same values.
+
+const std = @import("std");
+const config = @import("../config.zig");
+const layout = @import("../layout.zig");
+const grid_mod = @import("../grid.zig");
+const geometry = @import("../geometry.zig");
+const relele = @import("../relele.zig");
+const frames = @import("../frames.zig");
+const p2u_mod = @import("../p2u.zig");
+const hydro = @import("../physics/hydro.zig");
+const mhd = @import("../physics/mhd.zig");
+const thermo = @import("../physics/thermo.zig");
+const radiation = @import("../physics/radiation.zig");
+const invert_rad = @import("../solve/invert_rad.zig");
+const units_mod = @import("../units.zig");
+const metric = @import("../metric/metric.zig");
+const coco = @import("../metric/coco.zig");
+const precompute = @import("../metric/precompute.zig");
+const quad = @import("../math/quad.zig");
+const ct = @import("../magn/ct.zig");
+const sim_mod = @import("../sim.zig");
+
+const Grid = grid_mod.Grid;
+const Geometry = geometry.Geometry;
+
+// ---------------------------------------------------------------------------
+// problem constants (PROBLEMS/PUFFY/define.h)
+
+pub const mass: f64 = 10.0; // MASS
+pub const gam: f64 = 5.0 / 3.0; // GAMMA
+pub const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+pub const rmin: f64 = 1.85; // RMIN
+pub const rmax: f64 = 500.0; // RMAX
+pub const rhoatmmin: f64 = 1.0e-24; // RHOATMMIN
+pub const maxbeta: f64 = 1.0 / 20.0; // MAXBETA (after #undef, BETANORMFULL)
+
+pub const lt = struct {
+    pub const kappa: f64 = 6.0e1; // LT_KAPPA
+    pub const xi: f64 = 0.995; // LT_XI
+    pub const r1: f64 = 20.0; // LT_R1
+    pub const r2: f64 = 350.0; // LT_R2
+    pub const gamma: f64 = 4.0 / 3.0; // LT_GAMMA
+    pub const rin: f64 = 35.0; // LT_RIN
+};
+
+/// The production grid (define.h: TNX=384, TNY=360, TNZ=1, NG=3); ny/nx can
+/// be reduced for cheaper tests — the coordinate extents stay PUFFY's.
+pub fn makeGrid(nx: usize, ny: usize) Grid {
+    return Grid.init(.{
+        .nx = nx,
+        .ny = ny,
+        .ng = 3,
+        .minx = @log(rmin - mp.mksr0), // MINX = log(RMIN-MKSR0)
+        .maxx = @log(rmax - mp.mksr0),
+        .miny = 0.001, // MINY
+        .maxy = 1.0 - 0.001, // MAXY
+        .minz = -std.math.pi / 4.0, // MINZ = -PHIWEDGE/2, PHIWEDGE = π/2
+        .maxz = std.math.pi / 4.0,
+    });
+}
+
+pub fn consts() thermo.Consts {
+    return thermo.Consts.init(units_mod.Units.init(mass), thermo.Composition.puffy);
+}
+
+/// UINTATMMIN / ERADATMMIN (define.h:221/225), computed once.
+pub const Atm = struct { uintatmmin: f64, eradatmmin: f64 };
+
+pub fn atmConsts(con: *const thermo.Consts) Atm {
+    return .{
+        .uintatmmin = thermo.uFromTrho(con, 1.0e10, rhoatmmin, gam),
+        // calc_LTE_EfromT(3.e5)/10*6.62/MASS — Brandon's collapsing-sim value
+        .eradatmmin = con.lteEfromT(3.0e5) / 10.0 * 6.62 / mass,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// limotorus (PROBLEMS/PUFFY/tools.c)
+
+const xacc: f64 = 5.0 * std.math.floatEps(f64); // C: 5.*DBL_EPSILON
+const pi_2: f64 = std.math.pi / 2.0; // C: M_PI_2
+
+pub const Gd = struct { gdtt: f64, gdtp: f64, gdpp: f64 };
+
+/// tools.c:1 compute_gd — BL g_tt, g_tφ, g_φφ (limotorus4.nb expressions).
+pub fn computeGd(r: f64, th: f64, a: f64) Gd {
+    const ac = a * @cos(th);
+    const sigma = ac * ac + r * r;
+    const s2 = @sin(th) * @sin(th);
+    const tmp = 2.0 * r * s2 / sigma;
+    return .{
+        .gdtt = -1.0 + 2.0 * r / sigma,
+        .gdtp = -a * tmp,
+        .gdpp = (r * r + a * a * (1.0 + tmp)) * s2,
+    };
+}
+
+/// tools.c:14 lK — Keplerian equatorial ℓ = u_φ/u_t.
+pub fn lK(r: f64, a: f64) f64 {
+    const curly_f = 1.0 - 2.0 * a / std.math.pow(f64, r, 1.5) + (a / r) * (a / r);
+    const curly_g = 1.0 - 2.0 / r + a / std.math.pow(f64, r, 1.5);
+    return @sqrt(r) * curly_f / curly_g;
+}
+
+/// tools.c:22 l3d — ξ·lK clamped to the broken-power-law window.
+pub fn l3d(lam: f64, a: f64, lambreak1: f64, lambreak2: f64, xi: f64) f64 {
+    const arg = if (lam <= lambreak1) lambreak1 else if (lam >= lambreak2) lambreak2 else lam;
+    return xi * lK(arg, a);
+}
+
+/// tools.c:26 rtbis (HARM's nrutil.c bisection): 100 halvings max, exits at
+/// |dx| < xacc. On an unbracketed root C prints a warning and marches on;
+/// we do the same (silently).
+pub fn rtbis(func: anytype, x1: f64, x2: f64, xacc_: f64) f64 {
+    const f = func.eval(x1);
+    var fmid = func.eval(x2);
+    var dx: f64 = undefined;
+    var rtb: f64 = undefined;
+    if (f < 0.0) {
+        dx = x2 - x1;
+        rtb = x1;
+    } else {
+        dx = x1 - x2;
+        rtb = x2;
+    }
+    var j: usize = 1;
+    while (j <= 100) : (j += 1) {
+        dx *= 0.5;
+        const xmid = rtb + dx;
+        fmid = func.eval(xmid);
+        if (fmid <= 0.0) rtb = xmid;
+        if (@abs(dx) < xacc_ or fmid == 0.0) return rtb;
+    }
+    return 0.0; // C: "Too many bisections in rtbis"
+}
+
+/// tools.c:51 lamBL_func.
+pub const LamF = struct {
+    gdtt: f64,
+    gdtp: f64,
+    gdpp: f64,
+    a: f64,
+    lambreak1: f64,
+    lambreak2: f64,
+    xi: f64,
+    pub fn eval(s: LamF, lam: f64) f64 {
+        const l = l3d(lam, s.a, s.lambreak1, s.lambreak2, s.xi);
+        return lam * lam + l * (l * s.gdtp + s.gdpp) / (l * s.gdtt + s.gdtp);
+    }
+};
+
+/// tools.c:68 lamBL — von Zeipel cylinder radius, bracket (R, 10R).
+pub fn lamBL(R: f64, gd: Gd, a: f64, lambreak1: f64, lambreak2: f64, xi: f64) f64 {
+    return rtbis(LamF{
+        .gdtt = gd.gdtt,
+        .gdtp = gd.gdtp,
+        .gdpp = gd.gdpp,
+        .a = a,
+        .lambreak1 = lambreak1,
+        .lambreak2 = lambreak2,
+        .xi = xi,
+    }, R, 10.0 * R, xacc);
+}
+
+/// tools.c:89 omega3d (pow(x,-1) folds to a reciprocal under clang -O2).
+pub fn omega3d(l: f64, gd: Gd) f64 {
+    return -(gd.gdtt * l + gd.gdtp) * (1.0 / (gd.gdpp + gd.gdtp * l));
+}
+
+/// tools.c:93 compute_Agrav.
+pub fn computeAgrav(om: f64, gd: Gd) f64 {
+    return @sqrt(@abs(1.0 / (gd.gdtt + 2.0 * om * gd.gdtp + om * om * gd.gdpp)));
+}
+
+/// tools.c:97 rmidlam — the passed-in gd values are dead in C (immediately
+/// overwritten with midplane values at x); only lam², a, breaks, ξ matter.
+pub const RmidF = struct {
+    lamsq: f64,
+    a: f64,
+    lambreak1: f64,
+    lambreak2: f64,
+    xi: f64,
+    pub fn eval(s: RmidF, x: f64) f64 {
+        const gd = computeGd(x, pi_2, s.a);
+        const lam_x = lamBL(x, gd, s.a, s.lambreak1, s.lambreak2, s.xi);
+        return s.lamsq - lam_x * lam_x;
+    }
+};
+
+/// tools.c:118 limotorus_findrml — bracket (6, 10·λ²) as written in C.
+pub fn findRml(lam: f64, a: f64, lambreak1: f64, lambreak2: f64, xi: f64) f64 {
+    const lamsq = lam * lam;
+    return rtbis(RmidF{
+        .lamsq = lamsq,
+        .a = a,
+        .lambreak1 = lambreak1,
+        .lambreak2 = lambreak2,
+        .xi = xi,
+    }, 6.0, 10.0 * lamsq, xacc);
+}
+
+/// tools.c:146 lnf_integrand.
+pub const LnfIntegrand = struct {
+    a: f64,
+    lambreak1: f64,
+    lambreak2: f64,
+    xi: f64,
+    pub fn eval(s: LnfIntegrand, r: f64) f64 {
+        const r2 = r * r;
+        const r3 = r2 * r;
+        const a2 = s.a * s.a;
+        const gd = computeGd(r, pi_2, s.a);
+        const lam = lamBL(r, gd, s.a, s.lambreak1, s.lambreak2, s.xi);
+        const lam2 = lam * lam;
+        const l = l3d(lam, s.a, s.lambreak1, s.lambreak2, s.xi);
+
+        const term1 = (r - 2.0) * l;
+        const term2 = 2.0 * s.a;
+        const term3 = r3 + a2 * (r + 2.0);
+        const term4 = term2 * l;
+        const om_numerator = term1 + term2;
+        const om_denominator = term3 - term4;
+        const om = om_numerator / om_denominator;
+
+        var dl_dr: f64 = 0.0;
+        if (lam <= s.lambreak1 or lam >= s.lambreak2) {
+            dl_dr = 0.0;
+        } else {
+            const oneplusx = 1.0 - 2.0 / lam + s.a * std.math.pow(f64, lam, -1.5);
+            const dx_dlam = 2.0 * std.math.pow(f64, lam, -2.0) - 1.5 * s.a * std.math.pow(f64, lam, -2.5);
+            const lamroot = @sqrt(lam);
+            const dlk_dlam = (oneplusx * 0.5 * (1.0 / lamroot) + (s.a - lamroot) * dx_dlam) /
+                (oneplusx * oneplusx);
+            const dd = term3 - 2.0 * term4 - lam2 * (r - 2.0);
+            const ee = l * (3.0 * r2 + a2 - lam2);
+            dl_dr = ee / (2.0 * lam * om_numerator / (s.xi * dlk_dlam) - dd);
+        }
+
+        const dom_dr = (om_denominator * (l + (r - 2.0) * dl_dr) -
+            om_numerator * (3.0 * r2 + a2 + 2.0 * s.a * dl_dr)) /
+            (om_denominator * om_denominator);
+
+        return -l / (1.0 - om * l) * dom_dr;
+    }
+};
+
+/// The cell-independent part of init_dsandvels_limotorus (tools.c:239-253):
+/// break λ's, and ℓ/ω/Agrav at the torus inner edge. C recomputes these per
+/// cell; the values are identical.
+pub const TorusConsts = struct {
+    lambreak1: f64,
+    lambreak2: f64,
+    lamin: f64,
+    lin: f64,
+    omin: f64,
+    agravin: f64,
+};
+
+pub fn torusConsts(a: f64) TorusConsts {
+    var gd = computeGd(lt.r1, pi_2, a);
+    const lambreak1 = lamBL(lt.r1, gd, a, 0.0, 200000.0, lt.xi);
+    gd = computeGd(lt.r2, pi_2, a);
+    const lambreak2 = lamBL(lt.r2, gd, a, lambreak1, 200000.0, lt.xi);
+
+    gd = computeGd(lt.rin, pi_2, a);
+    const lamin = lamBL(lt.rin, gd, a, lambreak1, lambreak2, lt.xi);
+    const lin = l3d(lamin, a, lambreak1, lambreak2, lt.xi);
+    const omin = omega3d(lin, gd);
+    const agravin = computeAgrav(omin, gd);
+
+    return .{
+        .lambreak1 = lambreak1,
+        .lambreak2 = lambreak2,
+        .lamin = lamin,
+        .lin = lin,
+        .omin = omin,
+        .agravin = agravin,
+    };
+}
+
+pub const DsVels = struct { rho: f64, uu: f64, ell: f64 };
+
+/// tools.c:195 init_dsandvels_limotorus at (r, θ) in BL. rho = −1 flags
+/// "outside the torus" (including quadrature failure, mirroring the
+/// GSL_NEGINF branch).
+pub fn initDsandvels(r: f64, th: f64, a: f64, tc: *const TorusConsts) DsVels {
+    const R = r * @sin(th);
+    if (R < lt.rin) return .{ .rho = -1.0, .uu = 0.0, .ell = 0.0 };
+
+    const kappa = lt.kappa;
+    const gd = computeGd(r, th, a);
+    const lam = lamBL(R, gd, a, tc.lambreak1, tc.lambreak2, lt.xi);
+    const l = l3d(lam, a, tc.lambreak1, tc.lambreak2, lt.xi);
+    const om = omega3d(l, gd);
+    const agrav = computeAgrav(om, gd);
+    const rml = findRml(lam, a, tc.lambreak1, tc.lambreak2, lt.xi);
+
+    const integrand = LnfIntegrand{
+        .a = a,
+        .lambreak1 = tc.lambreak1,
+        .lambreak2 = tc.lambreak2,
+        .xi = lt.xi,
+    };
+    // C: gsl_integration_qags(rin → rml, epsabs 0, epsrel 1e-8); failure sets
+    // lnf3d = GSL_NEGINF so the density comes out 0/negative.
+    const q = quad.integrate(integrand, lt.rin, rml, 0.0, 1.0e-12);
+    const lnf3d: f64 = if (q.converged) q.value else -std.math.inf(f64);
+    const f3d = @exp(-lnf3d);
+
+    const f3din: f64 = 1.0; // ≡ 1 at r = rin by construction
+    const hh = f3din * agrav / (f3d * tc.agravin);
+    const eps = (-1.0 + hh) * (1.0 / lt.gamma);
+
+    // C: pow(kappa,-1) and pow(-1+LT_GAMMA,-1) fold to reciprocals.
+    const rho: f64 = if (eps < 0.0)
+        -1.0
+    else
+        std.math.pow(f64, (-1.0 + lt.gamma) * eps * (1.0 / kappa), 1.0 / (-1.0 + lt.gamma));
+
+    return .{
+        .rho = rho,
+        .ell = l,
+        .uu = kappa * std.math.pow(f64, rho, lt.gamma) / (lt.gamma - 1.0),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// atmospheres (relele.c:518 / :718, atmtype 0 — normal observer)
+
+pub fn setHdAtmosphere(
+    comptime cfg: config.Config,
+    pp: *[layout.VarLayout(cfg).count]f64,
+    geom: *const Geometry,
+    atm: *const Atm,
+) void {
+    const L = layout.VarLayout(cfg);
+    // normal observer in VELR ≡ VELPRIM — no conversion
+    const ucon = relele.normalObsRelvel(&geom.GG);
+    pp[L.index(.vx)] = ucon[1];
+    pp[L.index(.vy)] = ucon[2];
+    pp[L.index(.vz)] = ucon[3];
+
+    // Bondi-like profile, normalized at r_BL = 2
+    const xx2 = coco.cocoN(geom.xxvec, geom.coords, .bl, mp);
+    const r = xx2[1];
+    const rout: f64 = 2.0;
+    pp[L.index(.rho)] = rhoatmmin * std.math.pow(f64, r / rout, -1.5);
+    pp[L.index(.uu)] = atm.uintatmmin * std.math.pow(f64, r / rout, -2.5);
+
+    if (comptime L.hasVar(.b1)) {
+        pp[L.index(.b1)] = 0.0;
+        pp[L.index(.b2)] = 0.0;
+        pp[L.index(.b3)] = 0.0;
+    }
+}
+
+pub fn setRadAtmosphere(
+    comptime cfg: config.Config,
+    pp: *[layout.VarLayout(cfg).count]f64,
+    geom: *const Geometry,
+    atm: *const Atm,
+) void {
+    const L = layout.VarLayout(cfg);
+    pp[L.index(.ee)] = atm.eradatmmin;
+    const ucon = relele.normalObsRelvel(&geom.GG); // VELR ≡ VELPRIMRAD
+    pp[L.index(.fx)] = ucon[1];
+    pp[L.index(.fy)] = ucon[2];
+    pp[L.index(.fz)] = ucon[3];
+}
+
+// ---------------------------------------------------------------------------
+// prepinit.c — per-cell initial primitives (vector potential in the B slots)
+
+/// BL-coords geometry at the cell center (C: fill_geometry_arb KERRCOORDS).
+pub fn fillGeometryBL(g: *const Grid, coords: config.Coords, ix: i64, iy: i64, iz: i64) Geometry {
+    const xx = [4]f64{ 0.0, g.xc(ix), g.yc(iy), g.zc(iz) };
+    const xxbl = coco.cocoN(xx, coords, .bl, mp);
+    var geom = precompute.geometryAt(.bl, mp, xxbl);
+    geom.ix = ix;
+    geom.iy = iy;
+    geom.iz = iz;
+    return geom;
+}
+
+/// prepinit.c:92-93 — the T > 0 root of P = bbb·T + aaa·T⁴ (Mathematica
+/// closed form, transcribed with its literal decimal exponents).
+pub fn tFromPtot(P: f64, aaa: f64, bbb: f64) f64 {
+    const third = 0.3333333333333333;
+    const twothird = 0.6666666666666666;
+    const naw1 = std.math.cbrt(9.0 * aaa * (bbb * bbb) -
+        @sqrt(3.0) * @sqrt(27.0 * (aaa * aaa) * std.math.pow(f64, bbb, 4.0) +
+            256.0 * std.math.pow(f64, aaa, 3.0) * std.math.pow(f64, P, 3.0)));
+    const c23 = std.math.pow(f64, twothird, third);
+    const c2 = std.math.pow(f64, 2.0, third);
+    const c3 = std.math.pow(f64, 3.0, twothird);
+    return -@sqrt((-4.0 * c23 * P) / naw1 + naw1 / (c2 * c3 * aaa)) / 2.0 +
+        @sqrt((4.0 * c23 * P) / naw1 - naw1 / (c2 * c3 * aaa) +
+            (2.0 * bbb) / (aaa * @sqrt((-4.0 * c23 * P) / naw1 + naw1 / (c2 * c3 * aaa)))) / 2.0;
+}
+
+pub fn prepInitCell(
+    comptime cfg: config.Config,
+    geom: *const Geometry,
+    geomBL: *const Geometry,
+    tc: *const TorusConsts,
+    con: *const thermo.Consts,
+    atm: *const Atm,
+) relele.Error![layout.VarLayout(cfg).count]f64 {
+    const L = layout.VarLayout(cfg);
+    const has_rad = comptime cfg.has(.radiation);
+    const has_b = comptime L.hasVar(.b1);
+
+    const r = geomBL.xxvec[1];
+    const th = geomBL.xxvec[2];
+
+    const dv = initDsandvels(r, th, mp.a, tc);
+    const rho = dv.rho;
+    var uint = dv.uu;
+    var ell = dv.ell;
+
+    var pp = [_]f64{0} ** L.count;
+
+    if (rho < 0.0) { // outside the donut
+        setHdAtmosphere(cfg, &pp, geom, atm);
+        if (has_rad) setRadAtmosphere(cfg, &pp, geom, atm);
+        pp[L.index(.entr)] = -1.0; // marker only; init overwrites
+        return pp;
+    }
+
+    // inside the donut
+    pp[L.index(.entr)] = 1.0;
+
+    var ppback = [_]f64{0} ** L.count;
+    setHdAtmosphere(cfg, &ppback, geom, atm);
+    if (has_rad) setRadAtmosphere(cfg, &ppback, geom, atm);
+
+    uint = lt.kappa * std.math.pow(f64, rho, lt.gamma) / (lt.gamma - 1.0);
+    ell *= -1.0;
+
+    const GGBL = &geomBL.GG;
+    const ulph = @sqrt(-1.0 / (GGBL[0][0] / ell / ell + 2.0 / ell * GGBL[0][3] + GGBL[3][3]));
+    const ult = ulph / ell;
+    const ucov = [4]f64{ ult, 0.0, 0.0, ulph };
+    var ucon = relele.indices12(ucov, GGBL);
+    ucon = try relele.convVelsUt(ucon, .vel4, .velr, &geomBL.gg, &geomBL.GG);
+
+    pp[L.index(.rho)] = @max(rho, ppback[L.index(.rho)]);
+    pp[L.index(.uu)] = @max(uint, ppback[L.index(.uu)]);
+    pp[L.index(.vx)] = ucon[1];
+    pp[L.index(.vy)] = ucon[2];
+    pp[L.index(.vz)] = ucon[3];
+    // B slots zeroed so the coordinate transformation below stays sane
+
+    if (has_rad) {
+        // distribute P = GAMMAM1·uint between gas and radiation by solving
+        // P = bbb·T + aaa·T⁴ (prepinit.c:86-97, Mathematica closed form)
+        const P = (gam - 1.0) * uint;
+        const aaa = con.four_sigmarad / 3.0; // C: 4.*SIGMA_RAD/3.
+        const bbb = con.kb_over_mugas_mp * rho; // C: K_BOLTZ*rho/MU_GAS/M_PROTON
+        const t4 = tFromPtot(P, aaa, bbb);
+
+        const E = con.lteEfromT(t4);
+        uint = thermo.uFromTrho(con, t4, rho, gam);
+
+        pp[L.index(.uu)] = @max(uint, ppback[L.index(.uu)]);
+        pp[L.index(.ee)] = @max(E, ppback[L.index(.ee)]);
+        pp[L.index(.fx)] = 0.0;
+        pp[L.index(.fy)] = 0.0;
+        pp[L.index(.fz)] = 0.0;
+
+        // BL fluid-frame radiative primitives → BL lab
+        try radiation.pradFf2Lab(cfg, &pp, geomBL, invert_rad.RadParams.puffy);
+    }
+
+    // BL → MYCOORDS
+    pp = try frames.transPallCoco(cfg, pp, geomBL, geom, mp);
+
+    if (has_b) {
+        // MYCOORDS vector potential (only A_φ), stored in the B slots
+        const base = pp[L.index(.rho)] * geomBL.xxvec[1] / 4.0e-22;
+        var acov3 = @max(base * base - 0.02, 0.0) * @sqrt(1.0e-23);
+        // QUADLOOPS
+        acov3 *= @sin((std.math.pi / 2.0 - geomBL.xxvec[2]) / 0.1);
+        pp[L.index(.b1)] = 0.0;
+        pp[L.index(.b2)] = 0.0;
+        pp[L.index(.b3)] = acov3;
+    }
+
+    return pp;
+}
+
+// ---------------------------------------------------------------------------
+// the full init sequence (ko.c:140-263 with ifinit == 1)
+
+/// prepinit + init over the domain (leaves the vector potential A_φ in the
+/// B slots, ENTR = calc_Sfromu, p2u). Does NOT fill ghosts — the caller
+/// runs set_bc next, matching ko.c's set_initial_profile → set_bc.
+pub fn prepInitDomain(comptime SimT: type, sim: *SimT) !void {
+    const cfg = SimT.Cfg;
+    const L = SimT.Layout;
+
+    const con = consts();
+    const atm = atmConsts(&con);
+    const tc = torusConsts(mp.a);
+
+    const nx: i64 = @intCast(sim.grid.nx);
+    const ny: i64 = @intCast(sim.grid.ny);
+    const nz: i64 = @intCast(sim.grid.nz);
+
+    var iz: i64 = 0;
+    while (iz < nz) : (iz += 1) {
+        var iy: i64 = 0;
+        while (iy < ny) : (iy += 1) {
+            var ix: i64 = 0;
+            while (ix < nx) : (ix += 1) {
+                const geom = sim.cache.fillGeometry(ix, iy, iz);
+                const geomBL = fillGeometryBL(&sim.grid, cfg.coords, ix, iy, iz);
+                var pp = try prepInitCell(cfg, &geom, &geomBL, &tc, &con, &atm);
+                pp[L.index(.entr)] = hydro.sFromU(pp[L.index(.rho)], pp[L.index(.uu)], sim.opt.gam);
+                const uu = try p2u_mod.p2u(cfg, pp, &geom, sim.opt.gam);
+                sim.p.store(ix, iy, iz, &pp);
+                sim.u.store(ix, iy, iz, &uu);
+            }
+        }
+    }
+}
+
+/// The full ko.c:140-263 init sequence: prepinit + init → set_bc →
+/// calc_BfromA → set_bc → postinit. Returns the β-normalization factor
+/// fac (postinit.c:78).
+pub fn initAll(comptime SimT: type, sim: *SimT) !f64 {
+    try prepInitDomain(SimT, sim);
+    try sim.setBc(0.0, true);
+    try ct.calcBfromA(SimT, sim, true);
+    try sim.setBc(0.0, true);
+    return try postinit(SimT, sim);
+}
+
+/// postinit.c — global β normalization. Returns fac; ghost cells keep their
+/// unscaled B (C does not refresh BCs after postinit).
+pub fn postinit(comptime SimT: type, sim: *SimT) !f64 {
+    const cfg = SimT.Cfg;
+    const L = SimT.Layout;
+    if (comptime !L.hasVar(.b1)) return 1.0;
+
+    const nx: i64 = @intCast(sim.grid.nx);
+    const ny: i64 = @intCast(sim.grid.ny);
+    const nz: i64 = @intCast(sim.grid.nz);
+
+    var maxb: f64 = 0.0;
+    var iz: i64 = 0;
+    while (iz < nz) : (iz += 1) {
+        var iy: i64 = 0;
+        while (iy < ny) : (iy += 1) {
+            var ix: i64 = 0;
+            while (ix < nx) : (ix += 1) {
+                var pp: [SimT.nv]f64 = undefined;
+                sim.p.load(ix, iy, iz, &pp);
+                const geom = sim.cache.fillGeometry(ix, iy, iz);
+
+                const ug = try relele.uconUcovFromPrims(
+                    .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
+                    &geom,
+                );
+                const bb = mhd.bconBcovBsqFrom4vel(
+                    .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
+                    ug.con,
+                    ug.cov,
+                    &geom.gg,
+                );
+                const pmag = bb.bsq / 2.0;
+
+                const pgas = (sim.opt.gam - 1.0) * pp[L.index(.uu)];
+                var ptot = pgas;
+                if (comptime cfg.has(.radiation)) {
+                    const rt = try radiation.calcFfRtt(cfg, pp, &geom);
+                    const ehat = -rt.rtt;
+                    ptot += ehat / 3.0;
+                }
+
+                // BETANORMFULL: max over the whole domain
+                if (pmag / ptot > maxb) maxb = pmag / ptot;
+            }
+        }
+    }
+
+    const fac = @sqrt(maxbeta / maxb);
+
+    iz = 0;
+    while (iz < nz) : (iz += 1) {
+        var iy: i64 = 0;
+        while (iy < ny) : (iy += 1) {
+            var ix: i64 = 0;
+            while (ix < nx) : (ix += 1) {
+                var pp: [SimT.nv]f64 = undefined;
+                sim.p.load(ix, iy, iz, &pp);
+                pp[L.index(.b1)] *= fac;
+                pp[L.index(.b2)] *= fac;
+                pp[L.index(.b3)] *= fac;
+                const geom = sim.cache.fillGeometry(ix, iy, iz);
+                const uu = try p2u_mod.p2u(cfg, pp, &geom, sim.opt.gam);
+                sim.p.store(ix, iy, iz, &pp);
+                sim.u.store(ix, iy, iz, &uu);
+            }
+        }
+    }
+
+    return fac;
+}
+
+// ---------------------------------------------------------------------------
+// bc.c — problem-specific boundary conditions
+
+pub fn Bc(comptime SimT: type) type {
+    return struct {
+        const cfg = SimT.Cfg;
+        const L = SimT.Layout;
+        const NV = SimT.nv;
+        const has_rad = cfg.has(.radiation);
+        const has_b = L.hasVar(.b1);
+
+        pub fn calc(
+            sim: *const SimT,
+            ix: i64,
+            iy: i64,
+            iz: i64,
+            t: f64,
+            ifinit: bool,
+            face: sim_mod.BcFace,
+        ) [NV]f64 {
+            _ = t;
+            _ = ifinit;
+            const nx: i64 = @intCast(sim.grid.nx);
+            const ny: i64 = @intCast(sim.grid.ny);
+            var pp: [NV]f64 = undefined;
+
+            switch (face) {
+                .xhi => {
+                    // outflow with r-rescaling (bc.c:23-121)
+                    sim.p.load(nx - 1, iy, iz, &pp);
+
+                    const geom = sim.cache.fillGeometry(ix, iy, iz);
+                    const geomBL = fillGeometryBL(&sim.grid, cfg.coords, ix, iy, iz);
+
+                    // MHD prims to BL (ghost-cell geometries, as in C)
+                    pp = frames.transPmhdCoco(cfg, pp, &geom, &geomBL, mp) catch unreachable;
+
+                    const geombdBL = fillGeometryBL(&sim.grid, cfg.coords, nx - 1, iy, iz);
+                    const rghost = geomBL.xxvec[1];
+                    const rbound = geombdBL.xxvec[1];
+                    const scale1 = rbound * rbound / rghost / rghost;
+                    const scale2 = rbound / rghost;
+
+                    pp[L.index(.rho)] *= scale1;
+                    pp[L.index(.uu)] *= scale1;
+                    if (comptime has_b) {
+                        pp[L.index(.b1)] *= scale1;
+                        pp[L.index(.b2)] *= scale2;
+                        pp[L.index(.b3)] *= scale2;
+                    }
+                    pp[L.index(.vy)] *= scale1;
+                    pp[L.index(.vz)] *= scale1;
+                    if (comptime has_rad) {
+                        // note: rad prims scaled while the MHD block sits in
+                        // BL — they never left MYCOORDS (C does the same)
+                        pp[L.index(.ee)] *= scale1;
+                        pp[L.index(.fy)] *= scale1;
+                        pp[L.index(.fz)] *= scale1;
+                    }
+
+                    pp = frames.transPmhdCoco(cfg, pp, &geomBL, &geom, mp) catch unreachable;
+
+                    // no-inflow: gas
+                    var ucon = [4]f64{ 0.0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
+                    ucon = relele.convVels(ucon, .velr, .vel4, &geom.gg, &geom.GG) catch unreachable;
+                    ucon = frames.trans2Coco(geom.xxvec, ucon, cfg.coords, .bl, mp);
+                    if (ucon[1] < 0.0) {
+                        ucon[1] = 0.0;
+                        ucon = frames.trans2Coco(geomBL.xxvec, ucon, .bl, cfg.coords, mp);
+                        ucon = relele.convVels(ucon, .vel4, .velr, &geom.gg, &geom.GG) catch unreachable;
+                        pp[L.index(.vx)] = ucon[1];
+                        pp[L.index(.vy)] = ucon[2];
+                        pp[L.index(.vz)] = ucon[3];
+                    }
+                    if (comptime has_rad) {
+                        var urf = [4]f64{ 0.0, pp[L.index(.fx)], pp[L.index(.fy)], pp[L.index(.fz)] };
+                        urf = relele.convVels(urf, .velr, .vel4, &geom.gg, &geom.GG) catch unreachable;
+                        urf = frames.trans2Coco(geom.xxvec, urf, cfg.coords, .bl, mp);
+                        if (urf[1] < 0.0) {
+                            urf[1] = 0.0;
+                            urf = frames.trans2Coco(geomBL.xxvec, urf, .bl, cfg.coords, mp);
+                            urf = relele.convVels(urf, .vel4, .velr, &geom.gg, &geom.GG) catch unreachable;
+                            pp[L.index(.fx)] = urf[1];
+                            pp[L.index(.fy)] = urf[2];
+                            pp[L.index(.fz)] = urf[3];
+                        }
+                    }
+                },
+                .xlo => {
+                    // outflow near the BH; RMIN=1.85 < r_horizon=2 in PUFFY,
+                    // so the C inflow check (bc.c:133) never runs
+                    sim.p.load(0, iy, iz, &pp);
+                },
+                .ylo => {
+                    // polar reflection, upper axis
+                    const iiy = -iy - 1;
+                    sim.p.load(ix, iiy, iz, &pp);
+                    pp[L.index(.vy)] = -pp[L.index(.vy)];
+                    if (comptime has_b) pp[L.index(.b2)] = -pp[L.index(.b2)];
+                    if (comptime has_rad) pp[L.index(.fy)] = -pp[L.index(.fy)];
+                },
+                .yhi => {
+                    // polar reflection, lower axis
+                    const iiy = ny - (iy - ny) - 1;
+                    sim.p.load(ix, iiy, iz, &pp);
+                    pp[L.index(.vy)] = -pp[L.index(.vy)];
+                    if (comptime has_b) pp[L.index(.b2)] = -pp[L.index(.b2)];
+                    if (comptime has_rad) pp[L.index(.fy)] = -pp[L.index(.fy)];
+                },
+                // TNZ == 1: no z ghost cells exist
+                .zlo, .zhi => unreachable,
+            }
+            return pp;
+        }
+    };
+}
