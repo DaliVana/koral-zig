@@ -350,12 +350,16 @@ coverage.
 ### Test-file inventory
 
 Three complementary layers (there are deliberately **no** run-to-completion
-end-to-end tests):
+end-to-end tests). Test files live flat in `koral/` next to the code, with one
+naming rule per family so a subsystem's files sort adjacently: theory gates are
+`<subsystem>_tests.zig`, C-oracle goldens are `<subsystem>_golden_tests.zig`.
+New test files must be listed in `koral/koral.zig`'s `test` block (there is no
+auto-registration).
 
 **1. Theory gates** — mathematical identities and documented C quirks, no golden
 data:
 
-- `metric/tests.zig`, `evolution_tests.zig`, `mhd_evolution_tests.zig`,
+- `metric_tests.zig`, `evolution_tests.zig`, `mhd_evolution_tests.zig`,
   `radiation_tests.zig`, `opacity_tests.zig`, `implicit_tests.zig`,
   `state_tests.zig`, `flux_tests.zig`, `polaraxis_tests.zig`,
   `radstep_tests.zig`, `radtube_tests.zig`, `dynamo_tests.zig`,
@@ -366,16 +370,16 @@ data:
 points, with C's *own* geometry embedded per record (`geomFromRecord`) so only the
 state algebra is compared:
 
-- `golden_test.zig` (metric), `golden_state_test.zig`, `golden_flux_test.zig`,
-  `golden_rad_test.zig`, `golden_opac_test.zig`, `golden_implicit_test.zig`.
+- `metric_golden_tests.zig`, `state_golden_tests.zig`, `flux_golden_tests.zig`,
+  `rad_golden_tests.zig`, `opac_golden_tests.zig`, `implicit_golden_tests.zig`.
 
 **3. Forced-dt step / keystone goldens** (`.kstp`, `.kini.gz`) — load C's post-init
 state bit-for-bit, force C's recorded dt sequence, diff the whole domain each step:
 
-- `golden_step_test.zig` (the ZIG* tube step goldens),
-  `golden_puffystep_test.zig` (reduced-grid full PUFFY pipeline),
-  `golden_puffy_test.zig` (PUFFY t=0 keystone, full-grid only under
-  `-Dslow-tests`), `golden_visc_test.zig`, `golden_dynamo_test.zig`.
+- `step_golden_tests.zig` (the ZIG* tube step goldens),
+  `puffystep_golden_tests.zig` (reduced-grid full PUFFY pipeline),
+  `puffy_golden_tests.zig` (PUFFY t=0 keystone, full-grid only under
+  `-Dslow-tests`), `visc_golden_tests.zig`, `dynamo_golden_tests.zig`.
 
 Support files: `koral/testing/golden.zig` (`Golden`/`Kstp`/`Kini`/`DevTracker`
 readers) and `koral/testing/tubes.zig` (the Farris/Sadowski radiative shock-tube
@@ -733,7 +737,7 @@ Comptime field on `Config`:
 .flux = .hll,    // Harten-Lax-van Leer two-wave
 ```
 
-`Sim.fluxesAtFaces` switches on `cfg.flux` into `koral/flux/laxf.zig`. Hydro and
+`Sim.fluxesAtFaces` switches on `cfg.flux` into `koral/riemann/laxf.zig`. Hydro and
 radiation are treated as **two independent hyperbolic systems** with separate
 wavespeeds (the split is `iv >= L.index(.ee)`). To add e.g. HLLC, add a function in
 `laxf.zig` with the `(fl, fr, ul, ur, speeds)` shape and a case in
@@ -900,7 +904,7 @@ Where the major pieces live (all under `koral/` unless noted):
 | M1 radiation | `physics/radiation.zig`, `solve/invert_rad.zig` |
 | Microphysics (thermo, opacities, four-force) | `physics/thermo.zig`, `physics/opacities.zig`, `physics/radforce.zig`, `units.zig` |
 | Implicit rad-gas source | `solve/implicit.zig` |
-| Reconstruction / wavespeeds / flux / Riemann | `recon/recon.zig`, `physics/wavespeeds.zig`, `physics/flux.zig`, `flux/laxf.zig` |
+| Reconstruction / wavespeeds / flux / Riemann | `recon/recon.zig`, `physics/wavespeeds.zig`, `physics/flux.zig`, `riemann/laxf.zig` |
 | Evolution driver | `sim.zig` |
 | Constrained transport, dynamo, radiative viscosity | `magn/ct.zig`, `magn/dynamo.zig`, `physics/radvisc.zig` |
 | PUFFY problem + quadrature | `problems/puffy.zig`, `PROBLEMS/puffy/main.zig`, `math/quad.zig` |

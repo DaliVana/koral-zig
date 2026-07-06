@@ -5,12 +5,12 @@
 //! Jacobian consistency, horizon finiteness.
 
 const std = @import("std");
-const Dual3 = @import("../math/dual.zig").Dual3;
-const metric = @import("metric.zig");
-const forms = @import("forms.zig");
-const coco = @import("coco.zig");
-const precompute = @import("precompute.zig");
-const Grid = @import("../grid.zig").Grid;
+const Dual3 = @import("math/dual.zig").Dual3;
+const metric = @import("metric/metric.zig");
+const forms = @import("metric/forms.zig");
+const coco = @import("metric/coco.zig");
+const precompute = @import("metric/precompute.zig");
+const Grid = @import("grid.zig").Grid;
 
 const Coords = metric.Coords;
 const MetricParams = metric.MetricParams;

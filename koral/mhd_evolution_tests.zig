@@ -210,7 +210,7 @@ test "M6: Orszag-Tang keeps corner divB at machine zero over 200 steps" {
     for (0..200) |_| try s.step(null);
 
     const div = maxAbsDivB(&s);
-    // локate worst + interior-only max
+    // locate worst + interior-only max
     var div_int: f64 = 0;
     var wx: i64 = 0;
     var wy: i64 = 0;

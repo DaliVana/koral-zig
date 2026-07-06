@@ -126,8 +126,8 @@ does `const koral = @import("koral");` and reaches everything through it.
              │           │           │          │          │
     ┌────────▼──┐  ┌─────▼────┐ ┌────▼─────┐ ┌──▼──────┐ ┌─▼──────────┐
     │ recon/    │  │ physics/ │ │ solve/   │ │ magn/   │ │ metric/    │
-    │ flux/     │  │ hydro    │ │ invert   │ │ ct      │ │ metric     │
-    │ riemann   │  │ mhd      │ │ invert_  │ │ dynamo  │ │ coco       │
+    │ riemann/  │  │ hydro    │ │ invert   │ │ ct      │ │ metric     │
+    │           │  │ mhd      │ │ invert_  │ │ dynamo  │ │ coco       │
     │           │  │ radiation│ │  rad     │ │         │ │ precompute │
     │           │  │ wavesp.  │ │ implicit │ │         │ │ (MetricC.) │
     │           │  │ flux     │ │          │ │         │ │            │
@@ -668,7 +668,7 @@ polar-axis cells are skipped.
 ## 7. Reconstruction and Riemann flux
 
 `koral/recon/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`,
-`koral/flux/laxf.zig`.
+`koral/riemann/laxf.zig`.
 
 **Reconstruction** turns cell averages into left/right face states. `avg2point(NV, um2,
 um1, uc0, up1, up2, dx5, base_order, param, theta)` loops `avg2pointScalar` over each
@@ -811,15 +811,15 @@ threading bit-identity, not from a single long integration.
    golden data: conservation, symmetry, the M1 closure trace `R^μ_μ = 0`, round-trips
    (e.g. `sFromU`/`uFromS` to 1e-12), reconstruction convergence orders, IMEX L-stability,
    div(B), floor properties, dynamo saturation, and threading bit-identity.
-2. **Function-level C goldens** (`golden_*_test.zig` reading `.kgld` files) — diff Zig
+2. **Function-level C goldens** (`*_golden_tests.zig` reading `.kgld` files) — diff Zig
    against C at recorded input points. State/flux/rad records embed **C's own geometry**
    (`geomFromRecord`) so only the state *algebra* is compared, keeping gates tight (1e-13
    for closed-form, 1e-8 for iterative solvers).
-3. **Forced-dt step tests** (`golden_step_test`, `golden_puffystep_test` reading `.kstp`) —
+3. **Forced-dt step tests** (`step_golden_tests`, `puffystep_golden_tests` reading `.kstp`) —
    the Zig side loads C's post-init state bit-for-bit, forces C's recorded dt sequence, and
    diffs the whole domain each step against a growing budget. This isolates step arithmetic
    from init-quadrature discrepancies and from CFL choices. The PUFFY t=0 keystone
-   (`golden_puffy_test` reading `.kini.gz`) is the cell-by-cell init comparison
+   (`puffy_golden_tests` reading `.kini.gz`) is the cell-by-cell init comparison
    (full-grid only under `-Dslow-tests`).
 
 All golden readers return `error.SkipZigTest` when the file is absent, so the suite is
@@ -869,7 +869,7 @@ deviations are **expected**, not regressions — a real bug shows far above that
 | **M1 radiation core + inversion** | `koral/physics/radiation.zig`, `koral/solve/invert_rad.zig` |
 | **Opacities / thermodynamics / four-force** | `koral/physics/thermo.zig`, `koral/physics/opacities.zig`, `koral/physics/radforce.zig`, `koral/units.zig` |
 | **Implicit radiation-gas source solver** | `koral/solve/implicit.zig` |
-| **Reconstruction + wavespeeds + flux + Riemann** | `koral/recon/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`, `koral/flux/laxf.zig` |
+| **Reconstruction + wavespeeds + flux + Riemann** | `koral/recon/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`, `koral/riemann/laxf.zig` |
 | **Evolution driver** | `koral/sim.zig` |
 | **Constrained transport + dynamo + radiative viscosity** | `koral/magn/ct.zig`, `koral/magn/dynamo.zig`, `koral/physics/radvisc.zig` |
 | **PUFFY problem (IC, driver, quadrature)** | `koral/problems/puffy.zig`, `PROBLEMS/puffy/main.zig`, `koral/math/quad.zig` |

@@ -14,6 +14,22 @@ const config = @import("../config.zig");
 pub const Coords = config.Coords;
 pub const MetricParams = forms.MetricParams;
 
+/// C: r_horizon_BL (metric.c:245) — the outer Kerr event horizon in
+/// Boyer–Lindquist radius, 1 + √(1−a²) (→ 2 for a = 0).
+pub fn rHorizonBL(a: f64) f64 {
+    return 1.0 + @sqrt(1.0 - a * a);
+}
+
+/// C: r_ISCO_BL (metric.c:252) — the prograde ISCO in Boyer–Lindquist
+/// radius, in the literal pow(·,1/3) shape (→ 6 for a = 0).
+pub fn rIscoBL(ac: f64) f64 {
+    const c3 = 1.0 / 3.0;
+    const z1 = 1.0 + std.math.pow(f64, 1.0 - ac * ac, c3) *
+        (std.math.pow(f64, 1.0 + ac, c3) + std.math.pow(f64, 1.0 - ac, c3));
+    const z2 = std.math.pow(f64, 3.0 * ac * ac + z1 * z1, 1.0 / 2.0);
+    return 3.0 + z2 - std.math.pow(f64, (3.0 - z1) * (3.0 + z1 + 2.0 * z2), 1.0 / 2.0);
+}
+
 /// Everything known about the metric at one point.
 pub const CoordData = struct {
     gcov: [4][4]f64,

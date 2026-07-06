@@ -276,6 +276,8 @@ The same 8-line computation — build `[4]f64{0, xc, yc, zc}`, `coco.cocoN(xx, c
 
 **Fix:** Extract one pub helper in koral/metric/precompute.zig next to geometryAt, e.g. `pub fn geometryAtBL(g: *const Grid, coords: config.Coords, mp: MetricParams, ix: i64, iy: i64, iz: i64) Geometry` — the file already imports Grid/coco/config (no new imports) and applyKrisCorrection there already uses the same (coords, mp, *const Grid, ix, iy, iz) shape. Have scalars.blGeom and dynamo.geomBLat call it with (&sim.grid, SimT.Cfg.coords, sim.opt.mp, ...), and puffy.fillGeometryBL with its module-level mp; keep puffy's pub wrapper as a thin forwarding alias if tests depend on its signature.
 
+**Fixed (2026-07-06):** Added one `pub fn geometryBLat` in `metric/precompute.zig`; `blGeom` (scalars), `geomBLat` (dynamo), and `fillGeometryBL` (puffy) now delegate to it, so the reduction has a single implementation.
+
 #### `koral/metric/precompute.zig:191` — Ghost-offset index arithmetic duplicated between MetricCache.cellIndex and Field.cellOffset — hoist to Grid
 
 *Idiomatic Zig*
@@ -343,6 +345,8 @@ state.zig declares `gamma: f64 = 0, // Lorentz factor w.r.t. normal observer`, i
 
 **Fix:** Pick one placement and one naming scheme for the two test families. Concretely: keep tests next to the code, named uniformly `<subsystem>_tests.zig` (theory) and `<subsystem>_golden_tests.zig` (C-comparison) so each subsystem's files sort adjacently; move koral/metric/tests.zig to koral/metric_tests.zig (or nest all tests — but pick one rule); and rename koral/golden_test.zig → metric_golden_tests.zig, since its generic name suggests the golden-test framework, which actually lives in koral/testing/golden.zig. Alternatively, move all 26 root test files into koral/tests/ to declutter the root. Either way, state the chosen rule in the repo docs (README.md, or the zig-rewrite-architecture doc in koral_lite that koral.zig already references) and update the test import block in koral/koral.zig accordingly.
 
+**Fixed (2026-07-06):** Unified to one scheme — theory gates `<subsystem>_tests.zig`, C-oracle goldens `<subsystem>_golden_tests.zig` — so each subsystem's files sort adjacently. Moved `metric/tests.zig` → `metric_tests.zig`, renamed the misleading `golden_test.zig` → `metric_golden_tests.zig` (and the other ten `golden_<x>_test.zig` → `<x>_golden_tests.zig`). The rule is stated in koral.zig's `test` block and the USER_GUIDE test inventory; the Cyrillic "локate" typo was fixed too.
+
 #### `koral/physics/radforce.zig:61` — PUFFY leaks into the generic library layer: scattered .puffy presets and a problem-specific default
 
 *Project structure*
@@ -351,6 +355,8 @@ Problem-specific constants live inside six generic library modules as `.puffy` d
 
 **Fix:** Change the default to the C-faithful neutral value (`kappaes: KappaesMode = .none` — C without PR_KAPPAES returns 0, per this file's own doc comment) and have `Params.puffy()` set `.kappaes = .puffy` explicitly. This is behavior-preserving for every current call site (all use `Params.puffy()` or `Params.grey(...)`, which set kappaes), so no golden-file risk. Optionally: add a function-pointer variant to KappaMode/KappaesMode so future problems supply kappa hooks without editing the library (mirroring the `specific_bc` pattern), and consolidate the six scattered `.puffy` presets as re-exports from koral/problems/puffy.zig so the problem's parameter surface lives in one file.
 
+**Fixed (2026-07-06):** `kappaes` default changed to the C-faithful `.none`; `Params.puffy()` now sets `.kappaes = .puffy` explicitly. Behavior-preserving for every current call site (all go through `puffy()`/`grey()`). The optional preset-consolidation / function-pointer-hook was left out as non-essential.
+
 #### `koral/sim.zig:539` — sim.zig (1751 lines) has clean extraction seams that will matter before MPI lands
 
 *Project structure*
@@ -358,6 +364,8 @@ Problem-specific constants live inside six generic library modules as `.puffy` d
 The file is internally well-organized (section headers, C-source mapping in the module doc), but it is 2.3× the next-largest source file and aggregates several separable concerns inside the comptime `Sim(cfg)` struct: (1) the boundary-condition block — setBc/setBcCell/p2uCell/copyCellP/avgCellP/fillCorners2d, lines 539-791, ~250 lines — which is exactly the code that grows when the planned MPI backend adds ghost exchange (the comm/ seam already anticipates this); (2) the threading dispatch — parallelRows/u2pRowsWorker/implicitRowsWorker/ChunkResult, lines 925-983 and 1546-1588; (3) FaceStore plus the Flag/Scal bookkeeping enums, lines 59-173, which are generic storage utilities not evolution logic. The codebase already has the right pattern for extracting from a comptime struct: problems/puffy.zig's `pub fn Bc(comptime SimT: type) type`.
 
 **Fix:** Extract in the order the code will churn: (1) sim/bc.zig first — setBc/setBcCell/p2uCell/copyCellP/avgCellP/fillCorners2d (lines 539-791), written SimT-generic like the existing house pattern (puffy.zig:639 `Bc(comptime SimT: type)`, magn/ct.zig `fluxCt(comptime SimT: type, sim: *SimT)`); this is the region the planned MPI backend (comm/serial.zig doc: "the MPI backend implements the same API later") will grow, and a dedicated file maps directly onto C finite.c:2805/3203. Note call sites change from method form to module-function form since Zig 0.16 has no usingnamespace mixins. (2) parallelRows/ChunkResult/the two row workers into sim/threading.zig. (3) FaceStore + Flag/Scal (lines 59-173) into sim/storage.zig — these are already file-scope declarations outside Sim(cfg), so the move is mechanical. Keep Sim.step and the operators (opExplicit/opImplicit/calcU2p) in sim.zig.
+
+**Fixed (2026-07-06):** Extracted `sim/storage.zig` (FaceStore + the Flag/Scal bookkeeping enums), `sim/bc.zig` (SimT-generic `setBc`+ghost/corner helpers — the MPI-growth seam), and `sim/threading.zig` (generic `parallelRows` + `ChunkResult`). `sim.zig` keeps a thin `setBc` delegator method and the sim-specific row workers, and re-exports `BcKind`/`BcFace`/`Flag`/`FaceStore` so problems/tests are unchanged. (The two thin row-worker bodies were kept in sim.zig rather than moved, to avoid pulling the implicit-solver imports into the dispatch module.)
 
 ### Test hygiene
 
@@ -969,6 +977,8 @@ koral/flux/laxf.zig holds the Riemann face-flux combination (laxf/hll, 21 lines)
 
 **Fix:** Rename the directory to match the barrel namespace: `git mv koral/flux koral/riemann` so the file becomes koral/riemann/laxf.zig — this mirrors the existing single-file-directory pattern of recon/recon.zig (do not move it to a top-level koral/riemann.zig; recon is not top-level either). Update the three import sites (koral/koral.zig:76, koral/sim.zig:50, koral/flux_tests.zig:12) and the doc path references (docs/USER_GUIDE.md:736, :903; docs/ARCHITECTURE.md:679, :880; docs/PHYSICS.md:524). This removes the flux/ vs physics/flux.zig collision and makes grep for "riemann" find the Riemann solver.
 
+**Fixed (2026-07-06):** `git mv koral/flux koral/riemann` (file is now `koral/riemann/laxf.zig`, mirroring `recon/recon.zig`); the three import sites and the doc path references were updated. Directory name now matches the `riemann` barrel namespace.
+
 #### `koral/physics/radvisc.zig:425` — General metric/math helpers (rHorizonBL, rIscoBL, stepFunction) are misfiled in the radiative-viscosity module
 
 *Project structure*
@@ -976,6 +986,8 @@ koral/flux/laxf.zig holds the Riemann face-flux combination (laxf/hll, 21 lines)
 rHorizonBL (C: metric.c:245), rIscoBL (C: metric.c:252) and stepFunction (C: misc.c:1311) are generic Kerr-geometry / smoothing utilities, not viscosity code. The consequence is a wrong-direction dependency: koral/magn/dynamo.zig:157-196 imports physics/radvisc.zig solely to call all three, and rIscoBL is not used by radvisc.zig at all — it lives here only so dynamo can reach it. In the C sources these live in metric.c/misc.c, so the current placement also breaks the otherwise careful C-file-to-Zig-module correspondence.
 
 **Fix:** Move rHorizonBL/rIscoBL into koral/metric/ (e.g. next to MetricParams in metric/forms.zig or metric/metric.zig) and stepFunction into a small shared math/misc module; import them from radvisc.zig and dynamo.zig from there.
+
+**Fixed (2026-07-06):** `rHorizonBL`/`rIscoBL` moved to `metric/metric.zig` (next to `MetricParams`), `stepFunction` to a new `math/misc.zig`; `radvisc.zig` and `magn/dynamo.zig` import them from there, and dynamo's now-unnecessary `radvisc` import was dropped.
 
 *Hand-verified: rHorizonBL/rIscoBL transcribe metric.c:245/252 and stepFunction misc.c:1311, yet live in radvisc.zig; magn/dynamo.zig:157-158,196 imports them from there.*
 

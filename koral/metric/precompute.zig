@@ -106,6 +106,22 @@ pub fn geometryAt(coords: Coords, mp: MetricParams, x: [4]f64) Geometry {
     return geo;
 }
 
+/// BL (OUTCOORDS) geometry at a cell center — C: fill_geometry_arb(...,
+/// OUTCOORDS) with OUTCOORDS == BLCOORDS. Transforms the cell-center MYCOORDS
+/// position to Boyer–Lindquist, evaluates the Kerr-BL metric there, and stamps
+/// the cell indices. The single home for this reduction, shared by the
+/// diagnostics (io/scalars), the dynamo (magn/dynamo), and PUFFY init
+/// (problems/puffy) — see those modules' thin wrappers.
+pub fn geometryBLat(g: *const Grid, coords: Coords, mp: MetricParams, ix: i64, iy: i64, iz: i64) Geometry {
+    const xx = [4]f64{ 0.0, g.xc(ix), g.yc(iy), g.zc(iz) };
+    const xxbl = coco.cocoN(xx, coords, .bl, mp);
+    var geom = geometryAt(.bl, mp, xxbl);
+    geom.ix = ix;
+    geom.iy = iy;
+    geom.iz = iz;
+    return geom;
+}
+
 pub const MetricCache = struct {
     allocator: std.mem.Allocator,
     grid: Grid,

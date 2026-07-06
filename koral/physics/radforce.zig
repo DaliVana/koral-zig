@@ -58,16 +58,22 @@ pub const Params = struct {
     consts: thermo.Consts,
     channels: opacities.Channels = .{},
     kappa: KappaMode = .default,
-    kappaes: KappaesMode = .puffy,
+    /// C-faithful neutral default: without a PR_KAPPAES hook C returns 0.
+    /// PUFFY's Klein–Nishina scattering is opt-in via `Params.puffy()`, so a
+    /// non-PUFFY problem never silently inherits PUFFY scattering physics.
+    kappaes: KappaesMode = .none,
 
     pub fn init(units: units_mod.Units, comp: thermo.Composition) Params {
         return .{ .consts = thermo.Consts.init(units, comp) };
     }
 
     /// The PUFFY build: MASS = 10 M☉, HFRAC = 1 with the direct
-    /// MU_GAS/MU_I/MU_E = 1/2/2 overrides, all channels on.
+    /// MU_GAS/MU_I/MU_E = 1/2/2 overrides, all channels on, and the
+    /// Klein–Nishina scattering hook (PR_KAPPAES) enabled explicitly.
     pub fn puffy() Params {
-        return init(units_mod.Units.init(10.0), thermo.Composition.puffy);
+        var p = init(units_mod.Units.init(10.0), thermo.Composition.puffy);
+        p.kappaes = .puffy;
+        return p;
     }
 
     /// A grey test problem (radtube/radpulse): PR_KAPPA `kappa = kabs*rho`

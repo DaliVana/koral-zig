@@ -521,7 +521,7 @@ $N_G = 3$.
 ### 8.3 Approximate Riemann solvers (LAXF / HLL)
 
 One-sided fluxes are combined per face
-([`koral/flux/laxf.zig`](../koral/flux/laxf.zig)). **Lax–Friedrichs** (PUFFY):
+([`koral/riemann/laxf.zig`](../koral/riemann/laxf.zig)). **Lax–Friedrichs** (PUFFY):
 $$F^\star = \tfrac12\big(F_L + F_R\big) - \tfrac12\,a_g\,(U_R - U_L),$$
 with $a_g$ the local maximum characteristic speed. **HLL**:
 $$F^\star = \begin{cases} F_L, & a_l > 0\\ F_R, & a_r < 0\\ \dfrac{-a_l F_R + a_r F_L + a_l a_r (U_R - U_L)}{a_r - a_l}, & \text{else}\end{cases}$$

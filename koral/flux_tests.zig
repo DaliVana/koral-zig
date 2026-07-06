@@ -9,7 +9,7 @@ const hydro = @import("physics/hydro.zig");
 const recon = @import("recon/recon.zig");
 const wavespeeds = @import("physics/wavespeeds.zig");
 const fluxmod = @import("physics/flux.zig");
-const laxf_mod = @import("flux/laxf.zig");
+const laxf_mod = @import("riemann/laxf.zig");
 const precompute = @import("metric/precompute.zig");
 const metric = @import("metric/metric.zig");
 

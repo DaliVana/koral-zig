@@ -32,9 +32,10 @@ const layout = @import("../layout.zig");
 const relele = @import("../relele.zig");
 const mhd = @import("../physics/bfield.zig");
 const radiation = @import("../physics/radiation.zig");
-const radvisc = @import("../physics/radvisc.zig");
 const frames = @import("../frames.zig");
 const coco = @import("../metric/coco.zig");
+const metric = @import("../metric/metric.zig");
+const misc = @import("../math/misc.zig");
 const precompute = @import("../metric/precompute.zig");
 const p2u_mod = @import("../p2u.zig");
 const ct = @import("ct.zig");
@@ -102,17 +103,10 @@ pub fn calcScaleHeight(comptime SimT: type, sim: *SimT) void {
     }
 }
 
-/// BL geometry at a cell center (C: fill_geometry_arb KERRCOORDS).
+/// BL geometry at a cell center (C: fill_geometry_arb KERRCOORDS) — the
+/// reduction lives once in precompute.geometryBLat.
 fn geomBLat(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64) Geometry {
-    const cfg = SimT.Cfg;
-    const g = &sim.grid;
-    const xx = [4]f64{ 0.0, g.xc(ix), g.yc(iy), g.zc(iz) };
-    const xxbl = coco.cocoN(xx, cfg.coords, .bl, sim.opt.mp);
-    var geom = precompute.geometryAt(.bl, sim.opt.mp, xxbl);
-    geom.ix = ix;
-    geom.iy = iy;
-    geom.iz = iz;
-    return geom;
+    return precompute.geometryBLat(&sim.grid, SimT.Cfg.coords, sim.opt.mp, ix, iy, iz);
 }
 
 /// C: calc_angle_brbphibsq (magn.c:804), non-avg path — the field pitch
@@ -154,8 +148,8 @@ pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) relele.Error!void {
     const nx = sim.nxi();
     const ny = sim.nyi();
     const nz = sim.nzi();
-    const rhor = radvisc.rHorizonBL(sim.opt.mp.a);
-    const risco = radvisc.rIscoBL(sim.opt.mp.a);
+    const rhor = metric.rHorizonBL(sim.opt.mp.a);
+    const risco = metric.rIscoBL(sim.opt.mp.a);
 
     @memset(sim.dyn_a.data, 0);
 
@@ -193,7 +187,7 @@ pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) relele.Error!void {
                     facangle = @max(0.0, (dp.thetaangle - angle) / dp.thetaangle);
                 }
 
-                const facradius = radvisc.stepFunction(r - 1.0 * risco, 0.1 * risco);
+                const facradius = misc.stepFunction(r - 1.0 * risco, 0.1 * risco);
 
                 const gamma = sim.opt.gam; // no CONSISTENTGAMMA
                 var prermhd = (gamma - 1.0) * pp[uu_i];

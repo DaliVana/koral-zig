@@ -47,9 +47,12 @@ const radiation = @import("physics/radiation.zig");
 const radforce = @import("physics/radforce.zig");
 const radvisc_mod = @import("physics/radvisc.zig");
 const p2u_mod = @import("p2u.zig");
-const laxf_mod = @import("flux/laxf.zig");
+const laxf_mod = @import("riemann/laxf.zig");
 const ct = @import("magn/ct.zig");
 const dynamo_mod = @import("magn/dynamo.zig");
+const storage = @import("sim/storage.zig");
+const bc = @import("sim/bc.zig");
+const threading = @import("sim/threading.zig");
 
 const Grid = grid_mod.Grid;
 const Geometry = geometry.Geometry;
@@ -58,119 +61,23 @@ pub const Error = relele.Error || error{OutOfMemory};
 
 const big: f64 = 1.0e50; // C: BIG (ko.h) — only compared against, value moot
 
-/// Boundary handling per axis (C: PERIODIC_?BC / COPY_?BC / SPECIFIC_BC).
-pub const BcKind = enum { periodic, copy, specific };
-
-/// Which boundary a ghost cell belongs to (C: XBCLO..ZBCHI).
-pub const BcFace = enum { xlo, xhi, ylo, yhi, zlo, zhi };
-
-/// Per-cell integer flags (C: cellflag; only the ones this path uses —
-/// RADSOURCETYPEFLAG is a constant under IMPLICIT_LAB_RAD_SOURCE, skipped).
-pub const Flag = enum(usize) {
-    entropy, // ENTROPYFLAG — entropy inversion used this step
-    entropy2, // ENTROPYFLAG2 — rad-energy borrowing failed (M7)
-    entropy3, // ENTROPYFLAG3 — copy_entropycount snapshot
-    hd_fixup, // HDFIXUPFLAG
-    rad_fixup, // RADFIXUPFLAG (M7)
-    radimp_fixup, // RADIMPFIXUPFLAG (M9) — implicit solver failed here
-};
-const n_flags = @typeInfo(Flag).@"enum".fields.len;
-
-/// Cell-scalar slots (C: ahdxl..ahdz, aradxl..aradz global arrays +
-/// cell_tstepden/cell_dt). The arad slots hold the τ-limited speeds used
-/// for the fluxes; the unlimited ones only feed the timestep and are not
-/// stored per cell (finite.c:415-437).
-const Scal = enum(usize) {
-    ahdxl,
-    ahdxr,
-    ahdyl,
-    ahdyr,
-    ahdzl,
-    ahdzr,
-    ahdx,
-    ahdy,
-    ahdz,
-    aradxl,
-    aradxr,
-    aradyl,
-    aradyr,
-    aradzl,
-    aradzr,
-    aradx,
-    arady,
-    aradz,
-    tstepden,
-    cell_dt,
-};
-const n_scal = @typeInfo(Scal).@"enum".fields.len;
-const ahd_l = [3]Scal{ .ahdxl, .ahdyl, .ahdzl };
-const ahd_r = [3]Scal{ .ahdxr, .ahdyr, .ahdzr };
-const ahd_m = [3]Scal{ .ahdx, .ahdy, .ahdz };
-const arad_l = [3]Scal{ .aradxl, .aradyl, .aradzl };
-const arad_r = [3]Scal{ .aradxr, .aradyr, .aradzr };
-const arad_m = [3]Scal{ .aradx, .arady, .aradz };
-
-/// Face-centered storage for one direction: like Field but with one extra
-/// slice in its own dimension (C: ubx/uby/ubz arrays, set_ubx/get_ub).
-pub fn FaceStore(comptime NV: usize) type {
-    return struct {
-        const Self = @This();
-        data: []f64,
-        nx_s: usize,
-        ny_s: usize,
-        nz_s: usize,
-        ngx: i64,
-        ngy: i64,
-        ngz: i64,
-
-        fn init(allocator: std.mem.Allocator, g: Grid, dim: usize) !Self {
-            const nx_s = g.sx() + @intFromBool(dim == 0);
-            const ny_s = g.sy() + @intFromBool(dim == 1);
-            const nz_s = g.sz() + @intFromBool(dim == 2);
-            const data = try allocator.alloc(f64, nx_s * ny_s * nz_s * NV);
-            @memset(data, 0);
-            return .{
-                .data = data,
-                .nx_s = nx_s,
-                .ny_s = ny_s,
-                .nz_s = nz_s,
-                .ngx = @intCast(g.ngx),
-                .ngy = @intCast(g.ngy),
-                .ngz = @intCast(g.ngz),
-            };
-        }
-
-        fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            allocator.free(self.data);
-        }
-
-        fn offset(self: *const Self, ix: i64, iy: i64, iz: i64) usize {
-            const jx: usize = @intCast(ix + self.ngx);
-            const jy: usize = @intCast(iy + self.ngy);
-            const jz: usize = @intCast(iz + self.ngz);
-            std.debug.assert(jx < self.nx_s and jy < self.ny_s and jz < self.nz_s);
-            return ((jz * self.ny_s + jy) * self.nx_s + jx) * NV;
-        }
-
-        pub fn get(self: *const Self, iv: usize, ix: i64, iy: i64, iz: i64) f64 {
-            return self.data[self.offset(ix, iy, iz) + iv];
-        }
-        pub fn set(self: *Self, iv: usize, ix: i64, iy: i64, iz: i64, v: f64) void {
-            self.data[self.offset(ix, iy, iz) + iv] = v;
-        }
-        pub fn load(self: *const Self, ix: i64, iy: i64, iz: i64, out: *[NV]f64) void {
-            const off = self.offset(ix, iy, iz);
-            @memcpy(out, self.data[off..][0..NV]);
-        }
-        pub fn store(self: *Self, ix: i64, iy: i64, iz: i64, pp: *const [NV]f64) void {
-            const off = self.offset(ix, iy, iz);
-            @memcpy(self.data[off..][0..NV], pp);
-        }
-        pub fn zero(self: *Self) void {
-            @memset(self.data, 0);
-        }
-    };
-}
+// Storage & bookkeeping (face buffers, integer-flag / scalar-slot enums) live
+// in sim/storage.zig; the boundary-condition enums + logic in sim/bc.zig.
+// Re-exported here so external code keeps referencing them as sim.BcFace /
+// sim.Flag / sim.FaceStore.
+pub const BcKind = bc.BcKind;
+pub const BcFace = bc.BcFace;
+pub const FaceStore = storage.FaceStore;
+pub const Flag = storage.Flag;
+const n_flags = storage.n_flags;
+const Scal = storage.Scal;
+const n_scal = storage.n_scal;
+const ahd_l = storage.ahd_l;
+const ahd_r = storage.ahd_r;
+const ahd_m = storage.ahd_m;
+const arad_l = storage.arad_l;
+const arad_r = storage.arad_r;
+const arad_m = storage.arad_m;
 
 pub fn Sim(comptime cfg: config.Config) type {
     comptime cfg.validate();
@@ -538,257 +445,13 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         // ---- boundary conditions --------------------------------------------
 
-        /// C: set_bc (finite.c:2805) — ghost cells (no corners), then for MHD
-        /// ("MPI4CORNERS") builds the 2D corner surfaces + diagonals
-        /// (finite.c:3203-3403; serial, so mpi_isitBC ≡ 1).
+        /// C: set_bc (finite.c:2805). The implementation (ghost fill + the 2D
+        /// corner filling, and the MPI-growth seam) lives in sim/bc.zig; this
+        /// is the stable method entry point that problems/tests call.
         pub fn setBc(self: *Self, t: f64, ifinit: bool) Error!void {
-            const g = &self.grid;
-            const nx = self.nxi();
-            const ny = self.nyi();
-            const nz = self.nzi();
-            const ngx: i64 = @intCast(g.ngx);
-            const ngy: i64 = @intCast(g.ngy);
-            const ngz: i64 = @intCast(g.ngz);
-
-            // x boundaries (ghost columns, domain rows)
-            if (g.ngx > 0) {
-                var iz: i64 = 0;
-                while (iz < nz) : (iz += 1) {
-                    var iy: i64 = 0;
-                    while (iy < ny) : (iy += 1) {
-                        var i: i64 = 1;
-                        while (i <= ngx) : (i += 1) {
-                            try self.setBcCell(-i, iy, iz, t, ifinit, .xlo);
-                            try self.setBcCell(nx - 1 + i, iy, iz, t, ifinit, .xhi);
-                        }
-                    }
-                }
-            }
-            // y boundaries
-            if (g.ngy > 0) {
-                var iz: i64 = 0;
-                while (iz < nz) : (iz += 1) {
-                    var ix: i64 = 0;
-                    while (ix < nx) : (ix += 1) {
-                        var i: i64 = 1;
-                        while (i <= ngy) : (i += 1) {
-                            try self.setBcCell(ix, -i, iz, t, ifinit, .ylo);
-                            try self.setBcCell(ix, ny - 1 + i, iz, t, ifinit, .yhi);
-                        }
-                    }
-                }
-            }
-            // z boundaries
-            if (g.ngz > 0) {
-                var iy: i64 = 0;
-                while (iy < ny) : (iy += 1) {
-                    var ix: i64 = 0;
-                    while (ix < nx) : (ix += 1) {
-                        var i: i64 = 1;
-                        while (i <= ngz) : (i += 1) {
-                            try self.setBcCell(ix, iy, -i, t, ifinit, .zlo);
-                            try self.setBcCell(ix, iy, nz - 1 + i, t, ifinit, .zhi);
-                        }
-                    }
-                }
-            }
-
-            if (comptime wide) {
-                if (g.ny > 1 and g.nz == 1) {
-                    try self.fillCorners2d();
-                } else if (g.nz > 1) {
-                    // 3D / r-φ corner filling arrives with the problems that
-                    // need it; no M5/M6 target is 3D.
-                    @panic("Sim.setBc: 3D corner filling not implemented");
-                }
-            }
+            return bc.setBc(Self, self, t, ifinit);
         }
 
-        fn setBcCell(self: *Self, ix: i64, iy: i64, iz: i64, t: f64, ifinit: bool, face: BcFace) Error!void {
-            const kind: BcKind = switch (face) {
-                .xlo, .xhi => self.opt.bc_x,
-                .ylo, .yhi => self.opt.bc_y,
-                .zlo, .zhi => self.opt.bc_z,
-            };
-            var pp: [NV]f64 = undefined;
-            switch (kind) {
-                .specific => {
-                    pp = self.opt.specific_bc.?(self, ix, iy, iz, t, ifinit, face);
-                },
-                .periodic, .copy => {
-                    var iix = ix;
-                    var iiy = iy;
-                    var iiz = iz;
-                    const nx = self.nxi();
-                    const ny = self.nyi();
-                    const nz = self.nzi();
-                    switch (face) {
-                        .xlo, .xhi => switch (kind) {
-                            .periodic => {
-                                if (ix < 0) iix = ix + nx;
-                                if (ix > nx - 1) iix = ix - nx;
-                            },
-                            .copy => {
-                                if (ix < 0) iix = 0;
-                                if (ix > nx - 1) iix = nx - 1;
-                            },
-                            else => unreachable,
-                        },
-                        .ylo, .yhi => switch (kind) {
-                            .periodic => {
-                                if (iy < 0) iiy = iy + ny;
-                                if (iy > ny - 1) iiy = iy - ny;
-                                // C quirk (finite.c:2756): NY<NG pins to 0
-                                if (ny < @as(i64, @intCast(self.grid.ng))) iiy = 0;
-                            },
-                            .copy => {
-                                if (iy < 0) iiy = 0;
-                                if (iy > ny - 1) iiy = ny - 1;
-                            },
-                            else => unreachable,
-                        },
-                        .zlo, .zhi => switch (kind) {
-                            .periodic => {
-                                if (iz < 0) iiz = iz + nz;
-                                if (iz > nz - 1) iiz = iz - nz;
-                                if (nz < @as(i64, @intCast(self.grid.ng))) iiz = 0;
-                            },
-                            .copy => {
-                                if (iz < 0) iiz = 0;
-                                if (iz > nz - 1) iiz = nz - 1;
-                            },
-                            else => unreachable,
-                        },
-                    }
-                    self.p.load(iix, iiy, iiz, &pp);
-                },
-            }
-            const geom = self.cache.fillGeometry(ix, iy, iz);
-            const uu = try p2u_mod.p2u(cfg, pp, &geom, self.opt.gam);
-            self.p.store(ix, iy, iz, &pp);
-            self.u.store(ix, iy, iz, &uu);
-        }
-
-        /// p2u one ghost cell from its (already stored) primitives.
-        fn p2uCell(self: *Self, ix: i64, iy: i64, iz: i64) Error!void {
-            var pp: [NV]f64 = undefined;
-            self.p.load(ix, iy, iz, &pp);
-            const geom = self.cache.fillGeometry(ix, iy, iz);
-            const uu = try p2u_mod.p2u(cfg, pp, &geom, self.opt.gam);
-            self.u.store(ix, iy, iz, &uu);
-        }
-
-        fn copyCellP(self: *Self, dix: i64, diy: i64, six: i64, siy: i64) void {
-            var pp: [NV]f64 = undefined;
-            self.p.load(six, siy, 0, &pp);
-            self.p.store(dix, diy, 0, &pp);
-        }
-
-        fn avgCellP(self: *Self, dix: i64, diy: i64, ax: i64, ay: i64, bx: i64, by: i64) void {
-            var pa: [NV]f64 = undefined;
-            var pb: [NV]f64 = undefined;
-            self.p.load(ax, ay, 0, &pa);
-            self.p.load(bx, by, 0, &pb);
-            var pp: [NV]f64 = undefined;
-            for (0..NV) |iv| pp[iv] = 0.5 * (pa[iv] + pb[iv]);
-            self.p.store(dix, diy, 0, &pp);
-        }
-
-        /// finite.c:3203-3403 — 2D (TNZ==1) total-corner filling: NG−1 deep
-        /// one-cell surfaces copied from the adjacent domain row/column, then
-        /// two diagonal cells averaged (periodic runs wrap the diagonals).
-        fn fillCorners2d(self: *Self) Error!void {
-            const nx = self.nxi();
-            const ny = self.nyi();
-            const ng: i64 = @intCast(self.grid.ng);
-            const per_x = self.opt.bc_x == .periodic;
-            const per_y = self.opt.bc_y == .periodic;
-
-            // bottom-left
-            {
-                var i: i64 = 0;
-                while (i < ng - 1) : (i += 1) {
-                    self.copyCellP(-ng + i, -1, -ng + i, 0);
-                    try self.p2uCell(-ng + i, -1, 0);
-                    self.copyCellP(-1, -ng + i, 0, -ng + i);
-                    try self.p2uCell(-1, -ng + i, 0);
-                }
-                var s1 = [4]i64{ -1, 0, 0, -1 }; // ix1,iy1,ix2,iy2
-                if (per_y) s1 = .{ -1, ny - 1, -1, ny - 1 };
-                if (per_x) s1 = .{ nx - 1, -1, nx - 1, -1 };
-                self.avgCellP(-1, -1, s1[0], s1[1], s1[2], s1[3]);
-                try self.p2uCell(-1, -1, 0);
-
-                var s2 = [4]i64{ -2, -1, -1, -2 };
-                if (per_y) s2 = .{ -2, ny - 2, -2, ny - 2 };
-                if (per_x) s2 = .{ nx - 2, -2, nx - 2, -2 };
-                self.avgCellP(-2, -2, s2[0], s2[1], s2[2], s2[3]);
-                try self.p2uCell(-2, -2, 0);
-            }
-            // top-left
-            {
-                var i: i64 = 0;
-                while (i < ng - 1) : (i += 1) {
-                    self.copyCellP(-ng + i, ny, -ng + i, ny - 1);
-                    try self.p2uCell(-ng + i, ny, 0);
-                    self.copyCellP(-1, ny + i + 1, 0, ny + i + 1);
-                    try self.p2uCell(-1, ny + i + 1, 0);
-                }
-                var s1 = [4]i64{ -1, ny - 1, 0, ny };
-                if (per_y) s1 = .{ -1, 0, -1, 0 };
-                if (per_x) s1 = .{ nx - 1, ny, nx - 1, ny };
-                self.avgCellP(-1, ny, s1[0], s1[1], s1[2], s1[3]);
-                try self.p2uCell(-1, ny, 0);
-
-                var s2 = [4]i64{ -2, ny, -1, ny + 1 };
-                if (per_y) s2 = .{ -2, 1, -2, 1 };
-                if (per_x) s2 = .{ nx - 2, ny + 1, nx - 2, ny + 1 };
-                self.avgCellP(-2, ny + 1, s2[0], s2[1], s2[2], s2[3]);
-                try self.p2uCell(-2, ny + 1, 0);
-            }
-            // bottom-right
-            {
-                var i: i64 = 0;
-                while (i < ng - 1) : (i += 1) {
-                    self.copyCellP(nx + i + 1, -1, nx + i + 1, 0);
-                    try self.p2uCell(nx + i + 1, -1, 0);
-                    self.copyCellP(nx, -ng + i, nx - 1, -ng + i);
-                    try self.p2uCell(nx, -ng + i, 0);
-                }
-                var s1 = [4]i64{ nx - 1, -1, nx, 0 };
-                if (per_y) s1 = .{ nx, ny - 1, nx, ny - 1 };
-                if (per_x) s1 = .{ 0, -1, 0, -1 };
-                self.avgCellP(nx, -1, s1[0], s1[1], s1[2], s1[3]);
-                try self.p2uCell(nx, -1, 0);
-
-                var s2 = [4]i64{ nx, -2, nx + 1, -1 };
-                if (per_y) s2 = .{ nx + 1, ny - 2, nx + 1, ny - 2 };
-                if (per_x) s2 = .{ 1, -2, 1, -2 };
-                self.avgCellP(nx + 1, -2, s2[0], s2[1], s2[2], s2[3]);
-                try self.p2uCell(nx + 1, -2, 0);
-            }
-            // top-right
-            {
-                var i: i64 = 0;
-                while (i < ng - 1) : (i += 1) {
-                    self.copyCellP(nx + i + 1, ny, nx + i + 1, ny - 1);
-                    try self.p2uCell(nx + i + 1, ny, 0);
-                    self.copyCellP(nx, ny + i + 1, nx - 1, ny + i + 1);
-                    try self.p2uCell(nx, ny + i + 1, 0);
-                }
-                var s1 = [4]i64{ nx - 1, ny, nx, ny - 1 };
-                if (per_y) s1 = .{ nx, 0, nx, 0 };
-                if (per_x) s1 = .{ 0, ny, 0, ny };
-                self.avgCellP(nx, ny, s1[0], s1[1], s1[2], s1[3]);
-                try self.p2uCell(nx, ny, 0);
-
-                var s2 = [4]i64{ nx, ny + 1, nx + 1, ny };
-                if (per_y) s2 = .{ nx + 1, 1, nx + 1, 1 };
-                if (per_x) s2 = .{ 1, ny + 1, 1, ny + 1 };
-                self.avgCellP(nx + 1, ny + 1, s2[0], s2[1], s2[2], s2[3]);
-                try self.p2uCell(nx + 1, ny + 1, 0);
-            }
-        }
 
         // ---- wavespeeds & timestep -------------------------------------------
 
@@ -922,56 +585,11 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         // ---- u2p over the grid ------------------------------------------------
 
-        // ---- optional row-parallel dispatch ---------------------------------
+        // ---- optional row-parallel dispatch --------------------------------
+        // The generic row-splitting mechanism (parallelRows + ChunkResult)
+        // lives in sim/threading.zig; the sim-specific worker bodies stay here.
 
-        /// Per-worker scratch: the first error a chunk hit, plus its slice of
-        /// the implicit-solver counters (summed after the join — integer add
-        /// is order-independent, so the result is identical to serial).
-        const ChunkResult = struct { err: ?Error = null, n_fail: u64 = 0, n_iters: u64 = 0 };
-
-        /// Run `worker` over the iy-rows, split across opt.nthreads OS threads
-        /// when >1. Rows are disjoint and every per-cell inversion only touches
-        /// its own cell (geometry reads are `*const`), so the parallel result
-        /// is bit-identical to the serial one — the golden tests run at
-        /// nthreads=1 and a determinism test pins the equivalence.
-        fn parallelRows(
-            self: *Self,
-            comptime worker: fn (self: *Self, iy0: i64, iy1: i64, res: *ChunkResult) void,
-        ) Error!void {
-            const ny = self.nyi();
-            const nt = @max(@as(usize, 1), self.opt.nthreads);
-            if (nt <= 1 or ny <= 1) {
-                var res = ChunkResult{};
-                worker(self, 0, ny, &res);
-                self.n_radimp_failures += res.n_fail;
-                self.n_radimp_iters += res.n_iters;
-                if (res.err) |e| return e;
-                return;
-            }
-            const maxt = 64;
-            const n_workers: usize = @intCast(@min(@as(i64, @intCast(@min(nt, maxt))), ny));
-            var results = [_]ChunkResult{.{}} ** maxt;
-            var threads = [_]?std.Thread{null} ** maxt;
-            var i: usize = 0;
-            while (i < n_workers) : (i += 1) {
-                const iy0 = @divTrunc(ny * @as(i64, @intCast(i)), @as(i64, @intCast(n_workers)));
-                const iy1 = @divTrunc(ny * @as(i64, @intCast(i + 1)), @as(i64, @intCast(n_workers)));
-                threads[i] = std.Thread.spawn(.{}, worker, .{ self, iy0, iy1, &results[i] }) catch null;
-                // spawn failure → run this chunk inline (still correct)
-                if (threads[i] == null) worker(self, iy0, iy1, &results[i]);
-            }
-            for (0..n_workers) |k| if (threads[k]) |t| t.join();
-
-            var e: ?Error = null;
-            for (results[0..n_workers]) |r| {
-                self.n_radimp_failures += r.n_fail;
-                self.n_radimp_iters += r.n_iters;
-                if (r.err) |ee| e = ee;
-            }
-            if (e) |ee| return ee;
-        }
-
-        fn u2pRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *ChunkResult) void {
+        fn u2pRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
             self.u2pRows(iy0, iy1) catch |e| {
                 res.err = e;
             };
@@ -982,7 +600,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// row-parallel; the neighbour-averaging fixup and BC refresh stay
         /// serial (they read across rows).
         pub fn calcU2p(self: *Self) Error!void {
-            try self.parallelRows(u2pRowsWorker);
+            try threading.parallelRows(Self, self, u2pRowsWorker);
 
             try self.cellFixup(.hd_fixup);
             if (comptime L.hasVar(.ee)) {
@@ -1538,12 +1156,12 @@ pub fn Sim(comptime cfg: config.Config) type {
             _ = self.opt.opac orelse return;
 
             self.impl_dt = dtin; // read by every worker row (single pass)
-            try self.parallelRows(implicitRowsWorker);
+            try threading.parallelRows(Self, self, implicitRowsWorker);
 
             try self.cellFixup(.radimp_fixup);
         }
 
-        fn implicitRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *ChunkResult) void {
+        fn implicitRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
             // errors here would be relele failures inside the solver, but
             // solve_implicit_lab returns a status (never throws), so this
             // worker cannot error — it only tallies counters into `res`.

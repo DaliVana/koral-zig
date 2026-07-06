@@ -30,6 +30,8 @@ const radiation = @import("radiation.zig");
 const radforce = @import("radforce.zig");
 const p2u_mod = @import("../p2u.zig");
 const coco = @import("../metric/coco.zig");
+const metric = @import("../metric/metric.zig");
+const misc = @import("../math/misc.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 const small: f64 = 1.0e-80; // C: SMALL
@@ -265,13 +267,13 @@ pub fn calcRadViscCoeff(
 
     // RADVISCMFPSPH: mfp capped by the spherical (BL) radius, killed inside
     // rmin = 1.2·r_horizon (no RADVISCMFPSPHRMIN / RADVISCMFPSPHMAX for PUFFY).
-    const rhor = rHorizonBL(sim.opt.mp.a);
+    const rhor = metric.rHorizonBL(sim.opt.mp.a);
     const rmin = 1.2 * rhor;
     const xxbl = coco.cocoN(geom.xxvec, cfg.coords, .bl, sim.opt.mp);
     const mfplim = xxbl[1];
     if (mfp > mfplim or chi < small) mfp = mfplim;
     if (mfp < 0 or !std.math.isFinite(mfp)) mfp = 0;
-    mfp *= stepFunction(xxbl[1] - rmin, 0.2 * rmin);
+    mfp *= misc.stepFunction(xxbl[1] - rmin, 0.2 * rmin);
     if (xxbl[1] <= 1.0 * rhor) mfp = 0;
 
     var nu = sim.opt.radvisc.alpha * mfp;
@@ -415,24 +417,4 @@ pub fn addRadViscFlux(
     for (0..4) |nu| {
         ff[ee0 + nu] += gdetu * dampfac * rijvisc[dim + 1][nu];
     }
-}
-
-/// C: r_horizon_BL (metric.c:245) = 1 + √(1−a²).
-pub fn rHorizonBL(a: f64) f64 {
-    return 1.0 + @sqrt(1.0 - a * a);
-}
-
-/// C: r_ISCO_BL (metric.c:252), literal pow(·,1/3) shape. For a=0 → 6.
-pub fn rIscoBL(ac: f64) f64 {
-    const c3 = 1.0 / 3.0;
-    const z1 = 1.0 + std.math.pow(f64, 1.0 - ac * ac, c3) *
-        (std.math.pow(f64, 1.0 + ac, c3) + std.math.pow(f64, 1.0 - ac, c3));
-    const z2 = std.math.pow(f64, 3.0 * ac * ac + z1 * z1, 1.0 / 2.0);
-    return 3.0 + z2 - std.math.pow(f64, (3.0 - z1) * (3.0 + z1 + 2.0 * z2), 1.0 / 2.0);
-}
-
-/// C: step_function (misc.c:1311) — Heaviside smoothed so f(x9)=0.95.
-pub fn stepFunction(x: f64, x9: f64) f64 {
-    const k = 1.47222 / x9;
-    return 1.0 / (1.0 + @exp(-2.0 * k * x));
 }

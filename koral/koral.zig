@@ -36,6 +36,7 @@ pub const math = struct {
     pub const dual = @import("math/dual.zig");
     pub const Dual3 = dual.Dual3;
     pub const quad = @import("math/quad.zig");
+    pub const misc = @import("math/misc.zig");
 };
 
 pub const metric = struct {
@@ -73,7 +74,7 @@ pub const solve = struct {
 pub const recon = @import("recon/recon.zig");
 
 pub const riemann = struct {
-    pub const laxf = @import("flux/laxf.zig");
+    pub const laxf = @import("riemann/laxf.zig");
 };
 
 pub const sim = @import("sim.zig");
@@ -105,7 +106,12 @@ pub const io = struct {
 };
 
 test {
-    // Pull in all module tests.
+    // Pull in all module tests. Test files live flat in koral/ next to the
+    // code, in two families with one naming rule each so a subsystem's files
+    // sort adjacently:
+    //   * theory gates (math/analytic identities):  <subsystem>_tests.zig
+    //   * C-oracle goldens (tests/golden/*.kgld):    <subsystem>_golden_tests.zig
+    // New test files must be added to the list below (there is no auto-registration).
     _ = config;
     _ = layout;
     _ = units;
@@ -140,7 +146,7 @@ test {
     _ = magn.dynamo;
     _ = solve.invert_rad;
     _ = solve.implicit;
-    _ = @import("metric/tests.zig");
+    _ = @import("metric_tests.zig");
     _ = @import("evolution_tests.zig");
     _ = @import("mhd_evolution_tests.zig");
     _ = @import("radiation_tests.zig");
@@ -148,13 +154,13 @@ test {
     _ = @import("implicit_tests.zig");
     _ = @import("state_tests.zig");
     _ = @import("flux_tests.zig");
-    _ = @import("golden_test.zig");
-    _ = @import("golden_state_test.zig");
-    _ = @import("golden_flux_test.zig");
-    _ = @import("golden_rad_test.zig");
-    _ = @import("golden_opac_test.zig");
-    _ = @import("golden_implicit_test.zig");
-    _ = @import("golden_step_test.zig");
+    _ = @import("metric_golden_tests.zig");
+    _ = @import("state_golden_tests.zig");
+    _ = @import("flux_golden_tests.zig");
+    _ = @import("rad_golden_tests.zig");
+    _ = @import("opac_golden_tests.zig");
+    _ = @import("implicit_golden_tests.zig");
+    _ = @import("step_golden_tests.zig");
     _ = @import("testing/tubes.zig");
     _ = @import("polaraxis_tests.zig");
     _ = @import("radstep_tests.zig");
@@ -162,14 +168,14 @@ test {
     _ = @import("math/quad.zig");
     _ = @import("problems/puffy.zig");
     _ = @import("puffy_tests.zig");
-    _ = @import("golden_puffy_test.zig");
-    _ = @import("golden_visc_test.zig");
+    _ = @import("puffy_golden_tests.zig");
+    _ = @import("visc_golden_tests.zig");
     _ = @import("dynamo_tests.zig");
-    _ = @import("golden_dynamo_test.zig");
+    _ = @import("dynamo_golden_tests.zig");
     _ = @import("radvisc_tests.zig");
     _ = io.scalars;
     _ = io.dump;
     _ = @import("scalars_tests.zig");
     _ = @import("threading_tests.zig");
-    _ = @import("golden_puffystep_test.zig");
+    _ = @import("puffystep_golden_tests.zig");
 }

@@ -37,18 +37,11 @@ const dynamo = @import("../magn/dynamo.zig");
 const Geometry = geometry.Geometry;
 const pi = std.math.pi;
 
-/// BL (OUTCOORDS) geometry at a cell center — C: fill_geometry_arb(...,
-/// OUTCOORDS) with OUTCOORDS == BLCOORDS. Mirrors puffy.fillGeometryBL but
-/// pulls the coordinate system / metric params from the sim options so the
-/// reductions stay problem-agnostic.
+/// BL (OUTCOORDS) geometry at a cell center, pulling the coordinate system /
+/// metric params from the sim options so the reductions stay problem-agnostic.
+/// The reduction itself lives once in precompute.geometryBLat.
 fn blGeom(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64) Geometry {
-    const xx = [4]f64{ 0.0, sim.grid.xc(ix), sim.grid.yc(iy), sim.grid.zc(iz) };
-    const xxbl = coco.cocoN(xx, SimT.Cfg.coords, .bl, sim.opt.mp);
-    var g = precompute.geometryAt(.bl, sim.opt.mp, xxbl);
-    g.ix = ix;
-    g.iy = iy;
-    g.iz = iz;
-    return g;
+    return precompute.geometryBLat(&sim.grid, SimT.Cfg.coords, sim.opt.mp, ix, iy, iz);
 }
 
 /// r in OUTCOORDS at a radial index (θ,φ-independent for BL/MKS). MINK has no

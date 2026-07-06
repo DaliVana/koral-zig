@@ -396,15 +396,11 @@ pub fn setRadAtmosphere(
 // ---------------------------------------------------------------------------
 // prepinit.c — per-cell initial primitives (vector potential in the B slots)
 
-/// BL-coords geometry at the cell center (C: fill_geometry_arb KERRCOORDS).
+/// BL-coords geometry at the cell center (C: fill_geometry_arb KERRCOORDS),
+/// supplying this problem's fixed metric params. The reduction lives once in
+/// precompute.geometryBLat.
 pub fn fillGeometryBL(g: *const Grid, coords: config.Coords, ix: i64, iy: i64, iz: i64) Geometry {
-    const xx = [4]f64{ 0.0, g.xc(ix), g.yc(iy), g.zc(iz) };
-    const xxbl = coco.cocoN(xx, coords, .bl, mp);
-    var geom = precompute.geometryAt(.bl, mp, xxbl);
-    geom.ix = ix;
-    geom.iy = iy;
-    geom.iz = iz;
-    return geom;
+    return precompute.geometryBLat(g, coords, mp, ix, iy, iz);
 }
 
 /// prepinit.c:92-93 — the T > 0 root of P = bbb·T + aaa·T⁴ (Mathematica
