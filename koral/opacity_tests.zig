@@ -92,24 +92,24 @@ fn ppFromTemps(
 
 test "M8: kappa_es hand values — 0.4 cm2/g cold, exactly halved at Trad = 4.5e8 K" {
     const p = radforce.Params.puffy();
-    const u = p.c.units;
+    const u = p.consts.units;
     const rho: f64 = 3.7e-9;
 
     // cold radiation: Klein–Nishina correction -> 1
     // ((T/4.5e8)^0.86 ≤ 1e-13 needs T ≲ 4e-7 K)
     {
-        const kes = opacities.kappaEsPuffy(&p.c, p.ch, rho, 1.0e-10);
+        const kes = opacities.kappaEsPuffy(&p.consts, p.channels, rho, 1.0e-10);
         try expectClose(u.kappaGu2Cgs(kes / rho), 0.4, 1e-13);
     }
     // Trad = 4.5e8 exactly: (T/4.5e8)^0.86 = 1 -> correction = 1/2
     {
-        const kes = opacities.kappaEsPuffy(&p.c, p.ch, rho, 4.5e8);
+        const kes = opacities.kappaEsPuffy(&p.consts, p.channels, rho, 4.5e8);
         try expectClose(u.kappaGu2Cgs(kes / rho), 0.2, 1e-13);
     }
     // linear in rho
     {
-        const k1 = opacities.kappaEsPuffy(&p.c, p.ch, rho, 1.0e6);
-        const k2 = opacities.kappaEsPuffy(&p.c, p.ch, 2.0 * rho, 1.0e6);
+        const k1 = opacities.kappaEsPuffy(&p.consts, p.channels, rho, 1.0e6);
+        const k2 = opacities.kappaEsPuffy(&p.consts, p.channels, 2.0 * rho, 1.0e6);
         try expectClose(k2 / k1, 2.0, 1e-15);
     }
 }
@@ -141,14 +141,14 @@ test "M8: bremsstrahlung scales as rho^2 and Te^-3.5 (relativistic correction fa
 
     // density: kappa_gasAbs ∝ ρ²
     {
-        const k1 = opacities.calcOpacitiesFromState(&p.c, brems_only, stateIn(rho, te, 1.0, 0, &p.c));
-        const k2 = opacities.calcOpacitiesFromState(&p.c, brems_only, stateIn(2.0 * rho, te, 1.0, 0, &p.c));
+        const k1 = opacities.calcOpacitiesFromState(&p.consts, brems_only, stateIn(rho, te, 1.0, 0, &p.consts));
+        const k2 = opacities.calcOpacitiesFromState(&p.consts, brems_only, stateIn(2.0 * rho, te, 1.0, 0, &p.consts));
         try expectClose(k2.gas_abs / k1.gas_abs, 4.0, 1e-14);
     }
     // temperature: κ ∝ √Te·(1+4.4e-10·Te)/Te⁴
     {
-        const k1 = opacities.calcOpacitiesFromState(&p.c, brems_only, stateIn(rho, te, 1.0, 0, &p.c));
-        const k2 = opacities.calcOpacitiesFromState(&p.c, brems_only, stateIn(rho, 4.0 * te, 1.0, 0, &p.c));
+        const k1 = opacities.calcOpacitiesFromState(&p.consts, brems_only, stateIn(rho, te, 1.0, 0, &p.consts));
+        const k2 = opacities.calcOpacitiesFromState(&p.consts, brems_only, stateIn(rho, 4.0 * te, 1.0, 0, &p.consts));
         const corr = (1.0 + 4.4e-10 * 4.0 * te) / (1.0 + 4.4e-10 * te);
         const want = std.math.pow(f64, 4.0, -3.5) * corr;
         try expectClose(k2.gas_abs / k1.gas_abs, want, 1e-12);
@@ -161,16 +161,16 @@ test "M8: synchrotron emission opacity scales as B^2; Terelfactor = 1/2 at theta
     const te: f64 = 1.0e10;
 
     {
-        const k1 = opacities.calcOpacitiesFromState(&p.c, syn_only, stateIn(rho, te, 1.0, 1.0e-12, &p.c));
-        const k2 = opacities.calcOpacitiesFromState(&p.c, syn_only, stateIn(rho, te, 1.0, 4.0e-12, &p.c));
+        const k1 = opacities.calcOpacitiesFromState(&p.consts, syn_only, stateIn(rho, te, 1.0, 1.0e-12, &p.consts));
+        const k2 = opacities.calcOpacitiesFromState(&p.consts, syn_only, stateIn(rho, te, 1.0, 4.0e-12, &p.consts));
         try expectClose(k2.gas_abs / k1.gas_abs, 4.0, 1e-14);
     }
     // the Terelfactor suppression is a pure prefactor: it must cancel in
     // any same-Te ratio, e.g. the B-scaling at θe = 1 stays exactly 4
     {
-        const te1 = 1.0 / p.c.k_over_mecsq; // θe = 1, Terelfactor = 1/2
-        const k = opacities.calcOpacitiesFromState(&p.c, syn_only, stateIn(rho, te1, 1.0, 1.0e-12, &p.c));
-        const k_hi = opacities.calcOpacitiesFromState(&p.c, syn_only, stateIn(rho, te1, 1.0, 4.0e-12, &p.c));
+        const te1 = 1.0 / p.consts.k_over_mecsq; // θe = 1, Terelfactor = 1/2
+        const k = opacities.calcOpacitiesFromState(&p.consts, syn_only, stateIn(rho, te1, 1.0, 1.0e-12, &p.consts));
+        const k_hi = opacities.calcOpacitiesFromState(&p.consts, syn_only, stateIn(rho, te1, 1.0, 4.0e-12, &p.consts));
         try expectClose(k_hi.gas_abs / k.gas_abs, 4.0, 1e-14);
     }
 }
@@ -178,7 +178,7 @@ test "M8: synchrotron emission opacity scales as B^2; Terelfactor = 1/2 at theta
 test "M8: Kirchhoff at zeta = 1 — rad and gas ff absorption opacities coincide" {
     const p = radforce.Params.puffy();
     for ([_]f64{ 1.0e6, 1.0e8, 1.0e10 }) |te| {
-        const k = opacities.calcOpacitiesFromState(&p.c, brems_only, stateIn(1.0e-9, te, 1.0, 0, &p.c));
+        const k = opacities.calcOpacitiesFromState(&p.consts, brems_only, stateIn(1.0e-9, te, 1.0, 0, &p.consts));
         // log1p(1.6·1)·(1/log 2.6)·1 = 1 up to rounding
         try expectClose(k.rad_abs, k.gas_abs, 1e-14);
     }
@@ -190,8 +190,8 @@ test "M8: Kirchhoff at zeta = 1 — rad and gas ff absorption opacities coincide
 
 test "M8: G^mu = 0 at LTE comoving equilibrium (bremsstrahlung channel)" {
     var p = radforce.Params.puffy();
-    p.ch = .{ .synchrotron = false, .comptonization = false };
-    const c = &p.c;
+    p.channels = .{ .synchrotron = false, .comptonization = false };
+    const c = &p.consts;
 
     for ([_]f64{ 1.0e6, 1.0e8, 1.0e10 }) |tgas| {
         const rho: f64 = 1.0e-8;
@@ -213,7 +213,7 @@ test "M8: G^mu = 0 at LTE comoving equilibrium (bremsstrahlung channel)" {
 
 test "M8: heating/cooling sign follows sgn(Trad - Tgas)" {
     var p = radforce.Params.puffy();
-    const c = &p.c;
+    const c = &p.consts;
     const geo = geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 });
     const rho: f64 = 1.0e-8;
     const tgas: f64 = 1.0e8;
@@ -226,7 +226,7 @@ test "M8: heating/cooling sign follows sgn(Trad - Tgas)" {
         .{ .ch = .{}, .zeta = 10.0, .heats = true },
     };
     for (cases) |cs| {
-        p.ch = cs.ch;
+        p.channels = cs.ch;
         const erf = c.lteEfromT(cs.zeta * tgas);
         const pp = ppFromTemps(c, rho, tgas, .{ 0, 0, 0 }, erf, .{ 0, 0, 0 }, .{ 0, 0, 0 });
         const gi = try radforce.calcGi(cfg, pp, &geo, gam, &p);
@@ -239,7 +239,7 @@ test "M8: frame invariance G^mu u_mu = -Ghat^0 (Compton included), boosted state
     var prng = std.Random.DefaultPrng.init(0x4d38636f76);
     const rng = prng.random();
     const p = radforce.Params.puffy();
-    const c = &p.c;
+    const c = &p.consts;
 
     const geoms = [_]Geometry{
         geometryAt(.mink, puffy_mp, .{ 0, 0.3, 0.7, 0.1 }),
@@ -282,7 +282,7 @@ test "M8: frame invariance G^mu u_mu = -Ghat^0 (Compton included), boosted state
 
 test "M8: Compton term — exactly zero at Te = Trad, exactly linear in Trad - Te" {
     const p = radforce.Params.puffy();
-    const c = &p.c;
+    const c = &p.consts;
     const geo = geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 });
 
     const pp = ppFromTemps(c, 1.0e-8, 1.0e8, .{ 0, 0, 0 }, c.lteEfromT(3.0e7), .{ 0, 0, 0 }, .{ 0, 0, 0 });
@@ -290,13 +290,13 @@ test "M8: Compton term — exactly zero at Te = Trad, exactly linear in Trad - T
 
     // zero at Te = Trad (hand-forced equality: the (Trad − Te) factor)
     st.trad = st.te;
-    try std.testing.expectEqual(@as(f64, 0), radforce.comptComptonCoeff(c, &st));
+    try std.testing.expectEqual(@as(f64, 0), radforce.comptonGiCoeff(c, &st));
 
     // exact linearity in (Trad − Te) with everything else held fixed
     st.trad = st.te + 1.0e4;
-    const c1 = radforce.comptComptonCoeff(c, &st);
+    const c1 = radforce.comptonGiCoeff(c, &st);
     st.trad = st.te + 2.0e4;
-    const c2 = radforce.comptComptonCoeff(c, &st);
+    const c2 = radforce.comptonGiCoeff(c, &st);
     try expectClose(c2 / c1, 2.0, 1e-14);
 
     // sign: Trad > Te heats the gas
@@ -324,7 +324,7 @@ test "M8: uniform rad state with real opacities (chi > 0) stays static" {
     // a dense, hot state so χ·dx is significant (τ-damping active);
     // u/ρ ~ 1e-2 keeps the update_entropy p2u∘u2p re-projection noise
     // (amplified by ρ/u) below the 1e-14 static gate
-    const c = &p.c;
+    const c = &p.consts;
     const tgas: f64 = 1.0e11;
     const rho: f64 = 1.0e-8;
     const pp = ppFromTemps(c, rho, tgas, .{ 0, 0, 0 }, c.lteEfromT(tgas), .{ 0, 0, 0 }, .{ 0, 0, 0 });
@@ -338,8 +338,8 @@ test "M8: uniform rad state with real opacities (chi > 0) stays static" {
     // sanity: the state really is optically thick over a cell
     const geo = s.cache.fillGeometry(0, 0, 0);
     const chi = try radforce.calcChi(cfg, pp, &geo, gam, &p);
-    if (!(chi * s.grid.size(0, 0) > 1.0)) {
-        std.debug.print("not optically thick: chi {e} dx {e}\n", .{ chi, s.grid.size(0, 0) });
+    if (!(chi * s.grid.cellSize(0, 0) > 1.0)) {
+        std.debug.print("not optically thick: chi {e} dx {e}\n", .{ chi, s.grid.cellSize(0, 0) });
         return error.TestUnexpectedResult;
     }
 

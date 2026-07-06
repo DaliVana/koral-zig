@@ -22,7 +22,7 @@ const frames = @import("frames.zig");
 const quad = @import("math/quad.zig");
 const puffy = @import("problems/puffy.zig");
 const thermo = @import("physics/thermo.zig");
-const mhd = @import("physics/mhd.zig");
+const mhd = @import("physics/bfield.zig");
 const radiation = @import("physics/radiation.zig");
 const ct = @import("magn/ct.zig");
 
@@ -311,7 +311,7 @@ test "puffy reduced-grid init: β ≡ MAXBETA, divB = 0, bc.c contract" {
         }
     }
     // normalize by the largest gdet·B over the smallest cell size
-    const dxmin = @min(s.grid.size(0, 0), s.grid.size(0, 1));
+    const dxmin = @min(s.grid.cellSize(0, 0), s.grid.cellSize(0, 1));
     std.debug.print("puffy init: max|divB|·dx/max|gdetB| = {e:.3}\n", .{worst_div * dxmin / bmax});
     try std.testing.expect(worst_div * dxmin / bmax <= 1e-12);
 

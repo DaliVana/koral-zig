@@ -38,7 +38,7 @@ pub fn mks2ToKs(x: [4]f64, mp: MetricParams) [4]f64 {
     return .{
         x[0],
         @exp(x[1]) + mp.mksr0,
-        forms.mks2Theta(Dual3.con(x[2]), mp.mksh0).v,
+        forms.mks2Theta(Dual3.constant(x[2]), mp.mksh0).v,
         x[3],
     };
 }
@@ -111,7 +111,7 @@ pub fn dxdxMks2ToKs(x: [4]f64, mp: MetricParams) [4][4]f64 {
     const Dual3 = @import("../math/dual.zig").Dual3;
     var m = eye();
     m[1][1] = @exp(x[1]);
-    m[2][2] = forms.mks2DThetaDx2Metric(Dual3.con(x[2]), mp.mksh0).v;
+    m[2][2] = forms.mks2DThetaDx2Metric(Dual3.constant(x[2]), mp.mksh0).v;
     return m;
 }
 
@@ -123,7 +123,7 @@ pub fn dxdxKsToMks2(x: [4]f64, mp: MetricParams) [4][4]f64 {
     m[1][1] = 1.0 / (x[1] - mp.mksr0);
     // dx2/dθ = 2 tan(πH0/2) / (H0 Pi² (1 + v²)),  v = (2/π)(θ−π/2)·tan(πH0/2)
     const v = (2.0 / pi) * (x[2] - 0.5 * pi) * @tan(0.5 * pi * h0);
-    m[2][2] = 2.0 * @tan(0.5 * pi * h0) / (h0 * forms.pi_c * forms.pi_c * (1.0 + v * v));
+    m[2][2] = 2.0 * @tan(0.5 * pi * h0) / (h0 * forms.pi_truncated * forms.pi_truncated * (1.0 + v * v));
     return m;
 }
 

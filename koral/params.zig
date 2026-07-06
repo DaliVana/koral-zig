@@ -59,14 +59,14 @@ pub const Params = struct {
     deterministic: bool = false,
     nthreads: usize = 1,
 
-    pub fn load(a: std.mem.Allocator, io: std.Io, path: []const u8) !Params {
-        const text = try std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(1 << 20));
-        defer a.free(text);
-        return parse(a, text);
+    pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Params {
+        const text = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 << 20));
+        defer allocator.free(text);
+        return parse(allocator, text);
     }
 
-    /// Parse from a buffer. String values are duplicated with `a`.
-    pub fn parse(a: std.mem.Allocator, text: []const u8) !Params {
+    /// Parse from a buffer. String values are duplicated with `allocator`.
+    pub fn parse(allocator: std.mem.Allocator, text: []const u8) !Params {
         var p = Params{};
         var lines = std.mem.splitScalar(u8, text, '\n');
         var lineno: usize = 0;
@@ -82,7 +82,7 @@ pub const Params = struct {
             };
             const key = std.mem.trim(u8, trimmed[0..eq], " \t");
             const val = std.mem.trim(u8, trimmed[eq + 1 ..], " \t");
-            try setField(a, &p, key, val, lineno);
+            try setField(allocator, &p, key, val, lineno);
         }
         return p;
     }
@@ -97,10 +97,10 @@ pub const Params = struct {
         return line;
     }
 
-    fn setField(a: std.mem.Allocator, p: *Params, key: []const u8, val: []const u8, lineno: usize) !void {
+    fn setField(allocator: std.mem.Allocator, p: *Params, key: []const u8, val: []const u8, lineno: usize) !void {
         inline for (std.meta.fields(Params)) |f| {
             if (std.mem.eql(u8, key, f.name)) {
-                @field(p, f.name) = parseValue(f.type, a, val) catch {
+                @field(p, f.name) = parseValue(f.type, allocator, val) catch {
                     std.log.warn("params: line {d}: bad value for {s}: '{s}'", .{ lineno, key, val });
                     return error.BadParamsValue;
                 };
@@ -111,7 +111,7 @@ pub const Params = struct {
         return error.UnknownParamsKey;
     }
 
-    fn parseValue(comptime T: type, a: std.mem.Allocator, val: []const u8) !T {
+    fn parseValue(comptime T: type, allocator: std.mem.Allocator, val: []const u8) !T {
         return switch (T) {
             f64 => std.fmt.parseFloat(f64, val),
             usize => std.fmt.parseInt(usize, val, 10),
@@ -123,8 +123,8 @@ pub const Params = struct {
                 error.BadBool,
             []const u8 => blk: {
                 if (val.len >= 2 and val[0] == '"' and val[val.len - 1] == '"')
-                    break :blk try a.dupe(u8, val[1 .. val.len - 1]);
-                break :blk try a.dupe(u8, val);
+                    break :blk try allocator.dupe(u8, val[1 .. val.len - 1]);
+                break :blk try allocator.dupe(u8, val);
             },
             else => @compileError("params: unsupported field type " ++ @typeName(T)),
         };

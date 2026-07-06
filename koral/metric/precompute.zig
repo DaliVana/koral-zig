@@ -107,7 +107,7 @@ pub fn geometryAt(coords: Coords, mp: MetricParams, x: [4]f64) Geometry {
 }
 
 pub const MetricCache = struct {
-    a: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     grid: Grid,
     coords: Coords,
     out_coords: Coords,
@@ -135,26 +135,26 @@ pub const MetricCache = struct {
         faces: bool = true,
     };
 
-    pub fn init(a: std.mem.Allocator, grid: Grid, opts: InitOpts) !MetricCache {
+    pub fn init(allocator: std.mem.Allocator, grid: Grid, opts: InitOpts) !MetricCache {
         const nc = grid.cellCount();
         var self = MetricCache{
-            .a = a,
+            .allocator = allocator,
             .grid = grid,
             .coords = opts.coords,
             .out_coords = opts.out_coords,
             .mp = opts.mp,
-            .g = try a.alloc(f64, nc * 20),
-            .gcon = try a.alloc(f64, nc * 20),
-            .kris = try a.alloc(f64, nc * 64),
-            .dxdx_my2out = try a.alloc(f64, nc * 16),
-            .dxdx_out2my = try a.alloc(f64, nc * 16),
+            .g = try allocator.alloc(f64, nc * 20),
+            .gcon = try allocator.alloc(f64, nc * 20),
+            .kris = try allocator.alloc(f64, nc * 64),
+            .dxdx_my2out = try allocator.alloc(f64, nc * 16),
+            .dxdx_out2my = try allocator.alloc(f64, nc * 16),
             .gb = undefined,
             .gconb = undefined,
         };
         for (0..3) |d| {
             const nf = faceCount(grid, d);
-            self.gb[d] = try a.alloc(f64, nf * 20);
-            self.gconb[d] = try a.alloc(f64, nf * 20);
+            self.gb[d] = try allocator.alloc(f64, nf * 20);
+            self.gconb[d] = try allocator.alloc(f64, nf * 20);
             if (!opts.faces) {
                 @memset(self.gb[d], 0);
                 @memset(self.gconb[d], 0);
@@ -167,14 +167,14 @@ pub const MetricCache = struct {
     }
 
     pub fn deinit(self: *MetricCache) void {
-        self.a.free(self.g);
-        self.a.free(self.gcon);
-        self.a.free(self.kris);
-        self.a.free(self.dxdx_my2out);
-        self.a.free(self.dxdx_out2my);
+        self.allocator.free(self.g);
+        self.allocator.free(self.gcon);
+        self.allocator.free(self.kris);
+        self.allocator.free(self.dxdx_my2out);
+        self.allocator.free(self.dxdx_out2my);
         for (0..3) |d| {
-            self.a.free(self.gb[d]);
-            self.a.free(self.gconb[d]);
+            self.allocator.free(self.gb[d]);
+            self.allocator.free(self.gconb[d]);
         }
         self.* = undefined;
     }
@@ -189,33 +189,33 @@ pub const MetricCache = struct {
     }
 
     fn cellIndex(self: *const MetricCache, ix: i64, iy: i64, iz: i64) usize {
-        const g = &self.grid;
-        const jx: usize = @intCast(ix + @as(i64, @intCast(g.ngx)));
-        const jy: usize = @intCast(iy + @as(i64, @intCast(g.ngy)));
-        const jz: usize = @intCast(iz + @as(i64, @intCast(g.ngz)));
-        std.debug.assert(jx < g.sx() and jy < g.sy() and jz < g.sz());
-        return jx + jy * g.sx() + jz * g.sy() * g.sx();
+        const grid = &self.grid;
+        const jx: usize = @intCast(ix + @as(i64, @intCast(grid.ngx)));
+        const jy: usize = @intCast(iy + @as(i64, @intCast(grid.ngy)));
+        const jz: usize = @intCast(iz + @as(i64, @intCast(grid.ngz)));
+        std.debug.assert(jx < grid.sx() and jy < grid.sy() and jz < grid.sz());
+        return jx + jy * grid.sx() + jz * grid.sy() * grid.sx();
     }
 
     /// Face `dim`-index f is the *left* face of cell f in that dimension;
     /// f ranges one past the last cell.
     fn faceIndex(self: *const MetricCache, dim: usize, ix: i64, iy: i64, iz: i64) usize {
-        const g = &self.grid;
-        const jx: usize = @intCast(ix + @as(i64, @intCast(g.ngx)));
-        const jy: usize = @intCast(iy + @as(i64, @intCast(g.ngy)));
-        const jz: usize = @intCast(iz + @as(i64, @intCast(g.ngz)));
+        const grid = &self.grid;
+        const jx: usize = @intCast(ix + @as(i64, @intCast(grid.ngx)));
+        const jy: usize = @intCast(iy + @as(i64, @intCast(grid.ngy)));
+        const jz: usize = @intCast(iz + @as(i64, @intCast(grid.ngz)));
         return switch (dim) {
             0 => blk: {
-                std.debug.assert(jx <= g.sx() and jy < g.sy() and jz < g.sz());
-                break :blk jx + jy * (g.sx() + 1) + jz * g.sy() * (g.sx() + 1);
+                std.debug.assert(jx <= grid.sx() and jy < grid.sy() and jz < grid.sz());
+                break :blk jx + jy * (grid.sx() + 1) + jz * grid.sy() * (grid.sx() + 1);
             },
             1 => blk: {
-                std.debug.assert(jx < g.sx() and jy <= g.sy() and jz < g.sz());
-                break :blk jx + jy * g.sx() + jz * (g.sy() + 1) * g.sx();
+                std.debug.assert(jx < grid.sx() and jy <= grid.sy() and jz < grid.sz());
+                break :blk jx + jy * grid.sx() + jz * (grid.sy() + 1) * grid.sx();
             },
             2 => blk: {
-                std.debug.assert(jx < g.sx() and jy < g.sy() and jz <= g.sz());
-                break :blk jx + jy * g.sx() + jz * g.sy() * g.sx();
+                std.debug.assert(jx < grid.sx() and jy < grid.sy() and jz <= grid.sz());
+                break :blk jx + jy * grid.sx() + jz * grid.sy() * grid.sx();
             },
             else => unreachable,
         };
@@ -234,13 +234,13 @@ pub const MetricCache = struct {
     }
 
     fn fillCenters(self: *MetricCache, modify_kris: bool) void {
-        const g = &self.grid;
-        var iz: i64 = -@as(i64, @intCast(g.ngz));
-        while (iz < @as(i64, @intCast(g.nz + g.ngz))) : (iz += 1) {
-            var iy: i64 = -@as(i64, @intCast(g.ngy));
-            while (iy < @as(i64, @intCast(g.ny + g.ngy))) : (iy += 1) {
-                var ix: i64 = -@as(i64, @intCast(g.ngx));
-                while (ix < @as(i64, @intCast(g.nx + g.ngx))) : (ix += 1) {
+        const grid = &self.grid;
+        var iz: i64 = -@as(i64, @intCast(grid.ngz));
+        while (iz < @as(i64, @intCast(grid.nz + grid.ngz))) : (iz += 1) {
+            var iy: i64 = -@as(i64, @intCast(grid.ngy));
+            while (iy < @as(i64, @intCast(grid.ny + grid.ngy))) : (iy += 1) {
+                var ix: i64 = -@as(i64, @intCast(grid.ngx));
+                while (ix < @as(i64, @intCast(grid.nx + grid.ngx))) : (ix += 1) {
                     self.fillCell(ix, iy, iz, modify_kris);
                 }
             }
@@ -248,11 +248,11 @@ pub const MetricCache = struct {
     }
 
     fn fillCell(self: *MetricCache, ix: i64, iy: i64, iz: i64, modify_kris: bool) void {
-        const g = &self.grid;
-        const x = [4]f64{ 0, g.xc(ix), g.yc(iy), g.zc(iz) };
+        const grid = &self.grid;
+        const x = [4]f64{ 0, grid.xc(ix), grid.yc(iy), grid.zc(iz) };
         var d = metric.compute(self.coords, self.mp, x);
 
-        if (modify_kris) applyKrisCorrection(self.coords, self.mp, g, &d, ix, iy, iz);
+        if (modify_kris) applyKrisCorrection(self.coords, self.mp, grid, &d, ix, iy, iz);
 
         const ci = self.cellIndex(ix, iy, iz);
         storeBlocks(self.g, self.gcon, ci * 20, d);
@@ -283,13 +283,13 @@ pub const MetricCache = struct {
     // tests can apply it to a single cell without building the full cache.)
 
     fn fillFaces(self: *MetricCache) void {
-        const g = &self.grid;
-        const ngx: i64 = @intCast(g.ngx);
-        const ngy: i64 = @intCast(g.ngy);
-        const ngz: i64 = @intCast(g.ngz);
-        const nxh: i64 = @intCast(g.nx + g.ngx);
-        const nyh: i64 = @intCast(g.ny + g.ngy);
-        const nzh: i64 = @intCast(g.nz + g.ngz);
+        const grid = &self.grid;
+        const ngx: i64 = @intCast(grid.ngx);
+        const ngy: i64 = @intCast(grid.ngy);
+        const ngz: i64 = @intCast(grid.ngz);
+        const nxh: i64 = @intCast(grid.nx + grid.ngx);
+        const nyh: i64 = @intCast(grid.ny + grid.ngy);
+        const nzh: i64 = @intCast(grid.nz + grid.ngz);
 
         var iz: i64 = -ngz;
         while (iz <= nzh) : (iz += 1) {
@@ -299,17 +299,17 @@ pub const MetricCache = struct {
                 while (ix <= nxh) : (ix += 1) {
                     // x-face at (xl(ix), yc, zc) exists for all cell (iy,iz)
                     if (iy < nyh and iz < nzh) {
-                        const x = [4]f64{ 0, g.xl(ix), g.yc(iy), g.zc(iz) };
+                        const x = [4]f64{ 0, grid.xl(ix), grid.yc(iy), grid.zc(iz) };
                         const d = metric.compute(self.coords, self.mp, x);
                         storeBlocks(self.gb[0], self.gconb[0], self.faceIndex(0, ix, iy, iz) * 20, d);
                     }
                     if (ix < nxh and iz < nzh) {
-                        const x = [4]f64{ 0, g.xc(ix), g.yl(iy), g.zc(iz) };
+                        const x = [4]f64{ 0, grid.xc(ix), grid.yl(iy), grid.zc(iz) };
                         const d = metric.compute(self.coords, self.mp, x);
                         storeBlocks(self.gb[1], self.gconb[1], self.faceIndex(1, ix, iy, iz) * 20, d);
                     }
                     if (ix < nxh and iy < nyh) {
-                        const x = [4]f64{ 0, g.xc(ix), g.yc(iy), g.zl(iz) };
+                        const x = [4]f64{ 0, grid.xc(ix), grid.yc(iy), grid.zl(iz) };
                         const d = metric.compute(self.coords, self.mp, x);
                         storeBlocks(self.gb[2], self.gconb[2], self.faceIndex(2, ix, iy, iz) * 20, d);
                     }
@@ -352,7 +352,7 @@ pub const MetricCache = struct {
 
     /// C: fill_geometry (metric.c:1884).
     pub fn fillGeometry(self: *const MetricCache, ix: i64, iy: i64, iz: i64) Geometry {
-        const g = &self.grid;
+        const grid = &self.grid;
         return self.geometryFromBlocks(
             self.g,
             self.gcon,
@@ -361,17 +361,17 @@ pub const MetricCache = struct {
             iy,
             iz,
             -1,
-            .{ 0, g.xc(ix), g.yc(iy), g.zc(iz) },
+            .{ 0, grid.xc(ix), grid.yc(iy), grid.zc(iz) },
         );
     }
 
     /// C: fill_geometry_face (metric.c:1971) — left face of cell in `dim`.
     pub fn fillGeometryFace(self: *const MetricCache, ix: i64, iy: i64, iz: i64, dim: usize) Geometry {
-        const g = &self.grid;
+        const grid = &self.grid;
         const xxvec: [4]f64 = switch (dim) {
-            0 => .{ 0, g.xl(ix), g.yc(iy), g.zc(iz) },
-            1 => .{ 0, g.xc(ix), g.yl(iy), g.zc(iz) },
-            2 => .{ 0, g.xc(ix), g.yc(iy), g.zl(iz) },
+            0 => .{ 0, grid.xl(ix), grid.yc(iy), grid.zc(iz) },
+            1 => .{ 0, grid.xc(ix), grid.yl(iy), grid.zc(iz) },
+            2 => .{ 0, grid.xc(ix), grid.yc(iy), grid.zl(iz) },
             else => unreachable,
         };
         return self.geometryFromBlocks(

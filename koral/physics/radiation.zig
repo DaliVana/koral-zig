@@ -76,12 +76,12 @@ pub fn calcFfRtt(
         geom,
     );
 
-    const rij_up = try calcRij(cfg, pp, geom);
-    const rij = relele.indices2221(rij_up, &geom.gg);
+    const rij_uu = try calcRij(cfg, pp, geom);
+    const rij_ud = relele.indices2221(rij_uu, &geom.gg);
     var rtt: f64 = 0;
     for (0..4) |ia| {
         for (0..4) |ib| {
-            rtt += -rij[ia][ib] * u.con[ib] * u.cov[ia];
+            rtt += -rij_ud[ia][ib] * u.con[ib] * u.cov[ia];
         }
     }
     return .{ .rtt = rtt, .ucon = u.con };
@@ -111,21 +111,21 @@ pub fn pradFf2Lab(
     rp: invert_rad.RadParams,
 ) relele.Error!void {
     const L = layout.VarLayout(cfg);
-    var rij = try calcRij(cfg, pp.*, geom);
-    rij = try frames.boost22Ff2Lab(
-        rij,
+    const rij_uu_ff = try calcRij(cfg, pp.*, geom);
+    const rij_uu = try frames.boost22Ff2Lab(
+        rij_uu_ff,
         .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
         &geom.gg,
         &geom.GG,
     );
-    rij = relele.indices2221(rij, &geom.gg);
+    const rij_ud = relele.indices2221(rij_uu, &geom.gg);
 
     const gdetu = geom.gdet; // GDETIN == 1
     var uu = [_]f64{0} ** L.count;
-    uu[L.index(.ee)] = gdetu * rij[0][0];
-    uu[L.index(.fx)] = gdetu * rij[0][1];
-    uu[L.index(.fy)] = gdetu * rij[0][2];
-    uu[L.index(.fz)] = gdetu * rij[0][3];
+    uu[L.index(.ee)] = gdetu * rij_ud[0][0];
+    uu[L.index(.fx)] = gdetu * rij_ud[0][1];
+    uu[L.index(.fy)] = gdetu * rij_ud[0][2];
+    uu[L.index(.fz)] = gdetu * rij_ud[0][3];
 
     _ = invert_rad.u2pRad(cfg, uu, pp, geom, rp);
 }
@@ -139,7 +139,7 @@ pub fn calcRadWavespeeds(
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
     tautot: [3]f64,
-    dims: [3]bool,
+    active_dims: [3]bool,
 ) relele.Error![12]f64 {
     const urf = try urfCon(cfg, pp, geom);
 
@@ -147,7 +147,7 @@ pub fn calcRadWavespeeds(
     var aval: [12]f64 = undefined;
 
     // unlimited rad wavespeeds, used for the time step
-    const a0 = wavespeeds.lrCore(urf, &geom.GG, .{ rv2rad, rv2rad, rv2rad }, dims);
+    const a0 = wavespeeds.lrCore(urf, &geom.GG, .{ rv2rad, rv2rad, rv2rad }, active_dims);
     for (0..6) |i| aval[i] = a0[i];
 
     // damped by the optical depth (Sądowski+13a); default branch only
@@ -164,7 +164,7 @@ pub fn calcRadWavespeeds(
     const rv2y = rv2dim[1];
     const rv2z = rv2dim[1]; // C quirk (rad.c:3702): z uses the y depth
 
-    const a1 = wavespeeds.lrCore(urf, &geom.GG, .{ rv2x, rv2y, rv2z }, dims);
+    const a1 = wavespeeds.lrCore(urf, &geom.GG, .{ rv2x, rv2y, rv2z }, active_dims);
     for (0..6) |i| aval[6 + i] = a1[i];
 
     return aval;

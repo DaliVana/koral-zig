@@ -12,7 +12,7 @@ pub fn State(comptime cfg: Config) type {
     return struct {
         rho: f64 = 0,
         uint: f64 = 0,
-        gamma: f64 = 0, // Lorentz factor w.r.t. normal observer
+        gamma_adiab: f64 = 0, // adiabatic index Γ (C: struct_of_state.gamma, ko.h:437)
         ucon: [4]f64 = @splat(0),
         ucov: [4]f64 = @splat(0),
         pgas: f64 = 0,

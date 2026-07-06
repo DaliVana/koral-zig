@@ -25,11 +25,11 @@ pub const MetricParams = struct {
 pub fn gcovMink(x: [4]Dual3, mp: MetricParams) [4][4]Dual3 {
     _ = x;
     _ = mp;
-    var g: [4][4]Dual3 = @splat(@splat(Dual3.con(0)));
-    g[0][0] = Dual3.con(-1);
-    g[1][1] = Dual3.con(1);
-    g[2][2] = Dual3.con(1);
-    g[3][3] = Dual3.con(1);
+    var g: [4][4]Dual3 = @splat(@splat(Dual3.constant(0)));
+    g[0][0] = Dual3.constant(-1);
+    g[1][1] = Dual3.constant(1);
+    g[2][2] = Dual3.constant(1);
+    g[3][3] = Dual3.constant(1);
     return g;
 }
 
@@ -45,7 +45,7 @@ pub fn gcovBl(x: [4]Dual3, mp: MetricParams) [4][4]Dual3 {
     const delta = r.addc(-2.0).mul(r).addc(a * a);
     const two_r_sigma = r.scale(2.0).div(sigma); // 2r/Σ
 
-    var g: [4][4]Dual3 = @splat(@splat(Dual3.con(0)));
+    var g: [4][4]Dual3 = @splat(@splat(Dual3.constant(0)));
     g[0][0] = two_r_sigma.addc(-1.0);
     g[0][3] = r.mul(s2).scale(-2.0 * a).div(sigma);
     g[1][1] = sigma.div(delta);
@@ -67,7 +67,7 @@ pub fn gcovKs(x: [4]Dual3, mp: MetricParams) [4][4]Dual3 {
     const two_r_sigma = r.scale(2.0).div(sigma);
     const one_p = two_r_sigma.addc(1.0); // 1 + 2r/Σ
 
-    var g: [4][4]Dual3 = @splat(@splat(Dual3.con(0)));
+    var g: [4][4]Dual3 = @splat(@splat(Dual3.constant(0)));
     g[0][0] = two_r_sigma.addc(-1.0);
     g[0][1] = two_r_sigma;
     g[0][3] = r.mul(s2).scale(-2.0 * a).div(sigma);
@@ -95,7 +95,7 @@ pub fn gcovKs(x: [4]Dual3, mp: MetricParams) [4][4]Dual3 {
 // deliberately so oracle comparisons hold at 1e-12 instead of 5e-9.
 
 /// C ko.h:28 — the truncated π of the exported metric expressions.
-pub const pi_c: f64 = 3.141592654;
+pub const pi_truncated: f64 = 3.141592654;
 
 /// cot(π H0 / 2) with the exact-π/2 literal (C: Cot(1.5707963267948966*H0)
 /// in both flavors).
@@ -114,16 +114,16 @@ pub fn mks2Theta(x2: Dual3, h0: f64) Dual3 {
 /// `Cos((Pi*(1 + Cot(1.5707963267948966*H0)*Tan(H0*Pi*(-0.5 + x2))))/2.)`
 /// in C's exported expressions.
 pub fn mks2ThetaMetric(x2: Dual3, h0: f64) Dual3 {
-    const u = x2.addc(-0.5).scale(h0 * pi_c);
-    return u.tan().scale(mks2Cot(h0)).addc(1.0).scale(0.5 * pi_c);
+    const u = x2.addc(-0.5).scale(h0 * pi_truncated);
+    return u.tan().scale(mks2Cot(h0)).addc(1.0).scale(0.5 * pi_truncated);
 }
 
 /// Metric flavor dθ/dx2 = (H0 Pi²/2) cot(πH0/2) sec²(H0 Pi (x2 − 1/2)) —
 /// matches C's dxdx_MKS22KS bit-structure (truncated Pi², exact-π/2 cot).
 pub fn mks2DThetaDx2Metric(x2: Dual3, h0: f64) Dual3 {
-    const u = x2.addc(-0.5).scale(h0 * pi_c);
+    const u = x2.addc(-0.5).scale(h0 * pi_truncated);
     const t = u.tan();
-    return t.sq().addc(1.0).scale(0.5 * h0 * pi_c * pi_c * mks2Cot(h0));
+    return t.sq().addc(1.0).scale(0.5 * h0 * pi_truncated * pi_truncated * mks2Cot(h0));
 }
 
 /// x2(θ) — inverse point transform (C: coco_KS2MKS2, exact-π literals).
@@ -140,7 +140,7 @@ pub fn gcovMks2(x: [4]Dual3, mp: MetricParams) [4][4]Dual3 {
     const j2 = mks2DThetaDx2Metric(x[2], mp.mksh0);
 
     const gks = gcovKs(.{ x[0], r, th, x[3] }, mp);
-    const jf = [4]Dual3{ Dual3.con(1), j1, j2, Dual3.con(1) };
+    const jf = [4]Dual3{ Dual3.constant(1), j1, j2, Dual3.constant(1) };
 
     var g: [4][4]Dual3 = undefined;
     for (0..4) |i| {

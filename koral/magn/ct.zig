@@ -247,10 +247,10 @@ fn calcBfromACore(comptime SimT: type, sim: *SimT) void {
                     inline for (0..3) |c| {
                         dA[c + 1][2] = -(sim.vecpot.get(c, ix, iy, iz) - sim.vecpot.get(c, ix, iy + 1, iz) +
                             sim.vecpot.get(c, ix + 1, iy, iz) - sim.vecpot.get(c, ix + 1, iy + 1, iz)) /
-                            (2.0 * g.size(iy, 1));
+                            (2.0 * g.cellSize(iy, 1));
                         dA[c + 1][1] = -(sim.vecpot.get(c, ix, iy, iz) + sim.vecpot.get(c, ix, iy + 1, iz) -
                             sim.vecpot.get(c, ix + 1, iy, iz) - sim.vecpot.get(c, ix + 1, iy + 1, iz)) /
-                            (2.0 * g.size(ix, 0));
+                            (2.0 * g.cellSize(ix, 0));
                         dA[c + 1][3] = 0;
                     }
                 } else {
@@ -260,17 +260,17 @@ fn calcBfromACore(comptime SimT: type, sim: *SimT) void {
                             sim.vecpot.get(c, ix + 1, iy + 1, iz) - sim.vecpot.get(c, ix, iy + 1, iz) +
                             sim.vecpot.get(c, ix + 1, iy, iz + 1) - sim.vecpot.get(c, ix, iy, iz + 1) +
                             sim.vecpot.get(c, ix + 1, iy + 1, iz + 1) - sim.vecpot.get(c, ix, iy + 1, iz + 1)) /
-                            (4.0 * g.size(ix, 0));
+                            (4.0 * g.cellSize(ix, 0));
                         dA[c + 1][2] = (sim.vecpot.get(c, ix, iy + 1, iz) - sim.vecpot.get(c, ix, iy, iz) +
                             sim.vecpot.get(c, ix + 1, iy + 1, iz) - sim.vecpot.get(c, ix + 1, iy, iz) +
                             sim.vecpot.get(c, ix, iy + 1, iz + 1) - sim.vecpot.get(c, ix, iy, iz + 1) +
                             sim.vecpot.get(c, ix + 1, iy + 1, iz + 1) - sim.vecpot.get(c, ix + 1, iy, iz + 1)) /
-                            (4.0 * g.size(iy, 1));
+                            (4.0 * g.cellSize(iy, 1));
                         dA[c + 1][3] = (sim.vecpot.get(c, ix, iy, iz + 1) - sim.vecpot.get(c, ix, iy, iz) +
                             sim.vecpot.get(c, ix + 1, iy, iz + 1) - sim.vecpot.get(c, ix + 1, iy, iz) +
                             sim.vecpot.get(c, ix, iy + 1, iz + 1) - sim.vecpot.get(c, ix, iy + 1, iz) +
                             sim.vecpot.get(c, ix + 1, iy + 1, iz + 1) - sim.vecpot.get(c, ix + 1, iy + 1, iz)) /
-                            (4.0 * g.size(iz, 2));
+                            (4.0 * g.cellSize(iz, 2));
                     }
                 }
 

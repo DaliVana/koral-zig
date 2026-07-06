@@ -43,7 +43,7 @@ const cfg = config.Config{
 };
 const L = layout.VarLayout(cfg);
 const NV = L.count;
-const ImplT = implicit.Impl(cfg);
+const ImplT = implicit.Solver(cfg);
 
 const rad_params = invert_rad.RadParams.puffy;
 const ip_puffy = implicit.ImplicitParams.puffy;
@@ -78,7 +78,7 @@ fn ppFromTemps(
 /// brems-only channel set for gates that need exact Kirchhoff balance
 fn bremsParams() radforce.Params {
     var p = radforce.Params.puffy();
-    p.ch = .{ .synchrotron = false, .comptonization = false };
+    p.channels = .{ .synchrotron = false, .comptonization = false };
     return p;
 }
 
@@ -91,7 +91,7 @@ test "M9: gas+rad conserveds exactly preserved on the solver's internal uu" {
     const rng = prng.random();
     const p = radforce.Params.puffy();
     const geo = geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 });
-    const c = &p.c;
+    const c = &p.consts;
 
     var nok: usize = 0;
     var worst: f64 = 0;
@@ -134,7 +134,7 @@ test "M9: gas+rad conserveds exactly preserved on the solver's internal uu" {
 
 test "M9: LTE comoving equilibrium is a fixed point" {
     const p = bremsParams();
-    const c = &p.c;
+    const c = &p.consts;
     const geo = geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 });
 
     for ([_]f64{ 1.0e6, 1.0e8, 1.0e10 }) |tgas| {
@@ -210,7 +210,7 @@ fn rk45Relax(e0: f64, t_end: f64, rho: f64, utot: f64, geo: *const Geometry, p: 
 
 test "M9: 0-D relaxation trajectory matches RK45 of dEhat/dtau = -G0 at 1e-6" {
     const p = bremsParams();
-    const c = &p.c;
+    const c = &p.consts;
     const geo = geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 });
 
     const rho: f64 = 1.0e-8;
@@ -255,7 +255,7 @@ test "M9: 0-D relaxation trajectory matches RK45 of dEhat/dtau = -G0 at 1e-6" {
 
 test "M9: kappa*dt >> 1 single step lands monotonically at equilibrium" {
     const p = bremsParams();
-    const c = &p.c;
+    const c = &p.consts;
     const geo = geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 });
 
     const rho: f64 = 1.0e-8;
@@ -311,7 +311,7 @@ test "M9: RAD and MHD primitive branches agree where both converge (1e-8)" {
     var prng = std.Random.DefaultPrng.init(0x4d39627261);
     const rng = prng.random();
     const p = radforce.Params.puffy();
-    const c = &p.c;
+    const c = &p.consts;
     const geo = geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 });
 
     var nboth: usize = 0;
@@ -369,7 +369,7 @@ test "M9: fuzz — no NaN/panic over random states, failures only via the clean 
     var prng = std.Random.DefaultPrng.init(0x4d39667a);
     const rng = prng.random();
     const p = radforce.Params.puffy();
-    const c = &p.c;
+    const c = &p.consts;
 
     const geoms = [_]Geometry{
         geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 }),

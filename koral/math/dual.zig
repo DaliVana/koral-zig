@@ -14,7 +14,7 @@ pub const Dual3 = struct {
     d: [3]f64 = .{ 0, 0, 0 },
 
     /// Constant (zero derivative).
-    pub fn con(x: f64) Dual3 {
+    pub fn constant(x: f64) Dual3 {
         return .{ .v = x };
     }
 
@@ -113,8 +113,8 @@ fn fdCheck(comptime f: fn (Dual3) Dual3, x: f64, tol: f64) !void {
     // Richardson-extrapolated central difference vs the dual derivative.
     const g = f(Dual3.variable(x, 1));
     const h = 1e-5 * @max(1.0, @abs(x));
-    const d1 = (f(Dual3.con(x + h)).v - f(Dual3.con(x - h)).v) / (2 * h);
-    const d2 = (f(Dual3.con(x + h / 2)).v - f(Dual3.con(x - h / 2)).v) / h;
+    const d1 = (f(Dual3.constant(x + h)).v - f(Dual3.constant(x - h)).v) / (2 * h);
+    const d2 = (f(Dual3.constant(x + h / 2)).v - f(Dual3.constant(x - h / 2)).v) / h;
     const fd = (4.0 * d2 - d1) / 3.0;
     try std.testing.expectApproxEqRel(fd, g.d[1], tol);
 }
@@ -124,7 +124,7 @@ test "dual: derivatives of a composite expression match Richardson FD" {
         fn f(x: Dual3) Dual3 {
             // f(x) = sin(x)·exp(x/3) / (1 + x²) + atan(tan(x/4))
             const t1 = x.sin().mul(x.scale(1.0 / 3.0).exp());
-            const t2 = Dual3.con(1).add(x.sq());
+            const t2 = Dual3.constant(1).add(x.sq());
             return t1.div(t2).add(x.scale(0.25).tan().atan());
         }
     };
@@ -140,6 +140,6 @@ test "dual: exact rules on simple functions" {
     try std.testing.expectApproxEqRel(@as(f64, 12.0), y.d[0], 1e-15);
     const z = x.sqrt(); // d = 1/(2√2)
     try std.testing.expectApproxEqRel(1.0 / (2.0 * @sqrt(2.0)), z.d[0], 1e-15);
-    const w = Dual3.con(5.0).div(x); // d = -5/4
+    const w = Dual3.constant(5.0).div(x); // d = -5/4
     try std.testing.expectApproxEqRel(@as(f64, -1.25), w.d[0], 1e-15);
 }

@@ -104,9 +104,9 @@ fn compareBslots(s: *SimP, k: *const golden.Kini, tol: f64, is_field: [3]bool, l
     var absdiff = [_]f64{ 0, 0, 0 };
     const bslots = [_]usize{ LP.index(.b1), LP.index(.b2), LP.index(.b3) };
     var jy: usize = 0;
-    while (jy < k.nyi()) : (jy += 1) {
+    while (jy < k.nSamplesY()) : (jy += 1) {
         var jx: usize = 0;
-        while (jx < k.nxi()) : (jx += 1) {
+        while (jx < k.nSamplesX()) : (jx += 1) {
             const ix = k.cellX(jx);
             const iy = k.cellY(jy);
             const base = k.base(jx, jy, 0);
@@ -154,9 +154,9 @@ fn runKeystone(a: std.mem.Allocator) !void {
         for (0..13) |iv| dev[iv] = .{};
         var b3_absdiff: f64 = 0;
         var jy: usize = 0;
-        while (jy < kp.nyi()) : (jy += 1) {
+        while (jy < kp.nSamplesY()) : (jy += 1) {
             var jx: usize = 0;
-            while (jx < kp.nxi()) : (jx += 1) {
+            while (jx < kp.nSamplesX()) : (jx += 1) {
                 const ix = kp.cellX(jx);
                 const iy = kp.cellY(jy);
                 const base = kp.base(jx, jy, 0);
@@ -226,9 +226,9 @@ test "M11 keystone: qags attribution — epsrel 1e-12 collapses torus deviation"
     var dev_rho: FieldDev = .{};
     var dev_uu: FieldDev = .{};
     var jy: usize = 0;
-    while (jy < ke.nyi()) : (jy += 1) {
+    while (jy < ke.nSamplesY()) : (jy += 1) {
         var jx: usize = 0;
-        while (jx < ke.nxi()) : (jx += 1) {
+        while (jx < ke.nSamplesX()) : (jx += 1) {
             const ix = ke.cellX(jx);
             const iy = ke.cellY(jy);
             const base = ke.base(jx, jy, 0);

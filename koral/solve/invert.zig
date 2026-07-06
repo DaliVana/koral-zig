@@ -17,7 +17,7 @@
 
 const std = @import("std");
 const relele = @import("../relele.zig");
-const mhd = @import("../physics/mhd.zig");
+const mhd = @import("../physics/bfield.zig");
 const hydro = @import("../physics/hydro.zig");
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
@@ -314,14 +314,14 @@ pub fn u2pSolverW(
     const v2 = (wsq * Qtsq + QdotBsq * (Bsq + 2.0 * W)) / (wsq * xsq);
 
     gamma2 = 1.0 / (1.0 - v2);
-    const gam = @sqrt(gamma2);
-    rho = D / gam;
-    const entr = Sc / gam;
+    const gamma = @sqrt(gamma2);
+    rho = D / gamma;
+    const entr = Sc / gamma;
     uint = 1.0 / pgamma * (W / gamma2 - rho);
     var utcon: [4]f64 = undefined;
     utcon[0] = 0;
     for (1..4) |i| {
-        utcon[i] = gam / (W + Bsq) * (Qtcon[i] + QdotB * Bcon[i] / W);
+        utcon[i] = gamma / (W + Bsq) * (Qtcon[i] + QdotB * Bcon[i] / W);
     }
 
     if (!std.math.isFinite(utcon[1])) return -120;

@@ -25,7 +25,7 @@ const geomFromRecord = gold.geomFromRecord;
 const cfg = config.puffy;
 const L = layout.VarLayout(cfg);
 const NV = L.count;
-const ImplT = implicit.Impl(cfg);
+const ImplT = implicit.Solver(cfg);
 const gam: f64 = 5.0 / 3.0;
 
 /// max normalized residual of a candidate solution against the

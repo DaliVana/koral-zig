@@ -12,8 +12,8 @@
 //!                        OUTCOORDS (BL) frame                (calc_lum type 1)
 //!   * scaleHeightAt    — density-weighted RMS |π/2−θ| at a radius
 //!                        (calc_scaleheight → dynamo.calcScaleHeight)
-//!   * maxMagnetization — max pmag/ptot over the domain (β⁻¹; the BETANORMFULL
-//!                        quantity, so "dynamo sustains β" is readable)
+//!   * maxPmagPtot      — max pmag/ptot over the domain (the BETANORMFULL
+//!                        quantity, so "dynamo sustains pmag/ptot" is readable)
 //!
 //! MYCOORDS reductions (mass, mdot) use the sim's cached metric; the BL-frame
 //! luminosity rebuilds the OUTCOORDS geometry on the fly via coco (C: OUTCOORDS
@@ -31,7 +31,7 @@ const relele = @import("../relele.zig");
 const hydro = @import("../physics/hydro.zig");
 const radiation = @import("../physics/radiation.zig");
 const frames = @import("../frames.zig");
-const mhd = @import("../physics/mhd.zig");
+const mhd = @import("../physics/bfield.zig");
 const dynamo = @import("../magn/dynamo.zig");
 
 const Geometry = geometry.Geometry;
@@ -91,9 +91,9 @@ pub fn totalMass(comptime SimT: type, sim: *const SimT) f64 {
             var ix: i64 = 0;
             while (ix < sim.nxi()) : (ix += 1) {
                 const geom = sim.cache.fillGeometry(ix, iy, iz);
-                const dx = sim.grid.size(ix, 0);
-                const dy = sim.grid.size(iy, 1);
-                const dz = sim.grid.size(iz, 2); // TNZ>1 PHIWEDGE scaling n/a here
+                const dx = sim.grid.cellSize(ix, 0);
+                const dy = sim.grid.cellSize(iy, 1);
+                const dz = sim.grid.cellSize(iz, 2); // TNZ>1 PHIWEDGE scaling n/a here
                 mass += sim.p.get(rho_i, ix, iy, iz) * dx * dy * dz * geom.gdet;
             }
         }
@@ -120,8 +120,8 @@ pub fn mdot(comptime SimT: type, sim: *const SimT, ix: i64) relele.Error!f64 {
             const vcon = [4]f64{ 0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
             const ucon = try relele.convVels(vcon, .velr, .vel4, &geom.gg, &geom.GG);
             const rhouconr = pp[rho_i] * ucon[1];
-            const dy = sim.grid.size(iy, 1);
-            const dz = if (twod) 2.0 * pi else sim.grid.size(iz, 2);
+            const dy = sim.grid.cellSize(iy, 1);
+            const dz = if (twod) 2.0 * pi else sim.grid.cellSize(iz, 2);
             acc += geom.gdet * rhouconr * dy * dz;
         }
     }
@@ -211,9 +211,9 @@ pub fn scaleHeightAt(comptime SimT: type, sim: *SimT, radius: f64) f64 {
     return sim.scaleth[@intCast(ix)];
 }
 
-/// max pmag/ptot over the domain — the BETANORMFULL quantity (β⁻¹). Reports
-/// whether the (initially 1/20) magnetization is being held; 0 if no B field.
-pub fn maxMagnetization(comptime SimT: type, sim: *const SimT) relele.Error!f64 {
+/// max pmag/ptot over the domain — the BETANORMFULL quantity. Reports
+/// whether the (initially 1/20) pmag/ptot ratio is being held; 0 if no B field.
+pub fn maxPmagPtot(comptime SimT: type, sim: *const SimT) relele.Error!f64 {
     const cfg = SimT.Cfg;
     const L = SimT.Layout;
     if (comptime !L.hasVar(.b1)) return 0;

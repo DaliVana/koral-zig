@@ -11,10 +11,10 @@ pub const Golden = struct {
     nin: usize,
     nout: usize,
     data: []f64,
-    a: std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Golden) void {
-        self.a.free(self.data);
+        self.allocator.free(self.data);
     }
 
     pub fn rec(self: *const Golden, i: usize) struct { in: []const f64, out: []const f64 } {
@@ -29,16 +29,16 @@ pub const Golden = struct {
 
 /// Read tests/golden/<relpath>; skips the test when the file is absent
 /// (goldens not generated on this machine).
-pub fn readGolden(a: std.mem.Allocator, comptime relpath: []const u8, nin: usize, nout: usize) !Golden {
+pub fn readGolden(allocator: std.mem.Allocator, comptime relpath: []const u8, nin: usize, nout: usize) !Golden {
     const path = build_options.golden_dir ++ "/" ++ relpath;
-    const raw = std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1 << 24)) catch |err| switch (err) {
+    const raw = std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 24)) catch |err| switch (err) {
         error.FileNotFound => {
             std.debug.print("golden file missing: {s} (run tools/gen_golden.sh)\n", .{path});
             return error.SkipZigTest;
         },
         else => return err,
     };
-    defer a.free(raw);
+    defer allocator.free(raw);
 
     if (raw.len < 24 or !std.mem.eql(u8, raw[0..4], "KGLD")) return error.BadGoldenFile;
     if (std.mem.readInt(u32, raw[4..8], .little) != 1) return error.BadGoldenVersion;
@@ -48,11 +48,11 @@ pub fn readGolden(a: std.mem.Allocator, comptime relpath: []const u8, nin: usize
     const nvals = nrec * (nin + nout);
     if (raw.len != 24 + nvals * 8) return error.BadGoldenFile;
 
-    const data = try a.alloc(f64, nvals);
+    const data = try allocator.alloc(f64, nvals);
     for (0..nvals) |i| {
         data[i] = @bitCast(std.mem.readInt(u64, raw[24 + i * 8 ..][0..8], .little));
     }
-    return .{ .nrec = nrec, .nin = nin, .nout = nout, .data = data, .a = a };
+    return .{ .nrec = nrec, .nin = nin, .nout = nout, .data = data, .allocator = allocator };
 }
 
 /// A forced-dt step file (oracle/harness_step.c):
@@ -69,10 +69,10 @@ pub const Kstp = struct {
     nrec: usize,
     nflags: usize,
     data: []f64,
-    a: std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Kstp) void {
-        self.a.free(self.data);
+        self.allocator.free(self.data);
     }
 
     fn recLen(self: *const Kstp) usize {
@@ -107,27 +107,27 @@ pub const Kstp = struct {
     }
 };
 
-pub fn readKstp(a: std.mem.Allocator, comptime relpath: []const u8) !Kstp {
+pub fn readKstp(allocator: std.mem.Allocator, comptime relpath: []const u8) !Kstp {
     const path = build_options.golden_dir ++ "/" ++ relpath;
-    const file = std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1 << 28)) catch |err| switch (err) {
+    const file = std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 28)) catch |err| switch (err) {
         error.FileNotFound => {
             std.debug.print("golden file missing: {s} (run tools/gen_golden.sh)\n", .{path});
             return error.SkipZigTest;
         },
         else => return err,
     };
-    defer a.free(file);
+    defer allocator.free(file);
 
     // .kstp may be committed gzipped (large full-pipeline goldens) — inflate
     // when the gzip magic is present.
     var owned: ?[]u8 = null;
-    defer if (owned) |o| a.free(o);
+    defer if (owned) |o| allocator.free(o);
     const raw: []const u8 = if (file.len >= 2 and file[0] == 0x1f and file[1] == 0x8b) blk: {
         const flate = std.compress.flate;
         var in: std.Io.Reader = .fixed(file);
         var window: [flate.max_window_len]u8 = undefined;
         var dc: flate.Decompress = .init(&in, .gzip, &window);
-        var aw: std.Io.Writer.Allocating = .init(a);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
         _ = try dc.reader.streamRemaining(&aw.writer);
         owned = try aw.toOwnedSlice();
@@ -144,7 +144,7 @@ pub fn readKstp(a: std.mem.Allocator, comptime relpath: []const u8) !Kstp {
         .nrec = @intCast(std.mem.readInt(u64, raw[24..32], .little)),
         .nflags = 0,
         .data = undefined,
-        .a = a,
+        .allocator = allocator,
     };
     // infer the flag count from the file length
     {
@@ -156,7 +156,7 @@ pub fn readKstp(a: std.mem.Allocator, comptime relpath: []const u8) !Kstp {
     }
     const nvals = k.nrec * k.recLen();
     if (raw.len != 32 + nvals * 8) return error.BadGoldenFile;
-    k.data = try a.alloc(f64, nvals);
+    k.data = try allocator.alloc(f64, nvals);
     for (0..nvals) |i| {
         k.data[i] = @bitCast(std.mem.readInt(u64, raw[32 + i * 8 ..][0..8], .little));
     }
@@ -252,18 +252,18 @@ pub const Kini = struct {
     vars: []i32,
     /// values, laid out iz-slowest, then iy, then ix, vars fastest
     data: []f64,
-    a: std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Kini) void {
-        self.a.free(self.vars);
-        self.a.free(self.data);
+        self.allocator.free(self.vars);
+        self.allocator.free(self.data);
     }
 
     /// number of sampled points along x / y (ghosts or strided domain)
-    pub fn nxi(self: *const Kini) usize {
+    pub fn nSamplesX(self: *const Kini) usize {
         return if (self.gx > 0) @intCast(self.nx + 2 * self.gx) else @intCast(@divTrunc(self.nx + self.stride - 1, self.stride));
     }
-    pub fn nyi(self: *const Kini) usize {
+    pub fn nSamplesY(self: *const Kini) usize {
         return if (self.gy > 0) @intCast(self.ny + 2 * self.gy) else @intCast(@divTrunc(self.ny + self.stride - 1, self.stride));
     }
 
@@ -278,27 +278,27 @@ pub const Kini = struct {
     /// record base offset for sample (jx, jy, jz)
     pub fn base(self: *const Kini, jx: usize, jy: usize, jz: usize) usize {
         const nvv = self.vars.len;
-        return ((jz * self.nyi() + jy) * self.nxi() + jx) * nvv;
+        return ((jz * self.nSamplesY() + jy) * self.nSamplesX() + jx) * nvv;
     }
 };
 
-pub fn readKini(a: std.mem.Allocator, comptime relpath: []const u8) !Kini {
+pub fn readKini(allocator: std.mem.Allocator, comptime relpath: []const u8) !Kini {
     const path = build_options.golden_dir ++ "/" ++ relpath;
-    const gz = std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1 << 26)) catch |err| switch (err) {
+    const gz = std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1 << 26)) catch |err| switch (err) {
         error.FileNotFound => {
             std.debug.print("golden file missing: {s} (run tools/gen_golden.sh)\n", .{path});
             return error.SkipZigTest;
         },
         else => return err,
     };
-    defer a.free(gz);
+    defer allocator.free(gz);
 
     // inflate (gzip container)
     const flate = std.compress.flate;
     var in: std.Io.Reader = .fixed(gz);
     var window: [flate.max_window_len]u8 = undefined;
     var dc: flate.Decompress = .init(&in, .gzip, &window);
-    var aw: std.Io.Writer.Allocating = .init(a);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
     _ = try dc.reader.streamRemaining(&aw.writer);
     const raw = aw.written();
@@ -320,19 +320,19 @@ pub fn readKini(a: std.mem.Allocator, comptime relpath: []const u8) !Kini {
         .stride = rd.i32at(raw, 32),
         .vars = undefined,
         .data = undefined,
-        .a = a,
+        .allocator = allocator,
     };
     const nvars: usize = @intCast(rd.i32at(raw, 36));
     var off: usize = 40;
-    k.vars = try a.alloc(i32, nvars);
+    k.vars = try allocator.alloc(i32, nvars);
     for (0..nvars) |i| {
         k.vars[i] = rd.i32at(raw, off);
         off += 4;
     }
-    const npts = k.nxi() * k.nyi() * @as(usize, @intCast(k.nz));
+    const npts = k.nSamplesX() * k.nSamplesY() * @as(usize, @intCast(k.nz));
     const nvals = npts * nvars;
     if (raw.len != off + nvals * 8) return error.BadGoldenFile;
-    k.data = try a.alloc(f64, nvals);
+    k.data = try allocator.alloc(f64, nvals);
     for (0..nvals) |i| {
         k.data[i] = @bitCast(std.mem.readInt(u64, raw[off + i * 8 ..][0..8], .little));
     }

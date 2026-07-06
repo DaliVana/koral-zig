@@ -19,7 +19,7 @@ const units_mod = @import("../units.zig");
 const Units = units_mod.Units;
 
 /// ko.h:28 — the truncated Pi used throughout KORAL's own constants.
-pub const pi_c: f64 = 3.141592654;
+pub const pi_truncated: f64 = 3.141592654;
 
 /// C: choices.h:441-457 (no PUFFY override).
 pub const tempeminimal: f64 = 1.0e2;
@@ -98,8 +98,8 @@ pub const Consts = struct {
     one_over_mui_mp: f64,
     one_over_log_2p6: f64,
 
-    pub fn init(u: Units, comp: Composition) Consts {
-        const masscm = u.masscm;
+    pub fn init(units: Units, comp: Composition) Consts {
+        const masscm = units.masscm;
         const GGG = units_mod.GGG;
         const CCC = units_mod.CCC;
 
@@ -112,7 +112,7 @@ pub const Consts = struct {
         const four_sigmarad = 4.0 * sigma_rad;
 
         return .{
-            .units = u,
+            .units = units,
             .comp = comp,
             .lengu2cgs = masscm,
             .numdensgu2cgs = 1.0 / masscm / masscm / masscm,
@@ -123,9 +123,9 @@ pub const Consts = struct {
             .sigma_rad_cgs = units_mod.SIGMA_RAD_CGS,
             .m_proton_cgs = units_mod.M_PROTON_CGS,
             .m_electr_cgs = units_mod.M_ELECTR_CGS,
-            .fourpi = 4.0 * pi_c,
+            .fourpi = 4.0 * pi_truncated,
             .fourmpi = 4.0 * std.math.pi,
-            .sigma_rad_over_pi = sigma_rad / pi_c,
+            .sigma_rad_over_pi = sigma_rad / pi_truncated,
             .four_sigmarad = four_sigmarad,
             .one_over_four_sigmarad = 1.0 / four_sigmarad,
             .k_over_mecsq = 1.69e-10,
@@ -149,24 +149,24 @@ pub const Consts = struct {
 };
 
 /// C: calc_PEQ_Tfromurho (physics.c) — Tgas from u and ρ.
-pub fn tFromUrho(c: *const Consts, uint: f64, rho: f64, gamma: f64) f64 {
-    const p = uint * (gamma - 1.0);
+pub fn tFromUrho(c: *const Consts, uint: f64, rho: f64, gamma_adiab: f64) f64 {
+    const p = uint * (gamma_adiab - 1.0);
     return c.mugas_mp_over_kb * p / rho;
 }
 
 /// C: calc_PEQ_ufromTrho (physics.c:1912) — u from T and ρ
 /// (no CONSISTENTGAMMA).
-pub fn uFromTrho(c: *const Consts, t: f64, rho: f64, gamma: f64) f64 {
+pub fn uFromTrho(c: *const Consts, t: f64, rho: f64, gamma_adiab: f64) f64 {
     const p = c.kb_over_mugas_mp * rho * t;
-    return p / (gamma - 1.0);
+    return p / (gamma_adiab - 1.0);
 }
 
 pub const GasTemps = struct { tgas: f64, te: f64, ti: f64 };
 
 /// C: calc_PEQ_Teifrompp (physics.c:1869), single-temperature branch:
 /// Te = Ti = Tgas, non-finite → BIG, floored at TEMPE/IMINIMAL.
-pub fn tempsFromUrho(c: *const Consts, uint: f64, rho: f64, gamma: f64) GasTemps {
-    const tgas = tFromUrho(c, uint, rho, gamma);
+pub fn tempsFromUrho(c: *const Consts, uint: f64, rho: f64, gamma_adiab: f64) GasTemps {
+    const tgas = tFromUrho(c, uint, rho, gamma_adiab);
     var te = tgas;
     var ti = tgas;
     if (!std.math.isFinite(te)) te = units_mod.BIG;

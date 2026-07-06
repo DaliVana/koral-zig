@@ -30,7 +30,7 @@ pub const CoordData = struct {
 
 pub fn gcovDual(coords: Coords, mp: MetricParams, x: [4]f64) [4][4]Dual3 {
     const xd = [4]Dual3{
-        Dual3.con(x[0]),
+        Dual3.constant(x[0]),
         Dual3.variable(x[1], 0),
         Dual3.variable(x[2], 1),
         Dual3.variable(x[3], 2),
@@ -58,7 +58,7 @@ const others = [4][3]usize{
 };
 
 fn det4(m: [4][4]Dual3) Dual3 {
-    var d = Dual3.con(0);
+    var d = Dual3.constant(0);
     var sign: f64 = 1.0;
     for (0..4) |j| {
         const minor = det3(m, others[0], others[j]);
@@ -137,7 +137,7 @@ pub fn gttpert(coords: Coords, mp: MetricParams, x: [4]f64) f64 {
         },
         .mks2 => {
             const r = @exp(x[1]) + mp.mksr0;
-            const th = forms.mks2Theta(Dual3.con(x[2]), mp.mksh0).v;
+            const th = forms.mks2Theta(Dual3.constant(x[2]), mp.mksh0).v;
             const c = @cos(th);
             return 2.0 * r / (r * r + mp.a * mp.a * c * c);
         },

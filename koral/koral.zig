@@ -53,7 +53,7 @@ pub const frames = @import("frames.zig");
 pub const p2u = @import("p2u.zig");
 
 pub const physics = struct {
-    pub const mhd = @import("physics/mhd.zig");
+    pub const mhd = @import("physics/bfield.zig");
     pub const hydro = @import("physics/hydro.zig");
     pub const radiation = @import("physics/radiation.zig");
     pub const wavespeeds = @import("physics/wavespeeds.zig");

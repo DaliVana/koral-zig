@@ -1,27 +1,27 @@
 //! Gas thermodynamics and stress-energy tensor (C: physics.c).
 //!
-//! `gamma` is the adiabatic index Γ (C: GAMMA / pgamma; PUFFY: 5/3).
+//! `gamma_adiab` is the adiabatic index Γ (C: GAMMA / pgamma; PUFFY: 5/3).
 //! CONSISTENTGAMMA is off for PUFFY, so Γ is a plain parameter here.
 
 const std = @import("std");
 const relele = @import("../relele.zig");
-const mhd = @import("mhd.zig");
+const mhd = @import("bfield.zig");
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 /// Specific-entropy-like conserved S(ρ, u) (C: calc_Sfromu, physics.c:1457;
 /// log form — NOLOGINS is not defined for PUFFY).
-pub fn sFromU(rho: f64, u: f64, gamma: f64) f64 {
-    const gammam1 = gamma - 1.0;
+pub fn sFromU(rho: f64, u: f64, gamma_adiab: f64) f64 {
+    const gammam1 = gamma_adiab - 1.0;
     const indexn = 1.0 / gammam1;
     const pre = gammam1 * u;
     return rho * @log(std.math.pow(f64, pre, indexn) / std.math.pow(f64, rho, indexn + 1.0));
 }
 
 /// Inverse of sFromU (C: calc_ufromS, physics.c:1497).
-pub fn uFromS(s: f64, rho: f64, gamma: f64) f64 {
-    const gammam1 = gamma - 1.0;
+pub fn uFromS(s: f64, rho: f64, gamma_adiab: f64) f64 {
+    const gammam1 = gamma_adiab - 1.0;
     const indexn = 1.0 / gammam1;
     return std.math.pow(
         f64,
@@ -36,7 +36,7 @@ pub fn calcTij(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
-    gamma: f64,
+    gamma_adiab: f64,
 ) relele.Error![4][4]f64 {
     const L = layout.VarLayout(cfg);
     const rho = pp[L.index(.rho)];
@@ -60,7 +60,7 @@ pub fn calcTij(
         bsq = b.bsq;
     }
 
-    const p = (gamma - 1.0) * uu;
+    const p = (gamma_adiab - 1.0) * uu;
     const w = rho + uu + p;
     const eta = w + bsq;
     const ptot = p + 0.5 * bsq;

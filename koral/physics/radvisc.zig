@@ -50,10 +50,6 @@ pub const ShearOut = struct {
     div: f64,
 };
 
-fn delta(i: usize, j: usize) f64 {
-    return if (i == j) 1.0 else 0.0;
-}
-
 /// C: calc_shear_lab (rad.c:3952), the RAD branch (VELPRIMRAD, FX..FZ). The
 /// gas branch (VELPRIM, VX..VZ) is available via `istart`/`whichvel` but
 /// PUFFY only uses RAD. Neighbour prims come from sim.p, neighbour metrics
@@ -199,7 +195,7 @@ pub fn calcShearLab(
     for (0..4) |i| {
         for (0..4) |j| {
             p11[i][j] = gg[i][j] + ucov[i] * ucov[j];
-            p21[i][j] = delta(i, j) + ucon[i] * ucov[j];
+            p21[i][j] = relele.kron(i, j) + ucon[i] * ucov[j];
         }
     }
 
@@ -233,7 +229,7 @@ pub fn calcShearLab(
 
 /// C: calc_rad_visccoeff (rad.c:4508) with RADVISCMFPSPH + RADVISCNUDAMP.
 /// `global_dt` is the step's dt (C: global_dt, set before the RK stages).
-pub fn calcRadVisccoeff(
+pub fn calcRadViscCoeff(
     comptime SimT: type,
     sim: *const SimT,
     ix: i64,
@@ -244,17 +240,17 @@ pub fn calcRadVisccoeff(
     global_dt: f64,
 ) relele.Error!f64 {
     const cfg = SimT.Cfg;
-    const opp = &(sim.opt.opac orelse return 0);
+    const opac = &(sim.opt.opac orelse return 0);
 
-    const chi = try radforce.calcChi(cfg, pp.*, geom, sim.opt.gam, opp);
+    const chi = try radforce.calcChi(cfg, pp.*, geom, sim.opt.gam, opac);
     var mfp = 1.0 / chi;
 
     const g = &sim.grid;
     const gg = &geom.gg;
     const dx = [3]f64{
-        g.size(ix, 0) * @sqrt(gg[1][1]),
-        g.size(iy, 1) * @sqrt(gg[2][2]),
-        g.size(iz, 2) * @sqrt(gg[3][3]),
+        g.cellSize(ix, 0) * @sqrt(gg[1][1]),
+        g.cellSize(iy, 1) * @sqrt(gg[2][2]),
+        g.cellSize(iz, 2) * @sqrt(gg[3][3]),
     };
     const ny = sim.nDim(1);
     const nz = sim.nDim(2);
@@ -288,7 +284,7 @@ pub fn calcRadVisccoeff(
 }
 
 /// C: calc_rad_shearviscosity (rad.c:3912) — σ^ij (both indices raised) and ν.
-pub fn calcRadShearviscosity(
+pub fn calcRadShearViscosity(
     comptime SimT: type,
     sim: *const SimT,
     ix: i64,
@@ -301,7 +297,7 @@ pub fn calcRadShearviscosity(
     const L = SimT.Layout;
     const sh = try calcShearLab(SimT, sim, ix, iy, iz, pp, comptime L.index(.fx), .velr);
     const shear = relele.indices1122(sh.s, &geom.GG); // σ_ij → σ^ij
-    const nu = try calcRadVisccoeff(SimT, sim, ix, iy, iz, pp, geom, global_dt);
+    const nu = try calcRadViscCoeff(SimT, sim, ix, iy, iz, pp, geom, global_dt);
     return .{ .shear = shear, .nu = nu };
 }
 
@@ -318,7 +314,7 @@ pub fn calcRijVisc(
     global_dt: f64,
 ) relele.Error![4][4]f64 {
     const L = SimT.Layout;
-    const rv = try calcRadShearviscosity(SimT, sim, ix, iy, iz, pp, geom, global_dt);
+    const rv = try calcRadShearViscosity(SimT, sim, ix, iy, iz, pp, geom, global_dt);
     const erad = pp[L.index(.ee)];
     var rvisc: [4][4]f64 = undefined;
     for (0..4) |i| {

@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const relele = @import("../relele.zig");
-const mhd = @import("mhd.zig");
+const mhd = @import("bfield.zig");
 const hydro = @import("hydro.zig");
 const radiation = @import("radiation.zig");
 const p2u_mod = @import("../p2u.zig");
@@ -24,15 +24,15 @@ pub fn fFluxPrime(
     pp: [layout.VarLayout(cfg).count]f64,
     idim: usize,
     geom: *const Geometry,
-    gamma: f64,
+    gamma_adiab: f64,
 ) relele.Error![layout.VarLayout(cfg).count]f64 {
     const L = layout.VarLayout(cfg);
     var ff: [L.count]f64 = @splat(0);
     const gdetu = geom.gdet;
 
     // T^μν → T^μ_ν
-    const tij = try hydro.calcTij(cfg, pp, geom, gamma);
-    const t = relele.indices2221(tij, &geom.gg);
+    const tij_uu = try hydro.calcTij(cfg, pp, geom, gamma_adiab);
+    const tij_ud = relele.indices2221(tij_uu, &geom.gg);
 
     const rho = pp[L.index(.rho)];
     const ugas = pp[L.index(.uu)];
@@ -56,7 +56,7 @@ pub fn fFluxPrime(
         bsq = b.bsq;
     }
 
-    const pre = (gamma - 1.0) * ugas;
+    const pre = (gamma_adiab - 1.0) * ugas;
     const etap = ugas + pre + bsq; // eta - rho
 
     const utp1 = p2u_mod.calcUtp1(vcon, geom);
@@ -71,9 +71,9 @@ pub fn fFluxPrime(
         ff[L.index(.uu)] += -gdetu * bcon[idim + 1] * bcov[0];
     }
 
-    ff[L.index(.vx)] = gdetu * t[idim + 1][1];
-    ff[L.index(.vy)] = gdetu * t[idim + 1][2];
-    ff[L.index(.vz)] = gdetu * t[idim + 1][3];
+    ff[L.index(.vx)] = gdetu * tij_ud[idim + 1][1];
+    ff[L.index(.vy)] = gdetu * tij_ud[idim + 1][2];
+    ff[L.index(.vz)] = gdetu * tij_ud[idim + 1][3];
 
     // magnetic rows: induction-equation fluxes b^i u^d − b^d u^i
     if (comptime L.hasVar(.b1)) {
@@ -84,10 +84,10 @@ pub fn fFluxPrime(
 
     // radiative rows: R^d_ν (pure M1; + Rijvisc in M12)
     if (comptime L.hasVar(.ee)) {
-        const rij_con = try radiation.calcRij(cfg, pp, geom);
-        const rij = relele.indices2221(rij_con, &geom.gg);
+        const rij_uu = try radiation.calcRij(cfg, pp, geom);
+        const rij_ud = relele.indices2221(rij_uu, &geom.gg);
         for (0..4) |nu| {
-            ff[L.index(.ee) + nu] = gdetu * rij[idim + 1][nu];
+            ff[L.index(.ee) + nu] = gdetu * rij_ud[idim + 1][nu];
         }
     }
 

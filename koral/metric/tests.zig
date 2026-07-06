@@ -128,7 +128,7 @@ test "metric: dual-number ∂g matches 4th-order Richardson finite differences" 
                 const r = physR(coords, mp, x);
                 if (r < 2.3) continue;
                 const th = switch (coords) {
-                    .mks2 => forms.mks2Theta(Dual3.con(x[2]), mp.mksh0).v,
+                    .mks2 => forms.mks2Theta(Dual3.constant(x[2]), mp.mksh0).v,
                     else => x[2],
                 };
                 if (th < 0.2 or th > pi - 0.2) continue;
@@ -210,9 +210,9 @@ test "metric: √−g analytic — KS(a=0) = r² sinθ; MKS2 = KS × e^{x1} dθ/
     for (all_mps) |mp| {
         for (samplePoints(.mks2, mp, &buf)) |x| {
             const d = metric.compute(.mks2, mp, x);
-            const xks = [4]f64{ x[0], @exp(x[1]) + mp.mksr0, forms.mks2ThetaMetric(Dual3.con(x[2]), mp.mksh0).v, x[3] };
+            const xks = [4]f64{ x[0], @exp(x[1]) + mp.mksr0, forms.mks2ThetaMetric(Dual3.constant(x[2]), mp.mksh0).v, x[3] };
             const dks = metric.compute(.ks, mp, xks);
-            const jac = @exp(x[1]) * forms.mks2DThetaDx2Metric(Dual3.con(x[2]), mp.mksh0).v;
+            const jac = @exp(x[1]) * forms.mks2DThetaDx2Metric(Dual3.constant(x[2]), mp.mksh0).v;
             try expectClose(dks.gdet * jac, d.gdet, 1e-13, 1e-300);
         }
     }
@@ -336,7 +336,7 @@ test "metric: g(BL) pushed through Jacobians equals g(MKS2) directly (r > 2.1)" 
             const d = metric.compute(.mks2, mp, x);
             // Evaluate g_BL at the *metric-flavor* θ — the flavor the MKS2
             // metric itself uses (coco's exact-π θ differs at ~1e-9).
-            const xbl = [4]f64{ 0, @exp(x[1]) + mp.mksr0, forms.mks2ThetaMetric(Dual3.con(x[2]), mp.mksh0).v, x[3] };
+            const xbl = [4]f64{ 0, @exp(x[1]) + mp.mksr0, forms.mks2ThetaMetric(Dual3.constant(x[2]), mp.mksh0).v, x[3] };
             const dbl = metric.compute(.bl, mp, xbl);
             const jac = coco.dxdx(x, .mks2, .bl, mp); // dx_BL/dx_MKS2
             var scale: f64 = 0;

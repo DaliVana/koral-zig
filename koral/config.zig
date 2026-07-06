@@ -7,6 +7,7 @@
 //! (see koral_lite/docs/zig-rewrite-architecture.md §2).
 
 const std = @import("std");
+const relele = @import("relele.zig");
 
 /// Physics subsystems, in KORAL's fixed state-vector order:
 /// hydro → electrons → relel → mhd → forcefree → radiation.
@@ -44,7 +45,9 @@ pub const TimeStepping = enum { rk1, rk2, rk2heun, rk2imex };
 pub const Coords = enum { mink, bl, ks, mks2 };
 
 /// Velocity primitive parametrization (C: VELPRIM; VELR is the robust default).
-pub const VelType = enum { vel4, vel3, velr };
+/// Re-exports relele.VelType so there is a single VelType across the
+/// codebase (its explicit 1/2/3 values are harmless here).
+pub const VelType = relele.VelType;
 
 pub const Config = struct {
     modules: []const Module,
@@ -87,6 +90,13 @@ pub const Config = struct {
                 @compileError("koral.Config: n_relel_bins set without .relel");
             if (self.evolve_photon_number and !self.has(.radiation))
                 @compileError("koral.Config: evolve_photon_number requires .radiation");
+            // Every call site hardcodes .velr; no other parametrization is
+            // implemented yet, so catch a mis-set knob at compile time
+            // instead of silently doing nothing.
+            if (self.velprim != .velr)
+                @compileError("koral.Config: only velprim = .velr is implemented");
+            if (self.velprim_rad != .velr)
+                @compileError("koral.Config: only velprim_rad = .velr is implemented");
             // Modules must appear in the canonical (C) order.
             var last: ?usize = null;
             for (self.modules) |m| {

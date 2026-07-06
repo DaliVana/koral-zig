@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const relele = @import("relele.zig");
-const mhd = @import("physics/mhd.zig");
+const mhd = @import("physics/bfield.zig");
 const config = @import("config.zig");
 const layout = @import("layout.zig");
 const Geometry = @import("geometry.zig").Geometry;
@@ -44,7 +44,7 @@ pub fn p2uMhd(
     pp: [layout.VarLayout(cfg).count]f64,
     uu: *[layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
-    gamma: f64,
+    gamma_adiab: f64,
 ) relele.Error!void {
     const L = layout.VarLayout(cfg);
     const gdetu = geom.gdet; // GDETIN == 1
@@ -75,7 +75,7 @@ pub fn p2uMhd(
     const rhout = rho * ut;
     const sut = s * ut;
 
-    const pre = (gamma - 1.0) * ugas;
+    const pre = (gamma_adiab - 1.0) * ugas;
     const w = rho + ugas + pre;
     const eta = w + bsq;
     const etap = ugas + pre + bsq; // eta - rho
@@ -137,11 +137,11 @@ pub fn p2u(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
-    gamma: f64,
+    gamma_adiab: f64,
 ) relele.Error![layout.VarLayout(cfg).count]f64 {
     const L = layout.VarLayout(cfg);
     var uu: [L.count]f64 = @splat(0);
-    try p2uMhd(cfg, pp, &uu, geom, gamma);
+    try p2uMhd(cfg, pp, &uu, geom, gamma_adiab);
     if (comptime L.hasVar(.ee)) {
         try p2uRad(cfg, pp, &uu, geom);
     }

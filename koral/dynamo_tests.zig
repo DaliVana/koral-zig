@@ -160,7 +160,7 @@ test "M12 dynamo: ΔA_φ equatorial sign flip + |B³| non-increasing + divB" {
         while (iy < ny) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
-                const aphi = s.dynA.get(2, ix, iy, 0);
+                const aphi = s.dyn_a.get(2, ix, iy, 0);
                 const bphi = b3_before[@intCast(iy * nx + ix)];
                 const expected = -(pi / 2.0 - thetaBL(&s, ix, iy)) * bphi;
                 if (@abs(aphi) > 1e-40 and @abs(expected) > 1e-40) {

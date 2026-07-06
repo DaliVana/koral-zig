@@ -97,9 +97,9 @@ test "M12 radviscosity: shear + nu + R^i_j vs C (PUFFY t=0, 384×360)" {
     var dev_nu: Dev = .{};
     {
         var jy: usize = 0;
-        while (jy < kshear.nyi()) : (jy += 1) {
+        while (jy < kshear.nSamplesY()) : (jy += 1) {
             var jx: usize = 0;
-            while (jx < kshear.nxi()) : (jx += 1) {
+            while (jx < kshear.nSamplesX()) : (jx += 1) {
                 const ix = kshear.cellX(jx);
                 const iy = kshear.cellY(jy);
                 if (outsideGc(nx, ny, ix, iy)) continue;
@@ -107,7 +107,7 @@ test "M12 radviscosity: shear + nu + R^i_j vs C (PUFFY t=0, 384×360)" {
                 var pp: [SimP.nv]f64 = undefined;
                 s.p.load(ix, iy, 0, &pp);
                 const geom = s.cache.fillGeometry(ix, iy, 0);
-                const rv = try radvisc.calcRadShearviscosity(SimP, &s, ix, iy, 0, &pp, &geom, global_dt_golden);
+                const rv = try radvisc.calcRadShearViscosity(SimP, &s, ix, iy, 0, &pp, &geom, global_dt_golden);
                 for (0..4) |i| {
                     for (0..4) |j| dev_shear.add(kshear.data[base + i * 4 + j], rv.shear[i][j]);
                 }
@@ -122,9 +122,9 @@ test "M12 radviscosity: shear + nu + R^i_j vs C (PUFFY t=0, 384×360)" {
     var dev_rij: Dev = .{};
     {
         var jy: usize = 0;
-        while (jy < kvisc.nyi()) : (jy += 1) {
+        while (jy < kvisc.nSamplesY()) : (jy += 1) {
             var jx: usize = 0;
-            while (jx < kvisc.nxi()) : (jx += 1) {
+            while (jx < kvisc.nSamplesX()) : (jx += 1) {
                 const ix = kvisc.cellX(jx);
                 const iy = kvisc.cellY(jy);
                 const base = kvisc.base(jx, jy, 0);

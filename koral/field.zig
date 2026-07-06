@@ -18,16 +18,16 @@ pub fn Field(comptime NV: usize) type {
 
         data: []f64,
         grid: Grid,
-        a: std.mem.Allocator,
+        allocator: std.mem.Allocator,
 
-        pub fn init(a: std.mem.Allocator, grid: Grid) !Self {
-            const data = try a.alloc(f64, grid.cellCount() * NV);
+        pub fn init(allocator: std.mem.Allocator, grid: Grid) !Self {
+            const data = try allocator.alloc(f64, grid.cellCount() * NV);
             @memset(data, 0);
-            return .{ .data = data, .grid = grid, .a = a };
+            return .{ .data = data, .grid = grid, .allocator = allocator };
         }
 
         pub fn deinit(self: *Self) void {
-            self.a.free(self.data);
+            self.allocator.free(self.data);
             self.* = undefined;
         }
 

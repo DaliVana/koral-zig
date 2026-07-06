@@ -113,13 +113,13 @@ test "golden: calc_Gi (thermal four-force + Comptonization) vs C" {
         // only agree on to ~ulp(Te) — its sensitivity |∂coeff/∂Trad|·Te
         // belongs in the scale (dominant at θe ≫ 1 where the bracket
         // amplifies): evaluate the coefficient with Trad − Te := Te.
-        const c = &p.c;
+        const c = &p.consts;
         const b = c.sigma_rad_over_pi * st.te * st.te * st.te * st.te;
         var st_sens = st;
         st_sens.trad = 2.0 * st.te;
         const scale = (st.opac.rad_ross + st.kappaes) * st.ehat +
             st.opac.gas_abs * c.fourpi * b +
-            @abs(radforce.comptComptonCoeff(c, &st_sens));
+            @abs(radforce.comptonGiCoeff(c, &st_sens));
 
         for (0..4) |i| {
             t.add(r.out[i] / scale, gi.lab[i] / scale, ir);

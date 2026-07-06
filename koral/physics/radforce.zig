@@ -23,7 +23,7 @@ const layout = @import("../layout.zig");
 const relele = @import("../relele.zig");
 const frames = @import("../frames.zig");
 const hydro = @import("hydro.zig");
-const mhd = @import("mhd.zig");
+const mhd = @import("bfield.zig");
 const radiation = @import("radiation.zig");
 const thermo = @import("thermo.zig");
 const opacities = @import("opacities.zig");
@@ -55,13 +55,13 @@ pub const KappaesMode = union(enum) {
 
 /// Everything opacity/four-force evaluation needs besides the state.
 pub const Params = struct {
-    c: thermo.Consts,
-    ch: opacities.Channels = .{},
+    consts: thermo.Consts,
+    channels: opacities.Channels = .{},
     kappa: KappaMode = .default,
     kappaes: KappaesMode = .puffy,
 
-    pub fn init(u: units_mod.Units, comp: thermo.Composition) Params {
-        return .{ .c = thermo.Consts.init(u, comp) };
+    pub fn init(units: units_mod.Units, comp: thermo.Composition) Params {
+        return .{ .consts = thermo.Consts.init(units, comp) };
     }
 
     /// The PUFFY build: MASS = 10 M☉, HFRAC = 1 with the direct
@@ -75,10 +75,10 @@ pub const Params = struct {
     /// (omitted entirely when kes == 0, like C problems without the file).
     /// COMPTONIZATION is a per-problem define the grey test problems do NOT
     /// set (unlike PUFFY), so the Compton term is off.
-    pub fn grey(u: units_mod.Units, comp: thermo.Composition, kabs: f64, kes: f64) Params {
+    pub fn grey(units: units_mod.Units, comp: thermo.Composition, kabs: f64, kes: f64) Params {
         return .{
-            .c = thermo.Consts.init(u, comp),
-            .ch = .{ .comptonization = false },
+            .consts = thermo.Consts.init(units, comp),
+            .channels = .{ .comptonization = false },
             .kappa = .{ .grey = kabs },
             .kappaes = if (kes == 0.0) .none else .{ .grey = kes },
         };
@@ -87,7 +87,7 @@ pub const Params = struct {
     fn kappaesAt(self: *const Params, rho: f64, trad: f64) f64 {
         return switch (self.kappaes) {
             .none => 0.0,
-            .puffy => opacities.kappaEsPuffy(&self.c, self.ch, rho, trad),
+            .puffy => opacities.kappaEsPuffy(&self.consts, self.channels, rho, trad),
             .grey => |k| k * rho,
         };
     }
@@ -122,16 +122,16 @@ pub fn fillRadState(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
-    gam: f64,
-    p: *const Params,
+    gamma_adiab: f64,
+    par: *const Params,
 ) relele.Error!RadState {
     const L = layout.VarLayout(cfg);
-    const c = &p.c;
+    const c = &par.consts;
 
     const rho = pp[L.index(.rho)];
     const uint = pp[L.index(.uu)];
-    const temps = thermo.tempsFromUrho(c, uint, rho, gam);
-    const sgas = c.kb_over_mugas_mp * hydro.sFromU(rho, uint, gam);
+    const temps = thermo.tempsFromUrho(c, uint, rho, gamma_adiab);
+    const sgas = c.kb_over_mugas_mp * hydro.sFromU(rho, uint, gamma_adiab);
     const ne = thermo.thermalNe(c, rho);
 
     const u = try relele.uconUcovFromPrims(
@@ -163,10 +163,10 @@ pub fn fillRadState(
     const tradbb = c.lteTfromE(ehat);
     const trad = tradbb; // no EVOLVEPHOTONNUMBER
 
-    const kappaes = p.kappaesAt(rho, trad);
+    const kappaes = par.kappaesAt(rho, trad);
 
-    const kr = switch (p.kappa) {
-        .default => opacities.kappaFromState(c, p.ch, .{
+    const kappa_result = switch (par.kappa) {
+        .default => opacities.calcKappaFromState(c, par.channels, .{
             .rho = rho,
             .tgas = temps.tgas,
             .te = temps.te,
@@ -212,8 +212,8 @@ pub fn fillRadState(
         .tradbb = tradbb,
         .trad = trad,
         .kappaes = kappaes,
-        .kappa = kr.kappa,
-        .opac = kr.opac,
+        .kappa = kappa_result.kappa,
+        .opac = kappa_result.opac,
     };
 }
 
@@ -226,7 +226,7 @@ pub const Gi = struct {
 
 /// C: calc_Compt_Gi_with_state (rad.c:2907) — thermal Comptonization,
 /// no RELELECTRONS correction. Returns coeff so both frames reuse it.
-pub fn comptComptonCoeff(c: *const thermo.Consts, st: *const RadState) f64 {
+pub fn comptonGiCoeff(c: *const thermo.Consts, st: *const RadState) f64 {
     const thetae = c.kb_over_me * st.te;
     return st.kappaes * st.ehat * (4.0 * c.kb_over_me * (st.trad - st.te)) *
         (1.0 + 3.683 * thetae + 4.0 * thetae * thetae) / (1.0 + 4.0 * thetae);
@@ -239,9 +239,9 @@ pub fn calcGiFromState(
     st: *const RadState,
     vprim: [3]f64,
     geom: *const Geometry,
-    p: *const Params,
+    par: *const Params,
 ) relele.Error!Gi {
-    const c = &p.c;
+    const c = &par.consts;
     const b = c.sigma_rad_over_pi * st.te * st.te * st.te * st.te;
 
     const k_rad_abs = st.opac.rad_abs;
@@ -264,8 +264,8 @@ pub fn calcGiFromState(
     var gi_ff = try frames.boost2Lab2Ff(gi_lab, vprim, &geom.gg, &geom.GG);
     gi_ff[0] = -k_gas_abs * c.fourpi * b + k_rad_abs * st.ehat;
 
-    if (p.ch.comptonization) {
-        const coeff = comptComptonCoeff(c, st);
+    if (par.channels.comptonization) {
+        const coeff = comptonGiCoeff(c, st);
         // lab: coeff·u^μ; ff: coeff·(1,0,0,0)
         for (0..4) |i| gi_lab[i] += coeff * st.ucon[i];
         gi_ff[0] += coeff;
@@ -280,14 +280,14 @@ pub fn calcGi(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
-    gam: f64,
-    p: *const Params,
+    gamma_adiab: f64,
+    par: *const Params,
 ) relele.Error!Gi {
     const L = layout.VarLayout(cfg);
-    const st = try fillRadState(cfg, pp, geom, gam, p);
+    const st = try fillRadState(cfg, pp, geom, gamma_adiab, par);
     return calcGiFromState(&st, .{
         pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)],
-    }, geom, p);
+    }, geom, par);
 }
 
 /// C: calc_kappa (opacities.c:22) — state fill + default opacity code.
@@ -295,10 +295,10 @@ pub fn calcKappa(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
-    gam: f64,
-    p: *const Params,
+    gamma_adiab: f64,
+    par: *const Params,
 ) relele.Error!f64 {
-    const st = try fillRadState(cfg, pp, geom, gam, p);
+    const st = try fillRadState(cfg, pp, geom, gamma_adiab, par);
     return st.kappa;
 }
 
@@ -307,13 +307,13 @@ pub fn calcKappa(
 pub fn calcKappaes(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
-    gam: f64,
-    p: *const Params,
+    gamma_adiab: f64,
+    par: *const Params,
 ) f64 {
     const L = layout.VarLayout(cfg);
-    const temps = thermo.tempsFromUrho(&p.c, pp[L.index(.uu)], pp[L.index(.rho)], gam);
+    const temps = thermo.tempsFromUrho(&par.consts, pp[L.index(.uu)], pp[L.index(.rho)], gamma_adiab);
     const trad = temps.te;
-    return p.kappaesAt(pp[L.index(.rho)], trad);
+    return par.kappaesAt(pp[L.index(.rho)], trad);
 }
 
 /// C: calc_chi (opacities.c:148) — κ + κ_es for the wavespeed τ-limiter.
@@ -321,9 +321,9 @@ pub fn calcChi(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
-    gam: f64,
-    p: *const Params,
+    gamma_adiab: f64,
+    par: *const Params,
 ) relele.Error!f64 {
-    const kappa = try calcKappa(cfg, pp, geom, gam, p);
-    return kappa + calcKappaes(cfg, pp, gam, p);
+    const kappa = try calcKappa(cfg, pp, geom, gamma_adiab, par);
+    return kappa + calcKappaes(cfg, pp, gamma_adiab, par);
 }

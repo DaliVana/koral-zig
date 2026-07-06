@@ -170,7 +170,7 @@ fn invert4(a_in: [4][4]f64) [4][4]f64 {
     return inv;
 }
 
-pub fn Impl(comptime cfg: config.Config) type {
+pub fn Solver(comptime cfg: config.Config) type {
     const L = layout.VarLayout(cfg);
     const NV = L.count;
     comptime std.debug.assert(L.hasVar(.ee));
@@ -189,7 +189,7 @@ pub fn Impl(comptime cfg: config.Config) type {
             uu: *[NV]f64,
             uu0: *const [NV]f64,
             geom: *const Geometry,
-            gam: f64,
+            gamma_adiab: f64,
             rad: invert_rad.RadParams,
             ip: *const ImplicitParams,
             whichprim: WhichPrim,
@@ -205,9 +205,9 @@ pub fn Impl(comptime cfg: config.Config) type {
 
                 // rho may be inconsistent when iterating MHD primitives
                 pp[i_rho] = uu0[i_rho] * gdetu_inv / u.con[0];
-                pp[i_entr] = hydro.sFromU(pp[i_rho], pp[i_uu], gam);
+                pp[i_entr] = hydro.sFromU(pp[i_rho], pp[i_uu], gamma_adiab);
 
-                p2u_mod.p2uMhd(cfg, pp.*, uu, geom, gam) catch return -2;
+                p2u_mod.p2uMhd(cfg, pp.*, uu, geom, gamma_adiab) catch return -2;
 
                 // opposite changes in the RAD conserveds
                 inline for (0..4) |k| {
@@ -236,9 +236,9 @@ pub fn Impl(comptime cfg: config.Config) type {
                     }
                 }
 
-                var rettemp = invert.u2pSolverW(cfg, uu.*, pp, geom, .hot, gam);
+                var rettemp = invert.u2pSolverW(cfg, uu.*, pp, geom, .hot, gamma_adiab);
                 if (rettemp < 0 and ip.allow_entr_in_4dprim) {
-                    rettemp = invert.u2pSolverW(cfg, uu.*, pp, geom, .entropy, gam);
+                    rettemp = invert.u2pSolverW(cfg, uu.*, pp, geom, .entropy, gamma_adiab);
                 }
                 const u2pret: i32 = if (rettemp < 0) -2 else 0;
 
@@ -246,7 +246,7 @@ pub fn Impl(comptime cfg: config.Config) type {
                     .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
                     geom,
                 ) catch return -2;
-                pp[i_entr] = hydro.sFromU(pp[i_rho], pp[i_uu], gam);
+                pp[i_entr] = hydro.sFromU(pp[i_rho], pp[i_uu], gamma_adiab);
                 uu[i_entr] = pp[i_entr] * gdetu * u.con[0];
                 return u2pret;
             }
@@ -266,7 +266,7 @@ pub fn Impl(comptime cfg: config.Config) type {
             st0: *const radforce.RadState,
             dt: f64,
             geom: *const Geometry,
-            opp: *const radforce.Params,
+            opac: *const radforce.Params,
             whichprim: WhichPrim,
             whicheq: WhichEq,
             whichframe: WhichFrame,
@@ -280,7 +280,7 @@ pub fn Impl(comptime cfg: config.Config) type {
 
             const gi_pair = try radforce.calcGiFromState(st, .{
                 pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)],
-            }, geom, opp);
+            }, geom, opac);
             const giff = gi_pair.ff;
             const gi = relele.indices21(gi_pair.lab, &geom.gg); // G_μ
 
@@ -356,8 +356,8 @@ pub fn Impl(comptime cfg: config.Config) type {
             pp0: *const [NV]f64,
             dtau: f64,
             geom: *const Geometry,
-            gam: f64,
-            opp: *const radforce.Params,
+            gamma_adiab: f64,
+            opac: *const radforce.Params,
             whichprim: WhichPrim,
             totenergy: f64,
             ratio: f64,
@@ -375,10 +375,10 @@ pub fn Impl(comptime cfg: config.Config) type {
             var pp = pp0.*;
             pp[i_uu] = ugas;
             pp[i_ee] = ehat / ratio;
-            const st = radforce.fillRadState(cfg, pp, geom, gam, opp) catch return std.math.nan(f64);
+            const st = radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac) catch return std.math.nan(f64);
             const gi = radforce.calcGiFromState(&st, .{
                 pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)],
-            }, geom, opp) catch return std.math.nan(f64);
+            }, geom, opac) catch return std.math.nan(f64);
 
             if (whichprim == .rad) {
                 // C quirk: pp0[EE]/ratio (·ratio would give Ehat0)
@@ -397,8 +397,8 @@ pub fn Impl(comptime cfg: config.Config) type {
             st00: *const radforce.RadState,
             geom: *const Geometry,
             dt: f64,
-            gam: f64,
-            opp: *const radforce.Params,
+            gamma_adiab: f64,
+            opac: *const radforce.Params,
             pp0out: *[NV]f64,
         ) i32 {
             const ehat = st00.ehat;
@@ -431,8 +431,8 @@ pub fn Impl(comptime cfg: config.Config) type {
                 xhi = @min(pp_ee * 1.05, (pp_ee + fac * totenergy / ratio) / fac1);
             }
 
-            var errlo = f1dErr(xlo, pp00, dtau, geom, gam, opp, whichprim, totenergy, ratio);
-            var errhi = f1dErr(xhi, pp00, dtau, geom, gam, opp, whichprim, totenergy, ratio);
+            var errlo = f1dErr(xlo, pp00, dtau, geom, gamma_adiab, opac, whichprim, totenergy, ratio);
+            var errhi = f1dErr(xhi, pp00, dtau, geom, gamma_adiab, opac, whichprim, totenergy, ratio);
 
             const maxiter: usize = 50;
             const conv: f64 = 1.0e-3; // no need for much precision here
@@ -444,7 +444,7 @@ pub fn Impl(comptime cfg: config.Config) type {
                     xhi = xlo;
                     errhi = errlo;
                     xlo /= fac;
-                    errlo = f1dErr(xlo, pp00, dtau, geom, gam, opp, whichprim, totenergy, ratio);
+                    errlo = f1dErr(xlo, pp00, dtau, geom, gamma_adiab, opac, whichprim, totenergy, ratio);
                 } else { // expand the high end, staying below totenergy
                     xlo = xhi;
                     errlo = errhi;
@@ -453,7 +453,7 @@ pub fn Impl(comptime cfg: config.Config) type {
                     } else {
                         xhi = @min(xhi * fac, (xhi + fac * totenergy) / fac1);
                     }
-                    errhi = f1dErr(xhi, pp00, dtau, geom, gam, opp, whichprim, totenergy, ratio);
+                    errhi = f1dErr(xhi, pp00, dtau, geom, gamma_adiab, opac, whichprim, totenergy, ratio);
                 }
                 if (std.math.isNan(errlo) or std.math.isNan(errhi)) iter = maxiter;
                 if (iter >= maxiter) break;
@@ -468,7 +468,7 @@ pub fn Impl(comptime cfg: config.Config) type {
             while (true) {
                 iter += 1;
                 xmid = 0.5 * (xlo + xhi);
-                const errmid = f1dErr(xmid, pp00, dtau, geom, gam, opp, whichprim, totenergy, ratio);
+                const errmid = f1dErr(xmid, pp00, dtau, geom, gamma_adiab, opac, whichprim, totenergy, ratio);
                 if (errmid * errlo > 0.0) {
                     xlo = xmid;
                     errlo = errmid;
@@ -509,9 +509,9 @@ pub fn Impl(comptime cfg: config.Config) type {
             pp00: *const [NV]f64,
             geom: *const Geometry,
             dt: f64,
-            gam: f64,
+            gamma_adiab: f64,
             rad: invert_rad.RadParams,
-            opp: *const radforce.Params,
+            opac: *const radforce.Params,
             ip: *const ImplicitParams,
             whichprim: WhichPrim,
             whicheq: WhichEq,
@@ -523,18 +523,18 @@ pub fn Impl(comptime cfg: config.Config) type {
             var pp0 = pp00.*;
             var uu = uu00.*;
 
-            const state00 = radforce.fillRadState(cfg, pp00.*, geom, gam, opp) catch return fail;
+            const state00 = radforce.fillRadState(cfg, pp00.*, geom, gamma_adiab, opac) catch return fail;
 
             if (ip.start_with_bisect) {
-                _ = solve1dPrim(pp00, &state00, geom, dt, gam, opp, &pp0);
+                _ = solve1dPrim(pp00, &state00, geom, dt, gamma_adiab, opac, &pp0);
             }
 
             const sh: usize = if (whichprim == .mhd) i_uu else i_ee;
             const conv = if (whicheq == .entropy) ip.entrconv else ip.conv;
 
             var pp = pp0;
-            var fret = applyConstraints(&pp, &uu, uu00, geom, gam, rad, ip, whichprim);
-            var state = radforce.fillRadState(cfg, pp, geom, gam, opp) catch return fail;
+            var fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
+            var state = radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac) catch return fail;
 
             var f1: [4]f64 = undefined;
             var f2: [4]f64 = undefined;
@@ -553,7 +553,7 @@ pub fn Impl(comptime cfg: config.Config) type {
 
                 if (fret < -1) return fail;
 
-                const errbase = residual(&uu, &pp, &state, uu00, &state00, dt, geom, opp, whichprim, whicheq, whichframe, &f1) catch return fail;
+                const errbase = residual(&uu, &pp, &state, uu00, &state00, dt, geom, opac, whichprim, whicheq, whichframe, &f1) catch return fail;
                 if (errbase < conv) break; // success (error)
 
                 // Step 1: one-sided FD Jacobian, retrying the other
@@ -572,8 +572,8 @@ pub fn Impl(comptime cfg: config.Config) type {
                             pp[j + sh] = ppp[j + sh] + del;
                         }
 
-                        fret = applyConstraints(&pp, &uu, uu00, geom, gam, rad, ip, whichprim);
-                        state = radforce.fillRadState(cfg, pp, geom, gam, opp) catch blk: {
+                        fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
+                        state = radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac) catch blk: {
                             fret = -2;
                             break :blk state;
                         };
@@ -589,7 +589,7 @@ pub fn Impl(comptime cfg: config.Config) type {
                             }
                         }
 
-                        _ = residual(&uu, &pp, &state, uu00, &state00, dt, geom, opp, whichprim, whicheq, whichframe, &f2) catch {
+                        _ = residual(&uu, &pp, &state, uu00, &state00, dt, geom, opac, whichprim, whicheq, whichframe, &f2) catch {
                             failed = true;
                             break;
                         };
@@ -637,8 +637,8 @@ pub fn Impl(comptime cfg: config.Config) type {
                     }
                     for (0..4) |k| pp[k + sh] = xxx[k];
 
-                    fret = applyConstraints(&pp, &uu, uu00, geom, gam, rad, ip, whichprim);
-                    state = radforce.fillRadState(cfg, pp, geom, gam, opp) catch blk: {
+                    fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
+                    state = radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac) catch blk: {
                         fret = -2;
                         break :blk state;
                     };
@@ -649,9 +649,9 @@ pub fn Impl(comptime cfg: config.Config) type {
                     const edenmax = ppp[sh] * ip.max_en_change_up;
                     if (xxx[0] > edenmin and xxx[0] < edenmax and fret >= -1) okcheck = true;
 
-                    const c = &opp.c;
-                    const tgasold = thermo.tFromUrho(c, ppp[i_uu], ppp[i_rho], gam);
-                    const tgasnew = thermo.tFromUrho(c, pp[i_uu], pp[i_rho], gam);
+                    const c = &opac.consts;
+                    const tgasold = thermo.tFromUrho(c, ppp[i_uu], ppp[i_rho], gamma_adiab);
+                    const tgasnew = thermo.tFromUrho(c, pp[i_uu], pp[i_rho], gamma_adiab);
                     if (okcheck and (tgasnew > tgasold * ip.max_tgas_change or tgasnew < tgasold / ip.max_tgas_change)) {
                         okcheck = false;
                     }
@@ -715,15 +715,15 @@ pub fn Impl(comptime cfg: config.Config) type {
             pp: *[NV]f64,
             geom: *const Geometry,
             dt: f64,
-            gam: f64,
+            gamma_adiab: f64,
             rad: invert_rad.RadParams,
-            opp: *const radforce.Params,
+            opac: *const radforce.Params,
             ip: *const ImplicitParams,
         ) Result {
             const failres = Result{ .ok = false, .rung = -1, .iters = 0 };
 
             const pp00 = pp.*;
-            const uu00 = p2u_mod.p2u(cfg, pp00, geom, gam) catch return failres;
+            const uu00 = p2u_mod.p2u(cfg, pp00, geom, gamma_adiab) catch return failres;
 
             const ff = radiation.calcFfRtt(cfg, pp00, geom) catch return failres;
             const ehat = -ff.rtt;
@@ -744,10 +744,10 @@ pub fn Impl(comptime cfg: config.Config) type {
 
             for (rungs, 0..) |rung, ir| {
                 var ppw = pp.*;
-                const r4 = solve4dPrim(&uu00, &pp00, geom, dt, gam, rad, opp, ip, rung.p, rung.e, rung.fr, &ppw);
+                const r4 = solve4dPrim(&uu00, &pp00, geom, dt, gamma_adiab, rad, opac, ip, rung.p, rung.e, rung.fr, &ppw);
                 if (r4.ok) {
                     pp.* = ppw;
-                    uu.* = p2u_mod.p2u(cfg, ppw, geom, gam) catch return failres;
+                    uu.* = p2u_mod.p2u(cfg, ppw, geom, gamma_adiab) catch return failres;
                     return .{
                         .ok = true,
                         .rung = @intCast(ir),

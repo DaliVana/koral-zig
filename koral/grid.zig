@@ -109,7 +109,7 @@ pub const Grid = struct {
     /// (finite.c:2457). For irrational bounds this can differ from the
     /// nominal spacing by an ulp *per cell*, and the C evolution uses this
     /// per-cell value everywhere, so step-level diffing requires it.
-    pub fn size(g: Grid, i: i64, dim: usize) f64 {
+    pub fn cellSize(g: Grid, i: i64, dim: usize) f64 {
         return switch (dim) {
             0 => g.xl(i + 1) - g.xl(i),
             1 => g.yl(i + 1) - g.yl(i),

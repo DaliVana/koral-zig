@@ -1,5 +1,5 @@
 //! M12 theory gates for radiative shear viscosity that the C golden does not
-//! reach: the RADVISCNUDAMP diffusion cap (calcRadVisccoeff) and the
+//! reach: the RADVISCNUDAMP diffusion cap (calcRadViscCoeff) and the
 //! RADVISCMAXVELDAMP characteristic-velocity cap (addRadViscFlux). The shear
 //! tensor, the coefficient, and the assembled R^i_j are validated numerically
 //! against C in golden_visc_test.zig; here we pin the two limiter properties.
@@ -49,8 +49,8 @@ fn torusCell(s: *const SimP) ?[2]i64 {
 
 fn mindxAt(s: *const SimP, ix: i64, iy: i64) f64 {
     const geom = s.cache.fillGeometry(ix, iy, 0);
-    const dx0 = s.grid.size(ix, 0) * @sqrt(geom.gg[1][1]);
-    const dx1 = s.grid.size(iy, 1) * @sqrt(geom.gg[2][2]);
+    const dx0 = s.grid.cellSize(ix, 0) * @sqrt(geom.gg[1][1]);
+    const dx1 = s.grid.cellSize(iy, 1) * @sqrt(geom.gg[2][2]);
     return @min(dx0, dx1); // NZ==1
 }
 
@@ -68,10 +68,10 @@ test "M12 radviscosity: RADVISCNUDAMP caps ν at mindx²/(4 global_dt)" {
     const geom = s.cache.fillGeometry(ix, iy, 0);
 
     // tiny dt → nulimit huge → ν = ALPHARADVISC·mfp (uncapped)
-    const nu_free = try radvisc.calcRadVisccoeff(SimP, &s, ix, iy, 0, &pp, &geom, 1e-30);
+    const nu_free = try radvisc.calcRadViscCoeff(SimP, &s, ix, iy, 0, &pp, &geom, 1e-30);
     // huge dt → nulimit tiny → ν clamped to nulimit
     const big_dt: f64 = 1e10;
-    const nu_capped = try radvisc.calcRadVisccoeff(SimP, &s, ix, iy, 0, &pp, &geom, big_dt);
+    const nu_capped = try radvisc.calcRadViscCoeff(SimP, &s, ix, iy, 0, &pp, &geom, big_dt);
 
     const mindx = mindxAt(&s, ix, iy);
     const nulimit = mindx * mindx / 2.0 / big_dt / 2.0;

@@ -89,7 +89,7 @@ fn scalarRow(s: *SimT, dt: f64) !dump.ScalarRow {
     const mdot = -(try scalars.mdot(SimT, s, ix_h)); // >0 for accretion
     const lum = try scalars.lum(SimT, s, ix_l);
     const h = scalars.scaleHeightAt(SimT, s, r_scale);
-    const maxb = try scalars.maxMagnetization(SimT, s);
+    const maxb = try scalars.maxPmagPtot(SimT, s);
     const diag = collectDiag(s);
     return .{
         .t = s.t,
@@ -100,26 +100,26 @@ fn scalarRow(s: *SimT, dt: f64) !dump.ScalarRow {
         .radlum = lum.radlum,
         .totallum = lum.totallum,
         .scaleheight = h,
-        .maxbeta_inv = maxb,
+        .max_pmag_ptot = maxb,
         .n_hd_fixup = diag.n_hd_fixup,
         .n_radimp_fail = s.n_radimp_failures,
         .n_nan = diag.n_nan,
     };
 }
 
-fn writeScalars(io: std.Io, out_dir: []const u8, a: std.mem.Allocator, log: []const u8) void {
+fn writeScalars(io: std.Io, out_dir: []const u8, allocator: std.mem.Allocator, log: []const u8) void {
     var buf: [1024]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "{s}/scalars.dat", .{out_dir}) catch return;
-    _ = a;
+    _ = allocator;
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = log }) catch |err| {
         std.debug.print("puffy: cannot write {s}: {s}\n", .{ path, @errorName(err) });
     };
 }
 
-fn writePrimDump(io: std.Io, out_dir: []const u8, a: std.mem.Allocator, s: *const SimT, idx: usize) void {
-    const bytes = a.alloc(u8, dump.primDumpSize(SimT, s)) catch return;
-    defer a.free(bytes);
-    const n = dump.writePrimDump(SimT, s, bytes);
+fn writePrimDump(io: std.Io, out_dir: []const u8, allocator: std.mem.Allocator, s: *const SimT, idx: usize) void {
+    const bytes = allocator.alloc(u8, dump.primDumpSize(SimT, s)) catch return;
+    defer allocator.free(bytes);
+    const n = dump.serializePrimDump(SimT, s, bytes);
     var buf: [1024]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "{s}/prims{d:0>5}.kdmp", .{ out_dir, idx }) catch return;
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes[0..n] }) catch |err| {
@@ -128,7 +128,7 @@ fn writePrimDump(io: std.Io, out_dir: []const u8, a: std.mem.Allocator, s: *cons
 }
 
 pub fn main(init: std.process.Init) !void {
-    const a = init.gpa;
+    const allocator = init.gpa;
     const io = init.io;
 
     var args = std.process.Args.Iterator.init(init.minimal.args);
@@ -136,13 +136,13 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next(); // program name
     const params_path = args.next() orelse "PROBLEMS/puffy/puffy.toml";
 
-    const p = koral.Params.load(a, io, params_path) catch |err| {
+    const p = koral.Params.load(allocator, io, params_path) catch |err| {
         std.debug.print("puffy: cannot load params from '{s}': {s}\n", .{ params_path, @errorName(err) });
         return err;
     };
-    defer a.free(p.out_dir);
+    defer allocator.free(p.out_dir);
 
-    var s = try SimT.init(a, puffy.makeGrid(p.nx, p.ny), options(&p));
+    var s = try SimT.init(allocator, puffy.makeGrid(p.nx, p.ny), options(&p));
     defer s.deinit();
 
     const u = koral.Units.init(p.mass);
@@ -159,16 +159,16 @@ pub fn main(init: std.process.Init) !void {
     // scalars.dat log + output cadence (DTOUT1 in code time)
     std.Io.Dir.cwd().createDirPath(io, p.out_dir) catch {};
     var log: std.ArrayList(u8) = .empty;
-    defer log.deinit(a);
-    try log.appendSlice(a, dump.scalar_header);
+    defer log.deinit(allocator);
+    try log.appendSlice(allocator, dump.scalar_header);
 
     var out_idx: usize = 0;
     var next_out: f64 = p.tstart + p.dtout1;
     {
         const row = try scalarRow(&s, 0.0);
-        try dump.appendScalarLine(&log, a, row);
-        writeScalars(io, p.out_dir, a, log.items);
-        writePrimDump(io, p.out_dir, a, &s, out_idx);
+        try dump.appendScalarLine(&log, allocator, row);
+        writeScalars(io, p.out_dir, allocator, log.items);
+        writePrimDump(io, p.out_dir, allocator, &s, out_idx);
     }
 
     // ---- RK2IMEX time loop -------------------------------------------------
@@ -183,12 +183,12 @@ pub fn main(init: std.process.Init) !void {
         if (s.t >= next_out or s.nstep >= p.nstep_max) {
             out_idx += 1;
             const row = try scalarRow(&s, dt);
-            try dump.appendScalarLine(&log, a, row);
-            writeScalars(io, p.out_dir, a, log.items);
-            if (p.dtout2 > 0) writePrimDump(io, p.out_dir, a, &s, out_idx);
+            try dump.appendScalarLine(&log, allocator, row);
+            writeScalars(io, p.out_dir, allocator, log.items);
+            if (p.dtout2 > 0) writePrimDump(io, p.out_dir, allocator, &s, out_idx);
             std.debug.print(
                 "puffy: t={d:.2} nstep={d} dt={e:.3} | Ṁ={e:.3} L={e:.3} H/R={d:.3} β⁻¹={e:.3} | nan={d} hdfix={d} radimpfail={d}\n",
-                .{ s.t, s.nstep, dt, row.mdot, row.radlum, row.scaleheight, row.maxbeta_inv, row.n_nan, row.n_hd_fixup, row.n_radimp_fail },
+                .{ s.t, s.nstep, dt, row.mdot, row.radlum, row.scaleheight, row.max_pmag_ptot, row.n_nan, row.n_hd_fixup, row.n_radimp_fail },
             );
             if (row.n_nan > 0) {
                 std.debug.print("puffy: NaN detected — aborting\n", .{});

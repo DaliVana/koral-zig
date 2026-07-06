@@ -59,7 +59,7 @@ pub const StateIn = struct {
 /// C: calc_opacities_from_state (opacities.c:186), BREMSSTRAHLUNG +
 /// SYNCHROTRON channels, no SKIPFANCYOPACITIES. Returns kappa=kappaGasAbs
 /// with all six opacity fields (tot_emissivity is filled by the caller,
-/// calc_kappa_from_state — see kappaFromState).
+/// calc_kappa_from_state — see calcKappaFromState).
 pub fn calcOpacitiesFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) Opac {
     const rho = s.rho;
     const te = s.te;
@@ -162,7 +162,7 @@ pub fn calcOpacitiesFromState(c: *const thermo.Consts, ch: Channels, s: StateIn)
         .rad_num = kapparadff + kapparadnumsyn,
         .gas_ross = kappagasffross + kappagassynross,
         .rad_ross = kapparadffross + kapparadsynross,
-        .tot_emissivity = 0, // filled by kappaFromState
+        .tot_emissivity = 0, // filled by calcKappaFromState
     };
 }
 
@@ -170,7 +170,7 @@ pub const KappaResult = struct { kappa: f64, opac: Opac };
 
 /// C: calc_kappa_from_state (opacities.c:37) — the default (no PR_KAPPA)
 /// path plus the totEmissivity bookkeeping. Returns kappa = kappaGasAbs.
-pub fn kappaFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) KappaResult {
+pub fn calcKappaFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) KappaResult {
     const b = c.sigma_rad_over_pi * s.te * s.te * s.te * s.te;
     var opac = calcOpacitiesFromState(c, ch, s);
     // kappaGasAbs >= 0 always holds here, so totEmissivity uses it and no

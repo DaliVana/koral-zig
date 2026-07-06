@@ -77,7 +77,7 @@ test "scalars: mdot through a shell = ρ·u^x·Ly·2π on uniform MINK flow" {
     }
 }
 
-test "scalars: maxMagnetization = |B|²/2 / ((γ−1)u) for B at rest (MINK)" {
+test "scalars: maxPmagPtot = |B|²/2 / ((γ−1)u) for B at rest (MINK)" {
     const a = std.testing.allocator;
     const u = 0.5;
     const b = [3]f64{ 0.2, 0.1, 0.05 };
@@ -85,7 +85,7 @@ test "scalars: maxMagnetization = |B|²/2 / ((γ−1)u) for B at rest (MINK)" {
     defer s.deinit();
     const bsq = b[0] * b[0] + b[1] * b[1] + b[2] * b[2]; // MINK metric = identity spatial
     const want = (bsq / 2.0) / ((5.0 / 3.0 - 1.0) * u);
-    const got = try scalars.maxMagnetization(SimT, &s);
+    const got = try scalars.maxPmagPtot(SimT, &s);
     try std.testing.expectApproxEqRel(want, got, 1e-13);
 }
 

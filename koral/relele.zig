@@ -199,39 +199,39 @@ pub fn calcAlpgam(u: [4]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) f64 {
 /// `ut_known` (C: conv_vels vs conv_vels_ut). Returns the converted 4-vector.
 pub fn convVelsCore(
     uin: [4]f64,
-    which1: VelType,
-    which2: VelType,
+    from: VelType,
+    to: VelType,
     gg: *const [4][5]f64,
     GG: *const [4][5]f64,
     ut_known: bool,
 ) Error![4]f64 {
     var uout: [4]f64 = undefined;
 
-    if (which1 == which2) {
+    if (from == to) {
         // VEL4 -> VEL4 recomputes u^t when unknown; VEL3/VELR copy through.
         uout = uin;
-        if (which1 == .vel4 and !ut_known) uout[0] = try utInUcon(uin, gg);
-    } else if (which1 == .vel4 and which2 == .vel3) {
+        if (from == .vel4 and !ut_known) uout[0] = try utInUcon(uin, gg);
+    } else if (from == .vel4 and to == .vel3) {
         const ut = if (ut_known) uin[0] else try utInUcon(uin, gg);
         uout = .{ 1.0, uin[1] / ut, uin[2] / ut, uin[3] / ut };
-    } else if (which1 == .vel3 and which2 == .vel4) {
+    } else if (from == .vel3 and to == .vel4) {
         const ut = utInVel3(uin, gg);
         if (ut < 1.0 or std.math.isNan(ut)) return Error.VelocityConversionFailed;
         uout = .{ ut, uin[1] * ut, uin[2] * ut, uin[3] * ut };
-    } else if (which1 == .vel3 and which2 == .velr) {
+    } else if (from == .vel3 and to == .velr) {
         const ut = utInVel3(uin, gg);
         if (ut < 1.0 or std.math.isNan(ut)) return Error.VelocityConversionFailed;
         uout = .{ ut, uin[1] * ut, uin[2] * ut, uin[3] * ut };
         for (1..4) |i| {
             uout[i] = uout[i] - uout[0] * GG[0][i] / GG[0][0];
         }
-    } else if (which1 == .vel4 and which2 == .velr) {
+    } else if (from == .vel4 and to == .velr) {
         const ut = if (ut_known) uin[0] else try utInUcon(uin, gg);
         uout[0] = ut;
         for (1..4) |i| {
             uout[i] = uin[i] - ut * GG[0][i] / GG[0][0];
         }
-    } else if (which1 == .velr and which2 == .vel4) {
+    } else if (from == .velr and to == .vel4) {
         const alpgam = calcAlpgam(uin, gg, GG);
         uout[0] = -alpgam * GG[0][0];
         uout[1] = uin[1] - alpgam * GG[0][1];
@@ -248,20 +248,20 @@ pub fn convVelsCore(
 }
 
 /// C: conv_vels — u^t of the input not trusted.
-pub fn convVels(uin: [4]f64, which1: VelType, which2: VelType, gg: *const [4][5]f64, GG: *const [4][5]f64) Error![4]f64 {
-    return convVelsCore(uin, which1, which2, gg, GG, false);
+pub fn convVels(uin: [4]f64, from: VelType, to: VelType, gg: *const [4][5]f64, GG: *const [4][5]f64) Error![4]f64 {
+    return convVelsCore(uin, from, to, gg, GG, false);
 }
 
 /// C: conv_vels_ut — u^t of the input is already correct.
-pub fn convVelsUt(uin: [4]f64, which1: VelType, which2: VelType, gg: *const [4][5]f64, GG: *const [4][5]f64) Error![4]f64 {
-    return convVelsCore(uin, which1, which2, gg, GG, true);
+pub fn convVelsUt(uin: [4]f64, from: VelType, to: VelType, gg: *const [4][5]f64, GG: *const [4][5]f64) Error![4]f64 {
+    return convVelsCore(uin, from, to, gg, GG, true);
 }
 
 pub const ConCov = struct { con: [4]f64, cov: [4]f64 };
 
-/// C: conv_vels_both — only which2 == VEL4 is supported.
-pub fn convVelsBoth(uin: [4]f64, which1: VelType, gg: *const [4][5]f64, GG: *const [4][5]f64) Error!ConCov {
-    const con = try convVelsCore(uin, which1, .vel4, gg, GG, false);
+/// C: conv_vels_both — only to == VEL4 is supported.
+pub fn convVelsBoth(uin: [4]f64, from: VelType, gg: *const [4][5]f64, GG: *const [4][5]f64) Error!ConCov {
+    const con = try convVelsCore(uin, from, .vel4, gg, GG, false);
     return .{ .con = con, .cov = indices21(con, gg) };
 }
 

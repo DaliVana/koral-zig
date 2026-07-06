@@ -23,7 +23,7 @@
 
 const std = @import("std");
 const relele = @import("relele.zig");
-const mhd = @import("physics/mhd.zig");
+const mhd = @import("physics/bfield.zig");
 const coco = @import("metric/coco.zig");
 const config = @import("config.zig");
 const layout = @import("layout.zig");

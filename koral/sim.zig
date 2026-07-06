@@ -16,7 +16,7 @@
 //!    defines whenever MAGNFIELD is on — even in serial builds. So MHD
 //!    configs sweep ±1 ghost rows and fill 2D ghost corners; hydro configs
 //!    skip corners entirely (`if_outsidegc` continue).
-//!  * All cell sizes/centers use C's per-cell FP forms (Grid.size/xc), and
+//!  * All cell sizes/centers use C's per-cell FP forms (Grid.cellSize/xc), and
 //!    stage updates use C's exact `a*x + b*y` expression shapes so that
 //!    forced-dt step tests can gate at 1e-13.
 //!  * copyi_u (domain+ghosts, no corners) is replaced by full-array copies:
@@ -123,11 +123,11 @@ pub fn FaceStore(comptime NV: usize) type {
         ngy: i64,
         ngz: i64,
 
-        fn init(a: std.mem.Allocator, g: Grid, dim: usize) !Self {
+        fn init(allocator: std.mem.Allocator, g: Grid, dim: usize) !Self {
             const nx_s = g.sx() + @intFromBool(dim == 0);
             const ny_s = g.sy() + @intFromBool(dim == 1);
             const nz_s = g.sz() + @intFromBool(dim == 2);
-            const data = try a.alloc(f64, nx_s * ny_s * nz_s * NV);
+            const data = try allocator.alloc(f64, nx_s * ny_s * nz_s * NV);
             @memset(data, 0);
             return .{
                 .data = data,
@@ -140,8 +140,8 @@ pub fn FaceStore(comptime NV: usize) type {
             };
         }
 
-        fn deinit(self: *Self, a: std.mem.Allocator) void {
-            a.free(self.data);
+        fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            allocator.free(self.data);
         }
 
         fn offset(self: *const Self, ix: i64, iy: i64, iz: i64) usize {
@@ -243,7 +243,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             nthreads: usize = 1,
         };
 
-        a: std.mem.Allocator,
+        allocator: std.mem.Allocator,
         grid: Grid,
         cache: precompute.MetricCache,
         opt: Options,
@@ -291,7 +291,7 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         // C: ptemp1 — the dynamo's cell-centered ΔA_φ scratch (slot 2 = φ);
         // and scaleth_otg — the per-radius density-weighted scale height.
-        dynA: field_mod.Field(3),
+        dyn_a: field_mod.Field(3),
         scaleth: []f64,
 
         t: f64 = 0,
@@ -314,9 +314,9 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// pass and read by every worker row).
         impl_dt: f64 = 0,
 
-        pub fn init(a: std.mem.Allocator, g: Grid, opt: Options) !Self {
+        pub fn init(allocator: std.mem.Allocator, g: Grid, opt: Options) !Self {
             var self: Self = undefined;
-            self.a = a;
+            self.allocator = allocator;
             self.grid = g;
             self.opt = opt;
             self.t = 0;
@@ -329,7 +329,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.n_radimp_failures = 0;
             self.n_radimp_iters = 0;
 
-            self.cache = try precompute.MetricCache.init(a, g, .{
+            self.cache = try precompute.MetricCache.init(allocator, g, .{
                 .coords = opt.coords,
                 .out_coords = opt.coords,
                 .mp = opt.mp,
@@ -340,27 +340,27 @@ pub fn Sim(comptime cfg: config.Config) type {
                 "drt1",        "drt2", "uforget", "ptm1",
                 "ppostimplicit", "u_bak", "p_bak",
             }) |name| {
-                @field(self, name) = try FieldT.init(a, g);
+                @field(self, name) = try FieldT.init(allocator, g);
             }
             for (0..3) |d| {
-                self.pb_l[d] = try FaceT.init(a, g, d);
-                self.pb_r[d] = try FaceT.init(a, g, d);
-                self.fl_l[d] = try FaceT.init(a, g, d);
-                self.fl_r[d] = try FaceT.init(a, g, d);
-                self.flb[d] = try FaceT.init(a, g, d);
+                self.pb_l[d] = try FaceT.init(allocator, g, d);
+                self.pb_r[d] = try FaceT.init(allocator, g, d);
+                self.fl_l[d] = try FaceT.init(allocator, g, d);
+                self.fl_r[d] = try FaceT.init(allocator, g, d);
+                self.flb[d] = try FaceT.init(allocator, g, d);
             }
-            self.scal = try field_mod.Field(n_scal).init(a, g);
-            self.flags = try a.alloc(i32, g.cellCount() * n_flags);
+            self.scal = try field_mod.Field(n_scal).init(allocator, g);
+            self.flags = try allocator.alloc(i32, g.cellCount() * n_flags);
             @memset(self.flags, 0);
             const ncorn = (g.nx + 1) * (g.ny + 1) * (g.nz + 1);
             for (0..3) |c| {
-                self.emf[c] = try a.alloc(f64, ncorn);
+                self.emf[c] = try allocator.alloc(f64, ncorn);
                 @memset(self.emf[c], 0);
             }
-            self.vecpot = try field_mod.Field(6).init(a, g);
-            self.rijvisc = try field_mod.Field(16).init(a, g);
-            self.dynA = try field_mod.Field(3).init(a, g);
-            self.scaleth = try a.alloc(f64, g.nx);
+            self.vecpot = try field_mod.Field(6).init(allocator, g);
+            self.rijvisc = try field_mod.Field(16).init(allocator, g);
+            self.dyn_a = try field_mod.Field(3).init(allocator, g);
+            self.scaleth = try allocator.alloc(f64, g.nx);
             @memset(self.scaleth, 0);
 
             // C: set_grid's min-size scan (finite.c:1946-1961), including its
@@ -374,9 +374,9 @@ pub fn Sim(comptime cfg: config.Config) type {
                 while (iy < self.nyi()) : (iy += 1) {
                     var iz: i64 = 0;
                     while (iz < self.nzi()) : (iz += 1) {
-                        const dx = g.size(ix, 0);
-                        const dy = g.size(iy, 1);
-                        const dz = g.size(iz, 2);
+                        const dx = g.cellSize(ix, 0);
+                        const dy = g.cellSize(iy, 1);
+                        const dz = g.cellSize(iz, 2);
                         if (dx < mdx or mdx < 0) mdx = dx;
                         if (dy < mdx or mdy < 0) mdy = dy;
                         if (dz < mdx or mdz < 0) mdz = dz;
@@ -391,7 +391,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
 
         pub fn deinit(self: *Self) void {
-            const a = self.a;
+            const allocator = self.allocator;
             inline for (.{
                 "p",           "u",    "ut0",   "ut1",     "ut2", "dut1", "dut2",
                 "drt1",        "drt2", "uforget", "ptm1",
@@ -400,19 +400,19 @@ pub fn Sim(comptime cfg: config.Config) type {
                 @field(self, name).deinit();
             }
             for (0..3) |d| {
-                self.pb_l[d].deinit(a);
-                self.pb_r[d].deinit(a);
-                self.fl_l[d].deinit(a);
-                self.fl_r[d].deinit(a);
-                self.flb[d].deinit(a);
+                self.pb_l[d].deinit(allocator);
+                self.pb_r[d].deinit(allocator);
+                self.fl_l[d].deinit(allocator);
+                self.fl_r[d].deinit(allocator);
+                self.flb[d].deinit(allocator);
             }
             self.scal.deinit();
-            a.free(self.flags);
-            for (0..3) |c| a.free(self.emf[c]);
+            allocator.free(self.flags);
+            for (0..3) |c| allocator.free(self.emf[c]);
             self.vecpot.deinit();
             self.rijvisc.deinit();
-            self.dynA.deinit();
-            a.free(self.scaleth);
+            self.dyn_a.deinit();
+            allocator.free(self.scaleth);
             self.cache.deinit();
             self.* = undefined;
         }
@@ -794,10 +794,10 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         /// C: calc_wavespeeds (finite.c:356) over domain + 1 ghost layer.
         pub fn calcWavespeeds(self: *Self) Error!void {
-            const dims = [3]bool{ self.grid.nx > 1, self.grid.ny > 1, self.grid.nz > 1 };
-            const lx: i64 = if (dims[0]) 1 else 0;
-            const ly: i64 = if (dims[1]) 1 else 0;
-            const lz: i64 = if (dims[2]) 1 else 0;
+            const active_dims = [3]bool{ self.grid.nx > 1, self.grid.ny > 1, self.grid.nz > 1 };
+            const lx: i64 = if (active_dims[0]) 1 else 0;
+            const ly: i64 = if (active_dims[1]) 1 else 0;
+            const lz: i64 = if (active_dims[2]) 1 else 0;
 
             var iz: i64 = -lz;
             while (iz < self.nzi() + lz) : (iz += 1) {
@@ -811,7 +811,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                         var pp: [NV]f64 = undefined;
                         self.p.load(ix, iy, iz, &pp);
                         const geom = self.cache.fillGeometry(ix, iy, iz);
-                        const aaa = try wavespeeds.gasWavespeedsLr(cfg, pp, &geom, self.opt.gam, dims);
+                        const aaa = try wavespeeds.gasWavespeedsLr(cfg, pp, &geom, self.opt.gam, active_dims);
 
                         var rad0: [6]f64 = @splat(0);
                         var radl: [6]f64 = @splat(0);
@@ -826,13 +826,13 @@ pub fn Sim(comptime cfg: config.Config) type {
                                 for (0..3) |d| {
                                     const sg = @sqrt(geom.gg[d + 1][d + 1]);
                                     const dxp = @max(
-                                        self.grid.size(idx3[d], d) * sg,
-                                        self.grid.size(idx3[d] + 1, d) * sg,
+                                        self.grid.cellSize(idx3[d], d) * sg,
+                                        self.grid.cellSize(idx3[d] + 1, d) * sg,
                                     );
                                     tautot[d] = chi * dxp;
                                 }
                             }
-                            const aval = try radiation.calcRadWavespeeds(cfg, pp, &geom, tautot, dims);
+                            const aval = try radiation.calcRadWavespeeds(cfg, pp, &geom, tautot, active_dims);
                             for (0..6) |i| {
                                 rad0[i] = aval[i];
                                 radl[i] = aval[6 + i];
@@ -886,9 +886,9 @@ pub fn Sim(comptime cfg: config.Config) type {
                 iy >= 0 and iy < self.nyi() and iz >= 0 and iz < self.nzi();
             if (!in_domain) return;
 
-            const dx = self.grid.size(ix, 0);
-            const dy = self.grid.size(iy, 1);
-            const dz = self.grid.size(iz, 2);
+            const dx = self.grid.cellSize(ix, 0);
+            const dy = self.grid.cellSize(iy, 1);
+            const dz = self.grid.cellSize(iz, 2);
             var tsd: f64 = undefined;
             if (self.grid.nz > 1 and self.grid.ny > 1) {
                 tsd = wsx / dx + wsy / dy + wsz / dz;
@@ -949,21 +949,21 @@ pub fn Sim(comptime cfg: config.Config) type {
                 return;
             }
             const maxt = 64;
-            const use: usize = @intCast(@min(@as(i64, @intCast(@min(nt, maxt))), ny));
+            const n_workers: usize = @intCast(@min(@as(i64, @intCast(@min(nt, maxt))), ny));
             var results = [_]ChunkResult{.{}} ** maxt;
             var threads = [_]?std.Thread{null} ** maxt;
             var i: usize = 0;
-            while (i < use) : (i += 1) {
-                const iy0 = @divTrunc(ny * @as(i64, @intCast(i)), @as(i64, @intCast(use)));
-                const iy1 = @divTrunc(ny * @as(i64, @intCast(i + 1)), @as(i64, @intCast(use)));
+            while (i < n_workers) : (i += 1) {
+                const iy0 = @divTrunc(ny * @as(i64, @intCast(i)), @as(i64, @intCast(n_workers)));
+                const iy1 = @divTrunc(ny * @as(i64, @intCast(i + 1)), @as(i64, @intCast(n_workers)));
                 threads[i] = std.Thread.spawn(.{}, worker, .{ self, iy0, iy1, &results[i] }) catch null;
                 // spawn failure → run this chunk inline (still correct)
                 if (threads[i] == null) worker(self, iy0, iy1, &results[i]);
             }
-            for (0..use) |k| if (threads[k]) |t| t.join();
+            for (0..n_workers) |k| if (threads[k]) |t| t.join();
 
             var e: ?Error = null;
-            for (results[0..use]) |r| {
+            for (results[0..n_workers]) |r| {
                 self.n_radimp_failures += r.n_fail;
                 self.n_radimp_iters += r.n_iters;
                 if (r.err) |ee| e = ee;
@@ -1242,11 +1242,11 @@ pub fn Sim(comptime cfg: config.Config) type {
                         const dor = i < n;
 
                         const dx5 = [5]f64{
-                            self.grid.size(i - 2, dim),
-                            self.grid.size(i - 1, dim),
-                            self.grid.size(i, dim),
-                            self.grid.size(i + 1, dim),
-                            self.grid.size(i + 2, dim),
+                            self.grid.cellSize(i - 2, dim),
+                            self.grid.cellSize(i - 1, dim),
+                            self.grid.cellSize(i, dim),
+                            self.grid.cellSize(i + 1, dim),
+                            self.grid.cellSize(i + 2, dim),
                         };
 
                         var pm2: [NV]f64 = @splat(0);
@@ -1381,14 +1381,14 @@ pub fn Sim(comptime cfg: config.Config) type {
                             for (0..NV) |iv| {
                                 // C: i < NVMHD → hydro block, else radiation
                                 const is_rad = if (comptime L.hasVar(.ee)) iv >= L.index(.ee) else false;
-                                const vag = if (is_rad) agr else ag;
-                                const val = if (is_rad) alr else al;
-                                const var_ = if (is_rad) arr else ar;
+                                const ag_sel = if (is_rad) agr else ag;
+                                const al_sel = if (is_rad) alr else al;
+                                const ar_sel = if (is_rad) arr else ar;
                                 const fl = self.fl_l[dim].get(iv, cf[0], cf[1], cf[2]);
                                 const fr = self.fl_r[dim].get(iv, cf[0], cf[1], cf[2]);
                                 const fstar = switch (comptime cfg.flux) {
-                                    .laxf => laxf_mod.laxf(fl, fr, uLl[iv], uRl[iv], vag),
-                                    .hll => laxf_mod.hll(fl, fr, uLl[iv], uRl[iv], val, var_),
+                                    .laxf => laxf_mod.laxf(fl, fr, uLl[iv], uRl[iv], ag_sel),
+                                    .hll => laxf_mod.hll(fl, fr, uLl[iv], uRl[iv], al_sel, ar_sel),
                                 };
                                 self.flb[dim].set(iv, cf[0], cf[1], cf[2], fstar);
                             }
@@ -1422,9 +1422,9 @@ pub fn Sim(comptime cfg: config.Config) type {
                     var ix: i64 = 0;
                     while (ix < self.nxi()) : (ix += 1) {
                         const ms = try self.metricSource(ix, iy, iz);
-                        const dx = self.grid.size(ix, 0);
-                        const dy = self.grid.size(iy, 1);
-                        const dz = self.grid.size(iz, 2);
+                        const dx = self.grid.cellSize(ix, 0);
+                        const dy = self.grid.cellSize(iy, 1);
+                        const dz = self.grid.cellSize(iz, 2);
                         const dt = dtin;
 
                         for (0..NV) |iv| {
@@ -1547,8 +1547,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             // errors here would be relele failures inside the solver, but
             // solve_implicit_lab returns a status (never throws), so this
             // worker cannot error — it only tallies counters into `res`.
-            const opp = &(self.opt.opac.?);
-            const ImplT = implicit.Impl(cfg);
+            const opac = &(self.opt.opac.?);
+            const ImplT = implicit.Solver(cfg);
 
             var iz: i64 = 0;
             while (iz < self.nzi()) : (iz += 1) {
@@ -1567,7 +1567,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                         self.p.load(ix, iy, iz, &pp);
 
                         const geom = self.cache.fillGeometry(ix, iy, iz);
-                        const rr = ImplT.solveImplicitLab(&uu, &pp, &geom, self.impl_dt, self.opt.gam, self.opt.rad, opp, &self.opt.implicit);
+                        const rr = ImplT.solveImplicitLab(&uu, &pp, &geom, self.impl_dt, self.opt.gam, self.opt.rad, opac, &self.opt.implicit);
 
                         if (rr.ok) {
                             self.u.store(ix, iy, iz, &uu);

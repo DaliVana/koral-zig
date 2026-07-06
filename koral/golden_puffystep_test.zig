@@ -76,9 +76,9 @@ fn puffyOptions() SimP.Options {
 /// PUFFY is axisymmetric (TNZ==1, no z ghosts), so iz ≡ 0.
 fn loadKiniIntoP(s: *SimP, k: *const golden.Kini) void {
     var jy: usize = 0;
-    while (jy < k.nyi()) : (jy += 1) {
+    while (jy < k.nSamplesY()) : (jy += 1) {
         var jx: usize = 0;
-        while (jx < k.nxi()) : (jx += 1) {
+        while (jx < k.nSamplesX()) : (jx += 1) {
             const ix = k.cellX(jx);
             const iy = k.cellY(jy);
             const base = k.base(jx, jy, 0);

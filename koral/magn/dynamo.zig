@@ -30,7 +30,7 @@ const std = @import("std");
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const relele = @import("../relele.zig");
-const mhd = @import("../physics/mhd.zig");
+const mhd = @import("../physics/bfield.zig");
 const radiation = @import("../physics/radiation.zig");
 const radvisc = @import("../physics/radvisc.zig");
 const frames = @import("../frames.zig");
@@ -157,7 +157,7 @@ pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) relele.Error!void {
     const rhor = radvisc.rHorizonBL(sim.opt.mp.a);
     const risco = radvisc.rIscoBL(sim.opt.mp.a);
 
-    @memset(sim.dynA.data, 0);
+    @memset(sim.dyn_a.data, 0);
 
     // ---- ΔA_φ over the domain + one ring including corners (Nloop_6) ----
     const xlim: i64 = if (nx > 1) 1 else 0;
@@ -229,7 +229,7 @@ pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) relele.Error!void {
                     dt / pk * r * geom.gg[3][3] * bphi *
                     facradius * facmagnetization * facangle;
 
-                sim.dynA.set(2, ix, iy, iz, aphi); // φ component (B3 slot)
+                sim.dyn_a.set(2, ix, iy, iz, aphi); // φ component (B3 slot)
 
                 if (dp.dampbeta) {
                     const dbphi = dampBphi(dp.alphabeta, facradius, faczh, dt / pk, beta, dp.betasaturated, bphi);
@@ -240,7 +240,7 @@ pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) relele.Error!void {
     }
 
     // ---- curl ΔA_φ → B^i (vecpot 3..5), superimpose on the domain ----
-    ct.curlFromA(SimT, sim, &sim.dynA, 0);
+    ct.curlFromA(SimT, sim, &sim.dyn_a, 0);
 
     var jz: i64 = 0;
     while (jz < nz) : (jz += 1) {

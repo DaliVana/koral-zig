@@ -23,7 +23,7 @@ pub fn primDumpSize(comptime SimT: type, sim: *const SimT) usize {
 /// Serialize the domain primitives into `out` (must be ≥ primDumpSize).
 /// Header: "KDMP" u32 ver, u32 nx,ny,nz,nv, f64 t; then p[nz][ny][nx][nv]
 /// (iv fastest). Returns the number of bytes written.
-pub fn writePrimDump(comptime SimT: type, sim: *const SimT, out: []u8) usize {
+pub fn serializePrimDump(comptime SimT: type, sim: *const SimT, out: []u8) usize {
     var w: usize = 0;
     @memcpy(out[w..][0..4], kdmp_magic);
     w += 4;
@@ -69,7 +69,7 @@ pub const ScalarRow = struct {
     radlum: f64,
     totallum: f64,
     scaleheight: f64,
-    maxbeta_inv: f64, // max pmag/ptot (β⁻¹)
+    max_pmag_ptot: f64, // max pmag/ptot over the domain
     n_hd_fixup: u64,
     n_radimp_fail: u64,
     n_nan: u64,
@@ -80,14 +80,14 @@ pub const scalar_header =
 
 /// Append one whitespace-separated row to a growing byte list (the executable
 /// rewrites scalars.dat from this buffer each output cadence).
-pub fn appendScalarLine(list: *std.ArrayList(u8), a: std.mem.Allocator, row: ScalarRow) !void {
+pub fn appendScalarLine(list: *std.ArrayList(u8), allocator: std.mem.Allocator, row: ScalarRow) !void {
     var buf: [512]u8 = undefined;
     const line = try std.fmt.bufPrint(&buf, "{e:.10} {e:.6} {d} {e:.10} {e:.10} {e:.10} {e:.10} {e:.6} {e:.6} {d} {d} {d}\n", .{
         row.t,           row.dt,            row.nstep,   row.mass,
-        row.mdot,        row.radlum,        row.totallum, row.scaleheight,
-        row.maxbeta_inv, row.n_hd_fixup,    row.n_radimp_fail, row.n_nan,
+        row.mdot,          row.radlum,        row.totallum, row.scaleheight,
+        row.max_pmag_ptot, row.n_hd_fixup,    row.n_radimp_fail, row.n_nan,
     });
-    try list.appendSlice(a, line);
+    try list.appendSlice(allocator, line);
 }
 
 test "KDMP round-trips the header" {

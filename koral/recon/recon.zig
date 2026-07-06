@@ -1,6 +1,6 @@
 //! Cell-average → face reconstruction (C: avg2point, finite.c:97).
 //!
-//! Orders (C: INT_ORDER − param, clamped at 0):
+//! Orders (C: INT_ORDER − reconstr_par, clamped at 0):
 //!   0 — donor cell
 //!   1 — linear with the minmod-θ limiter (C: FLUXLIMITER == 0; θ = 1 is
 //!       MinMod, θ = 2 is MC; PUFFY runs θ = 1.5). The MC/Superbee variants
@@ -9,8 +9,8 @@
 //!   2 — PPM (Colella & Woodward 1984, eqs 1.6–1.10) on a five-point
 //!       stencil with per-cell widths.
 //!
-//! `param` reduces the order near boundaries at runtime exactly like C
-//! (avg2point's reconstrpar): effective order = base − param.
+//! `reconstr_par` reduces the order near boundaries at runtime exactly like C
+//! (avg2point's reconstrpar): effective order = base − reconstr_par.
 
 const std = @import("std");
 
@@ -37,10 +37,10 @@ pub fn avg2point(
     up2: [nv]f64,
     dx: [5]f64,
     base_order: u8,
-    param: u8,
+    reconstr_par: u8,
     theta: f64,
 ) struct { ul: [nv]f64, ur: [nv]f64 } {
-    const eff: u8 = if (param >= base_order) 0 else base_order - param;
+    const eff: u8 = if (reconstr_par >= base_order) 0 else base_order - reconstr_par;
     var ul: [nv]f64 = undefined;
     var ur: [nv]f64 = undefined;
     for (0..nv) |iv| {

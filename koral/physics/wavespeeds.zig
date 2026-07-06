@@ -6,12 +6,12 @@
 //! quadratic for the characteristic dx^i/dt (HARM's algorithm).
 //!
 //! Radiation wavespeeds (τ-limited) arrive with M7; this module is the gas
-//! part only. `dims` marks active directions (C: TNX/TNY/TNZ > 1) — C
+//! part only. `active_dims` marks active directions (C: TNX/TNY/TNZ > 1) — C
 //! leaves the entries of *inactive* directions uninitialized, we return 0.
 
 const std = @import("std");
 const relele = @import("../relele.zig");
-const mhd = @import("mhd.zig");
+const mhd = @import("bfield.zig");
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const Geometry = @import("../geometry.zig").Geometry;
@@ -23,33 +23,36 @@ pub fn lrCore(
     ucon: [4]f64,
     GG: *const [4][5]f64,
     wspeed2s: [3]f64,
-    dims: [3]bool,
+    active_dims: [3]bool,
 ) [6]f64 {
     var aret: [6]f64 = @splat(0);
 
-    const bcov = [4]f64{ 1, 0, 0, 0 };
-    const bcon = relele.indices12(bcov, GG);
-    const bsq = relele.dot(bcon, bcov);
-    const bu = relele.dot(bcov, ucon);
-    const bu2 = bu * bu;
+    // C: Bcov/Bcon/Bsq/Bu (physics.c:657) — the time/normal-observer basis
+    // vector, kept capitalized to avoid colliding with the magnetic
+    // four-vector bcon/bcov/bsq used elsewhere in the codebase.
+    const Bcov = [4]f64{ 1, 0, 0, 0 };
+    const Bcon = relele.indices12(Bcov, GG);
+    const Bsq = relele.dot(Bcon, Bcov);
+    const Bu = relele.dot(Bcov, ucon);
+    const Bu2 = Bu * Bu;
 
     for (0..3) |dim| {
-        if (dims[dim]) {
+        if (active_dims[dim]) {
             const wspeed2 = wspeed2s[dim];
-            var acov: [4]f64 = @splat(0);
-            acov[dim + 1] = 1;
-            const acon = relele.indices12(acov, GG);
+            var Acov: [4]f64 = @splat(0);
+            Acov[dim + 1] = 1;
+            const Acon = relele.indices12(Acov, GG);
 
-            const asq = relele.dot(acon, acov);
-            const au = relele.dot(acov, ucon);
-            const ab = relele.dot(acon, bcov);
-            const au2 = au * au;
-            const aubu = au * bu;
+            const Asq = relele.dot(Acon, Acov);
+            const Au = relele.dot(Acov, ucon);
+            const AB = relele.dot(Acon, Bcov);
+            const Au2 = Au * Au;
+            const AuBu = Au * Bu;
 
-            const b = -2.0 * (aubu * (1.0 - wspeed2) - ab * wspeed2);
-            const a = bu2 * (1.0 - wspeed2) - bsq * wspeed2;
-            var discr = 4.0 * wspeed2 * ((ab * ab - asq * bsq) * wspeed2 +
-                (2.0 * ab * au * bu - asq * bu2 - bsq * au2) * (wspeed2 - 1.0));
+            const b = -2.0 * (AuBu * (1.0 - wspeed2) - AB * wspeed2);
+            const a = Bu2 * (1.0 - wspeed2) - Bsq * wspeed2;
+            var discr = 4.0 * wspeed2 * ((AB * AB - Asq * Bsq) * wspeed2 +
+                (2.0 * AB * Au * Bu - Asq * Bu2 - Bsq * Au2) * (wspeed2 - 1.0));
             // C prints on discr < 0 and proceeds into sqrt (NaN); mirror the
             // arithmetic without the print.
             discr = @sqrt(discr);
@@ -69,9 +72,9 @@ pub fn lrCore(
 
 /// Fluid-frame wavespeed² of the gas: c_s² + v_A² − c_s²v_A², with C's
 /// c_s² ceiling of 0.95 (physics.c:476-498; no GASRADCOUPLEDWAVESPEEDS).
-pub fn gasWspeed2(rho: f64, uu: f64, bsq: f64, gamma: f64) f64 {
-    const pre = (gamma - 1.0) * uu;
-    var cs2 = gamma * pre / (rho + uu + pre);
+pub fn gasWspeed2(rho: f64, uu: f64, bsq: f64, gamma_adiab: f64) f64 {
+    const pre = (gamma_adiab - 1.0) * uu;
+    var cs2 = gamma_adiab * pre / (rho + uu + pre);
     if (cs2 > 0.95) cs2 = 0.95;
 
     var va2 = bsq / (bsq + (rho + uu + pre));
@@ -86,8 +89,8 @@ pub fn gasWavespeedsLr(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
-    gamma: f64,
-    dims: [3]bool,
+    gamma_adiab: f64,
+    active_dims: [3]bool,
 ) relele.Error![6]f64 {
     const L = layout.VarLayout(cfg);
 
@@ -107,8 +110,8 @@ pub fn gasWavespeedsLr(
         bsq = b.bsq;
     }
 
-    const vtot2 = gasWspeed2(pp[L.index(.rho)], pp[L.index(.uu)], bsq, gamma);
-    var a = lrCore(u.con, &geom.GG, .{ vtot2, vtot2, vtot2 }, dims);
+    const vtot2 = gasWspeed2(pp[L.index(.rho)], pp[L.index(.uu)], bsq, gamma_adiab);
+    var a = lrCore(u.con, &geom.GG, .{ vtot2, vtot2, vtot2 }, active_dims);
 
     // zero 'co-going' velocities (physics.c:602-607)
     for (0..3) |dim| {
