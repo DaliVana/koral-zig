@@ -99,6 +99,11 @@ pub const comm = struct {
     pub const ReduceOp = serial.ReduceOp;
 };
 
+pub const io = struct {
+    pub const scalars = @import("io/scalars.zig");
+    pub const dump = @import("io/dump.zig");
+};
+
 test {
     // Pull in all module tests.
     _ = config;
@@ -162,4 +167,9 @@ test {
     _ = @import("dynamo_tests.zig");
     _ = @import("golden_dynamo_test.zig");
     _ = @import("radvisc_tests.zig");
+    _ = io.scalars;
+    _ = io.dump;
+    _ = @import("scalars_tests.zig");
+    _ = @import("threading_tests.zig");
+    _ = @import("golden_puffystep_test.zig");
 }

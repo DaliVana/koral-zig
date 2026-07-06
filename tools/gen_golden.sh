@@ -7,8 +7,9 @@
 # harnesses, and runs them into tests/golden/.
 #
 # Variants:
-#   puffy    (PROBLEM 147) -> harness_metric/state/flux/rad/opac/implicit/init -> metric/ state/ flux/ rad/ init/
+#   puffy    (PROBLEM 147) -> harness_metric/state/flux/rad/opac/implicit/init/scalars -> metric/ state/ flux/ rad/ init/
 #   puffyeps12 (PROBLEM 147, qags epsrel 1e-12) -> harness_init -> init/puffy_t0_eps12
+#   zigpuffy (PROBLEM 147, TNX/TNY 64/60)  -> harness_puffy_step -> step/puffy64.kstp.gz
 #   zigsod   (PROBLEM 200) -> harness_step               -> step/sod64.kstp
 #   zigot    (PROBLEM 201) -> harness_step               -> step/ot32.kstp + flux/ct.kgld + flux/bfroma.kgld
 #   zigmhdtube (PROBLEM 202) -> harness_step             -> step/mhdtube64.kstp
@@ -118,6 +119,7 @@ build_harness puffy harness_implicit
 build_harness puffy harness_init
 build_harness puffy harness_visc
 build_harness puffy harness_dynamo
+build_harness puffy harness_scalars
 
 echo "== [puffy] running harnesses"
 mkdir -p "$ROOT/tests/golden/metric" "$ROOT/tests/golden/state" "$ROOT/tests/golden/flux" "$ROOT/tests/golden/rad" "$ROOT/tests/golden/init"
@@ -128,6 +130,7 @@ cd "$BUILD/puffy/src"
 ./harness_rad "$ROOT/tests/golden/rad"
 ./harness_opac "$ROOT/tests/golden/rad"
 ./harness_implicit "$ROOT/tests/golden/rad"
+./harness_scalars "$ROOT/tests/golden/init"
 
 # ---- PUFFY t=0 keystone (harness_init on the puffy build) -------------------
 echo "== [puffy] running harness_init (keystone t=0)"
@@ -200,6 +203,21 @@ build_harness zigradpulse harness_step
 cd "$BUILD/zigradpulse/src"
 ./harness_step "$ROOT/tests/golden/step" radpulse64.kstp 10
 
+# ---- PUFFY full-pipeline step test (M13) -----------------------------------
+# reduced-grid PUFFY (TNX 384->64, TNY 360->60) so the KSTP golden is
+# committable; the coordinate extents + all physics stay PUFFY's. Full init
+# (limotorus + beta-norm) then 4 forced-dt RK2IMEX steps.
+prepare_variant zigpuffy 147
+sed -i '' 's/^#define TNX .*/#define TNX 64/' "$BUILD/zigpuffy/src/PROBLEMS/PUFFY/define.h"
+sed -i '' 's/^#define TNY .*/#define TNY 60/' "$BUILD/zigpuffy/src/PROBLEMS/PUFFY/define.h"
+grep -q "^#define TNX 64" "$BUILD/zigpuffy/src/PROBLEMS/PUFFY/define.h"
+grep -q "^#define TNY 60" "$BUILD/zigpuffy/src/PROBLEMS/PUFFY/define.h"
+compile_objs zigpuffy
+build_harness zigpuffy harness_puffy_step
+cd "$BUILD/zigpuffy/src"
+./harness_puffy_step "$ROOT/tests/golden/step" puffy64.kstp 4
+gzip -9 -f "$ROOT/tests/golden/step/puffy64.kstp"
+
 echo "== writing manifest"
 SHA="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 cat > "$ROOT/tests/golden/manifest.json" <<EOF
@@ -243,7 +261,9 @@ cat > "$ROOT/tests/golden/manifest.json" <<EOF
     "init/puffy_t0_eps12.kini.gz": "PUFFY (147) t=0 with qags epsrel 1e-12: stride-4 domain, all 13 prims (quadrature attribution)",
     "init/puffy_visc.kini.gz": "PUFFY (147) t=0 viscous R^i_j (calc_Rij_visc_total, global_dt=1): 16 tensor comps, domain + 1 ghost ring",
     "init/puffy_shear.kini.gz": "PUFFY (147) t=0 shear sigma^ij + nu (calc_rad_shearviscosity): 17 comps, domain + 1 ghost ring (isolates FD/Christoffel + calc_chi)",
-    "init/puffy_dynamo.kini.gz": "PUFFY (147) apply_dynamo on injected B³=10·B² (dt=10): B1,B2,B3 over the domain (scaleth + field-angle + ΔA_φ + calc_BfromA + DAMPBETA)"
+    "init/puffy_dynamo.kini.gz": "PUFFY (147) apply_dynamo on injected B³=10·B² (dt=10): B1,B2,B3 over the domain (scaleth + field-angle + ΔA_φ + calc_BfromA + DAMPBETA)",
+    "init/puffy_scalars.kgld": "PUFFY (147) t=0 diagnostic scalars (calc_scalars on the snapshot-1 state): mass, -mdot(rhorizon,0), radlum, totallum, H(15)",
+    "step/puffy64.kstp.gz": "PUFFY (147) reduced 64x60 full pipeline (limotorus init + beta-norm), 4 forced-dt RK2IMEX steps: implicit rad source + radviscosity + dynamo + polar-axis (4 flags)"
   }
 }
 EOF

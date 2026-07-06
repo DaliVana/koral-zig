@@ -241,4 +241,32 @@ natural conserved scale.
       floor), while ν, R^i_j and the dynamo B inherit C's qags kink error
       through calc_chi / Ê (~1e-3, the M11 keystone story; a bug would show
       far above it), under -Dslow-tests
-- [ ] M13 — full PUFFY
+- [x] M13 — full PUFFY. **Wiring** (PROBLEMS/puffy/main.zig): the complete
+      driver — the ko.c init sequence (limotorus + calc_BfromA + β-norm) then
+      the CFL-driven RK2IMEX time loop, writing the scalar diagnostics time
+      series and periodic binary primitive dumps, and printing NaN / fixup /
+      implicit-failure counts each cadence. **Scalars** (koral/io/scalars.zig,
+      C: postproc.c calc_scalars): total mass, Ṁ through the horizon, radiative
+      + total luminosity at the outer shell (BL-frame R^r_t / T^r_t), and the
+      density-weighted scale height (reusing the dynamo's calc_avgs_throughout
+      RMS). A C inconsistency is transcribed as-is: calc_totalmass's snapshot
+      path uses the raw cell dφ (the wedge), while calc_mdot / calc_lum force
+      dφ→2π for an axisymmetric slice. **Threading** (opt-in, opt.nthreads): the
+      per-cell inversions (calc_u2p / op_implicit) dispatch row-parallel over
+      std.Thread — disjoint rows, `*const` geometry reads — proven bit-identical
+      to serial by a determinism gate; the golden tests all run serial.
+      **Output** (koral/io/dump.zig): a minimal KDMP primitive snapshot +
+      scalars.dat text series (HDF5/SILO stay deferred). Theory gates
+      (scalars_tests.zig): closed forms for mass / Ṁ / magnetization on a
+      uniform MINK box; the threading determinism check. C goldens
+      (-Dslow-tests): (a) harness_scalars.c — mass / Ṁ / H match calc_scalars
+      on the shared t=0 state to 1e-6 (MKS2 √−g two-π spread), the run's H/R is
+      C's H/R (≈0.68, the radiation-supported thick torus); (b)
+      harness_puffy_step.c — a reduced 64×60 PUFFY (full physics, committable
+      golden), 4 forced-dt RK2IMEX steps: the flag maps (entropy / hd-fixup /
+      rad-fixup / radimp-fixup) agree cell-for-cell, ≥97% of cells track C to
+      <1e-3, and the whole grid stays bounded. The residual FX/FY spread lives
+      in the plunging region (r<2) and the polar-axis rim where the M9 τ≫1
+      implicit conditioning is worst — the chaotic FP-seed amplification of the
+      stiff torus (bounded + plateauing, flags perfect), i.e. exactly the
+      divergence that rules out end-to-end tests

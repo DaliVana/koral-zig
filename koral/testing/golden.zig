@@ -109,14 +109,30 @@ pub const Kstp = struct {
 
 pub fn readKstp(a: std.mem.Allocator, comptime relpath: []const u8) !Kstp {
     const path = build_options.golden_dir ++ "/" ++ relpath;
-    const raw = std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1 << 26)) catch |err| switch (err) {
+    const file = std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1 << 28)) catch |err| switch (err) {
         error.FileNotFound => {
             std.debug.print("golden file missing: {s} (run tools/gen_golden.sh)\n", .{path});
             return error.SkipZigTest;
         },
         else => return err,
     };
-    defer a.free(raw);
+    defer a.free(file);
+
+    // .kstp may be committed gzipped (large full-pipeline goldens) — inflate
+    // when the gzip magic is present.
+    var owned: ?[]u8 = null;
+    defer if (owned) |o| a.free(o);
+    const raw: []const u8 = if (file.len >= 2 and file[0] == 0x1f and file[1] == 0x8b) blk: {
+        const flate = std.compress.flate;
+        var in: std.Io.Reader = .fixed(file);
+        var window: [flate.max_window_len]u8 = undefined;
+        var dc: flate.Decompress = .init(&in, .gzip, &window);
+        var aw: std.Io.Writer.Allocating = .init(a);
+        errdefer aw.deinit();
+        _ = try dc.reader.streamRemaining(&aw.writer);
+        owned = try aw.toOwnedSlice();
+        break :blk owned.?;
+    } else file;
 
     if (raw.len < 32 or !std.mem.eql(u8, raw[0..4], "KSTP")) return error.BadGoldenFile;
     if (std.mem.readInt(u32, raw[4..8], .little) != 1) return error.BadGoldenVersion;

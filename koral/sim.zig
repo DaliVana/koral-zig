@@ -238,6 +238,9 @@ pub fn Sim(comptime cfg: config.Config) type {
             bc_y: BcKind = .copy,
             bc_z: BcKind = .copy,
             specific_bc: ?SpecificBc = null,
+            /// Worker threads for the per-cell inversions (u2p / implicit).
+            /// 1 ≡ the serial path (bit-identical; the golden tests run here).
+            nthreads: usize = 1,
         };
 
         a: std.mem.Allocator,
@@ -306,6 +309,10 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// implicit-solver diagnostics (C: global_int_slot counters)
         n_radimp_failures: u64 = 0,
         n_radimp_iters: u64 = 0,
+        /// transient: the dt passed to the current op_implicit parallel pass
+        /// (the per-cell inversions are independent, so this is set once per
+        /// pass and read by every worker row).
+        impl_dt: f64 = 0,
 
         pub fn init(a: std.mem.Allocator, g: Grid, opt: Options) !Self {
             var self: Self = undefined;
@@ -915,13 +922,81 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         // ---- u2p over the grid ------------------------------------------------
 
+        // ---- optional row-parallel dispatch ---------------------------------
+
+        /// Per-worker scratch: the first error a chunk hit, plus its slice of
+        /// the implicit-solver counters (summed after the join — integer add
+        /// is order-independent, so the result is identical to serial).
+        const ChunkResult = struct { err: ?Error = null, n_fail: u64 = 0, n_iters: u64 = 0 };
+
+        /// Run `worker` over the iy-rows, split across opt.nthreads OS threads
+        /// when >1. Rows are disjoint and every per-cell inversion only touches
+        /// its own cell (geometry reads are `*const`), so the parallel result
+        /// is bit-identical to the serial one — the golden tests run at
+        /// nthreads=1 and a determinism test pins the equivalence.
+        fn parallelRows(
+            self: *Self,
+            comptime worker: fn (self: *Self, iy0: i64, iy1: i64, res: *ChunkResult) void,
+        ) Error!void {
+            const ny = self.nyi();
+            const nt = @max(@as(usize, 1), self.opt.nthreads);
+            if (nt <= 1 or ny <= 1) {
+                var res = ChunkResult{};
+                worker(self, 0, ny, &res);
+                self.n_radimp_failures += res.n_fail;
+                self.n_radimp_iters += res.n_iters;
+                if (res.err) |e| return e;
+                return;
+            }
+            const maxt = 64;
+            const use: usize = @intCast(@min(@as(i64, @intCast(@min(nt, maxt))), ny));
+            var results = [_]ChunkResult{.{}} ** maxt;
+            var threads = [_]?std.Thread{null} ** maxt;
+            var i: usize = 0;
+            while (i < use) : (i += 1) {
+                const iy0 = @divTrunc(ny * @as(i64, @intCast(i)), @as(i64, @intCast(use)));
+                const iy1 = @divTrunc(ny * @as(i64, @intCast(i + 1)), @as(i64, @intCast(use)));
+                threads[i] = std.Thread.spawn(.{}, worker, .{ self, iy0, iy1, &results[i] }) catch null;
+                // spawn failure → run this chunk inline (still correct)
+                if (threads[i] == null) worker(self, iy0, iy1, &results[i]);
+            }
+            for (0..use) |k| if (threads[k]) |t| t.join();
+
+            var e: ?Error = null;
+            for (results[0..use]) |r| {
+                self.n_radimp_failures += r.n_fail;
+                self.n_radimp_iters += r.n_iters;
+                if (r.err) |ee| e = ee;
+            }
+            if (e) |ee| return ee;
+        }
+
+        fn u2pRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *ChunkResult) void {
+            self.u2pRows(iy0, iy1) catch |e| {
+                res.err = e;
+            };
+        }
+
         /// C: calc_u2p (finite.c:546) — per-cell inversion + floors, then
-        /// fixup averaging and a boundary refresh.
+        /// fixup averaging and a boundary refresh. The inversion sweep is
+        /// row-parallel; the neighbour-averaging fixup and BC refresh stay
+        /// serial (they read across rows).
         pub fn calcU2p(self: *Self) Error!void {
+            try self.parallelRows(u2pRowsWorker);
+
+            try self.cellFixup(.hd_fixup);
+            if (comptime L.hasVar(.ee)) {
+                try self.cellFixup(.rad_fixup);
+            }
+            try self.setBc(self.time, false);
+        }
+
+        /// The per-cell inversion body for iy ∈ [iy0, iy1) (all iz, all ix).
+        fn u2pRows(self: *Self, iy0: i64, iy1: i64) Error!void {
             var iz: i64 = 0;
             while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = 0;
-                while (iy < self.nyi()) : (iy += 1) {
+                var iy: i64 = iy0;
+                while (iy < iy1) : (iy += 1) {
                     var ix: i64 = 0;
                     while (ix < self.nxi()) : (ix += 1) {
                         var uu: [NV]f64 = undefined;
@@ -978,12 +1053,6 @@ pub fn Sim(comptime cfg: config.Config) type {
                     }
                 }
             }
-
-            try self.cellFixup(.hd_fixup);
-            if (comptime L.hasVar(.ee)) {
-                try self.cellFixup(.rad_fixup);
-            }
-            try self.setBc(self.time, false);
         }
 
         /// C: cell_fixup (finite.c:5012), types FIXUP_U2PMHD / FIXUP_U2PRAD.
@@ -1466,13 +1535,25 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub fn opImplicit(self: *Self, t: f64, dtin: f64) Error!void {
             _ = t;
             if (comptime !L.hasVar(.ee)) return;
-            const opp = &(self.opt.opac orelse return);
+            _ = self.opt.opac orelse return;
+
+            self.impl_dt = dtin; // read by every worker row (single pass)
+            try self.parallelRows(implicitRowsWorker);
+
+            try self.cellFixup(.radimp_fixup);
+        }
+
+        fn implicitRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *ChunkResult) void {
+            // errors here would be relele failures inside the solver, but
+            // solve_implicit_lab returns a status (never throws), so this
+            // worker cannot error — it only tallies counters into `res`.
+            const opp = &(self.opt.opac.?);
             const ImplT = implicit.Impl(cfg);
 
             var iz: i64 = 0;
             while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = 0;
-                while (iy < self.nyi()) : (iy += 1) {
+                var iy: i64 = iy0;
+                while (iy < iy1) : (iy += 1) {
                     var ix: i64 = 0;
                     while (ix < self.nxi()) : (ix += 1) {
                         // C: finite.c:1427 — polar-corrected cells skip the
@@ -1486,23 +1567,21 @@ pub fn Sim(comptime cfg: config.Config) type {
                         self.p.load(ix, iy, iz, &pp);
 
                         const geom = self.cache.fillGeometry(ix, iy, iz);
-                        const res = ImplT.solveImplicitLab(&uu, &pp, &geom, dtin, self.opt.gam, self.opt.rad, opp, &self.opt.implicit);
+                        const rr = ImplT.solveImplicitLab(&uu, &pp, &geom, self.impl_dt, self.opt.gam, self.opt.rad, opp, &self.opt.implicit);
 
-                        if (res.ok) {
+                        if (rr.ok) {
                             self.u.store(ix, iy, iz, &uu);
                             self.p.store(ix, iy, iz, &pp);
                             self.setFlag(.radimp_fixup, ix, iy, iz, 0);
-                            self.n_radimp_iters += res.iters;
+                            res.n_iters += rr.iters;
                         } else {
                             // C: unchanged u/p, flag for fixups
                             self.setFlag(.radimp_fixup, ix, iy, iz, -1);
-                            self.n_radimp_failures += 1;
+                            res.n_fail += 1;
                         }
                     }
                 }
             }
-
-            try self.cellFixup(.radimp_fixup);
         }
 
         /// C: do_correct (finite.c:594) — CORRECT_POLARAXIS only; the 3D /
