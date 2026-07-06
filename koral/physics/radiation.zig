@@ -14,6 +14,7 @@
 //!    *y* optical depth. Transcribed as-is (pinned by a theory test).
 //!  * The opacity χ that feeds τ = χ·dx arrives with M8; callers pass tautot.
 
+const simd = @import("../math/simd.zig");
 const relele = @import("../relele.zig");
 const wavespeeds = @import("wavespeeds.zig");
 const config = @import("../config.zig");
@@ -31,13 +32,23 @@ pub fn urfCon(
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
 ) relele.Error![4]f64 {
+    return urfConG(cfg, f64, pp, &geom.gg, &geom.GG);
+}
+
+/// urfCon over lane type T (VELR → VEL4 is infallible).
+pub fn urfConG(
+    comptime cfg: config.Config,
+    comptime T: type,
+    pp: [layout.VarLayout(cfg).count]T,
+    gg: *const [4][5]T,
+    GG: *const [4][5]T,
+) [4]T {
     const L = layout.VarLayout(cfg);
-    return relele.convVels(
-        .{ 0, pp[L.index(.fx)], pp[L.index(.fy)], pp[L.index(.fz)] },
-        .velr,
-        .vel4,
-        &geom.gg,
-        &geom.GG,
+    return relele.velrToVel4G(
+        T,
+        .{ simd.splat(T, 0), pp[L.index(.fx)], pp[L.index(.fy)], pp[L.index(.fz)] },
+        gg,
+        GG,
     );
 }
 
@@ -48,14 +59,26 @@ pub fn calcRij(
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
 ) relele.Error![4][4]f64 {
+    return calcRijG(cfg, f64, pp, &geom.gg, &geom.GG);
+}
+
+/// calcRij over lane type T.
+pub fn calcRijG(
+    comptime cfg: config.Config,
+    comptime T: type,
+    pp: [layout.VarLayout(cfg).count]T,
+    gg: *const [4][5]T,
+    GG: *const [4][5]T,
+) [4][4]T {
+    const sp = simd.splat;
     const L = layout.VarLayout(cfg);
     const erf = pp[L.index(.ee)];
-    const urf = try urfCon(cfg, pp, geom);
+    const urf = urfConG(cfg, T, pp, gg, GG);
 
-    var rij: [4][4]f64 = undefined;
+    var rij: [4][4]T = undefined;
     for (0..4) |i| {
         for (0..4) |j| {
-            rij[i][j] = four_third * erf * urf[i] * urf[j] + one_third * erf * geom.GG[i][j];
+            rij[i][j] = sp(T, four_third) * erf * urf[i] * urf[j] + sp(T, one_third) * erf * GG[i][j];
         }
     }
     return rij;

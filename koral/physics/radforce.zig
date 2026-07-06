@@ -18,6 +18,7 @@
 //!  * COMPTONIZATION is on in PUFFY; DAMPCOMPTONIZATIONATBH is not.
 
 const std = @import("std");
+const simd = @import("../math/simd.zig");
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const relele = @import("../relele.zig");
@@ -91,39 +92,52 @@ pub const Params = struct {
     }
 
     fn kappaesAt(self: *const Params, rho: f64, trad: f64) f64 {
+        return self.kappaesAtG(f64, rho, trad);
+    }
+
+    fn kappaesAtG(self: *const Params, comptime T: type, rho: T, trad: T) T {
         return switch (self.kappaes) {
-            .none => 0.0,
-            .puffy => opacities.kappaEsPuffy(&self.consts, self.channels, rho, trad),
-            .grey => |k| k * rho,
+            .none => simd.splat(T, 0),
+            .puffy => opacities.kappaEsPuffyG(T, &self.consts, self.channels, rho, trad),
+            .grey => |k| simd.splat(T, k) * rho,
         };
     }
 };
 
-/// The radiation-relevant subset of C's struct_of_state.
-pub const RadState = struct {
-    rho: f64,
-    uint: f64,
-    tgas: f64,
-    te: f64,
-    ti: f64,
-    /// Sgas = kB/(μ_gas m_p) · calc_Sfromu (physics.c:41) — note the
-    /// different normalization from the ENTR primitive
-    sgas: f64,
-    ne: f64,
-    ucon: [4]f64,
-    ucov: [4]f64,
-    bsq: f64,
-    rij: [4][4]f64,
-    ehat: f64,
-    tradbb: f64,
-    trad: f64,
-    kappaes: f64,
-    kappa: f64,
-    opac: opacities.Opac,
-};
+/// The radiation-relevant subset of C's struct_of_state, over lane type T
+/// (parallelization plan §2.2 — the `<name>G` functions are the generic
+/// cores, the plain `<name>` scalar API delegates to T = f64).
+pub fn RadStateOf(comptime T: type) type {
+    return struct {
+        rho: T,
+        uint: T,
+        tgas: T,
+        te: T,
+        ti: T,
+        /// Sgas = kB/(μ_gas m_p) · calc_Sfromu (physics.c:41) — note the
+        /// different normalization from the ENTR primitive
+        sgas: T,
+        ne: T,
+        ucon: [4]T,
+        ucov: [4]T,
+        bsq: T,
+        rij: [4][4]T,
+        ehat: T,
+        tradbb: T,
+        trad: T,
+        kappaes: T,
+        kappa: T,
+        opac: opacities.OpacOf(T),
+    };
+}
+pub const RadState = RadStateOf(f64);
 
 /// C: fill_struct_of_state (physics.c:12), the RADIATION branch without
 /// photon number (Trad = TradBB) or electrons (Te = Ti = Tgas).
+///
+/// The error union is kept for API compatibility, but with VELPRIM == VELR
+/// the fill is infallible (the velr→vel4 conversion cannot fail) — the
+/// generic core below has no error path.
 pub fn fillRadState(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
@@ -131,48 +145,65 @@ pub fn fillRadState(
     gamma_adiab: f64,
     par: *const Params,
 ) relele.Error!RadState {
+    return fillRadStateG(cfg, f64, pp, &geom.gg, &geom.GG, gamma_adiab, par);
+}
+
+/// fillRadState over lane type T.
+pub fn fillRadStateG(
+    comptime cfg: config.Config,
+    comptime T: type,
+    pp: [layout.VarLayout(cfg).count]T,
+    gg: *const [4][5]T,
+    GG: *const [4][5]T,
+    gamma_adiab: f64,
+    par: *const Params,
+) RadStateOf(T) {
+    const sp = simd.splat;
     const L = layout.VarLayout(cfg);
     const c = &par.consts;
 
     const rho = pp[L.index(.rho)];
     const uint = pp[L.index(.uu)];
-    const temps = thermo.tempsFromUrho(c, uint, rho, gamma_adiab);
-    const sgas = c.kb_over_mugas_mp * hydro.sFromU(rho, uint, gamma_adiab);
-    const ne = thermo.thermalNe(c, rho);
+    const temps = thermo.tempsFromUrhoG(T, c, uint, rho, gamma_adiab);
+    const sgas = sp(T, c.kb_over_mugas_mp) * hydro.sFromUG(T, rho, uint, gamma_adiab);
+    const ne = thermo.thermalNeG(T, c, rho);
 
-    const u = try relele.uconUcovFromPrims(
+    const u = relele.uconUcovFromPrimsG(
+        T,
         .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
-        geom,
+        gg,
+        GG,
     );
 
-    var bsq: f64 = 0;
+    var bsq: T = sp(T, 0);
     if (comptime L.hasVar(.b1)) {
-        const b = mhd.bconBcovBsqFrom4vel(
+        const b = mhd.bconBcovBsqFrom4velG(
+            T,
             .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
             u.con,
             u.cov,
-            &geom.gg,
+            gg,
         );
         bsq = b.bsq;
     }
 
-    const rij = try radiation.calcRij(cfg, pp, geom);
+    const rij = radiation.calcRijG(cfg, T, pp, gg, GG);
 
     // C: calc_Ehat_from_Rij_ucov (rad.c:3054) — Ê = R^ab u_a u_b
-    var ehat: f64 = 0;
+    var ehat: T = sp(T, 0);
     for (0..4) |i| {
         for (0..4) |j| {
             ehat += rij[i][j] * u.cov[i] * u.cov[j];
         }
     }
 
-    const tradbb = c.lteTfromE(ehat);
+    const tradbb = c.lteTfromEG(T, ehat);
     const trad = tradbb; // no EVOLVEPHOTONNUMBER
 
-    const kappaes = par.kappaesAt(rho, trad);
+    const kappaes = par.kappaesAtG(T, rho, trad);
 
     const kappa_result = switch (par.kappa) {
-        .default => opacities.calcKappaFromState(c, par.channels, .{
+        .default => opacities.calcKappaFromStateG(T, c, par.channels, .{
             .rho = rho,
             .tgas = temps.tgas,
             .te = temps.te,
@@ -185,9 +216,9 @@ pub fn fillRadState(
         // problem snippet, totEmissivity = kappaGasAbs·4πB
         // (opacities.c:80 with B = sigma_rad_over_pi·Te⁴).
         .grey => |coeff| blk: {
-            const kap = coeff * rho;
-            const b = c.sigma_rad_over_pi * temps.te * temps.te * temps.te * temps.te;
-            break :blk opacities.KappaResult{
+            const kap = sp(T, coeff) * rho;
+            const b = sp(T, c.sigma_rad_over_pi) * temps.te * temps.te * temps.te * temps.te;
+            break :blk opacities.KappaResultOf(T){
                 .kappa = kap,
                 .opac = .{
                     .gas_abs = kap,
@@ -196,7 +227,7 @@ pub fn fillRadState(
                     .rad_num = kap,
                     .gas_ross = kap,
                     .rad_ross = kap,
-                    .tot_emissivity = kap * c.fourpi * b,
+                    .tot_emissivity = kap * sp(T, c.fourpi) * b,
                 },
             };
         },
@@ -223,32 +254,57 @@ pub fn fillRadState(
     };
 }
 
-pub const Gi = struct {
-    /// fluid-frame thermal four-force (C: type 0/2)
-    ff: [4]f64,
-    /// lab-frame thermal four-force (C: type 1/3)
-    lab: [4]f64,
-};
+pub fn GiOf(comptime T: type) type {
+    return struct {
+        /// fluid-frame thermal four-force (C: type 0/2)
+        ff: [4]T,
+        /// lab-frame thermal four-force (C: type 1/3)
+        lab: [4]T,
+    };
+}
+pub const Gi = GiOf(f64);
 
 /// C: calc_Compt_Gi_with_state (rad.c:2907) — thermal Comptonization,
 /// no RELELECTRONS correction. Returns coeff so both frames reuse it.
 pub fn comptonGiCoeff(c: *const thermo.Consts, st: *const RadState) f64 {
-    const thetae = c.kb_over_me * st.te;
-    return st.kappaes * st.ehat * (4.0 * c.kb_over_me * (st.trad - st.te)) *
-        (1.0 + 3.683 * thetae + 4.0 * thetae * thetae) / (1.0 + 4.0 * thetae);
+    return comptonGiCoeffG(f64, c, st);
+}
+
+/// comptonGiCoeff over lane type T.
+pub fn comptonGiCoeffG(comptime T: type, c: *const thermo.Consts, st: *const RadStateOf(T)) T {
+    const sp = simd.splat;
+    const thetae = sp(T, c.kb_over_me) * st.te;
+    return st.kappaes * st.ehat * (sp(T, 4.0 * c.kb_over_me) * (st.trad - st.te)) *
+        (sp(T, 1.0) + sp(T, 3.683) * thetae + sp(T, 4.0) * thetae * thetae) / (sp(T, 1.0) + sp(T, 4.0) * thetae);
 }
 
 /// C: calc_all_Gi_with_state (rad.c:2653), thermal part (no RELELECTRONS,
 /// so total == thermal). `vprim` are the gas velocity primitives used for
 /// the lab→ff boost.
+///
+/// The error union is kept for API compatibility; with VELPRIM == VELR the
+/// boost cannot fail (see the generic core).
 pub fn calcGiFromState(
     st: *const RadState,
     vprim: [3]f64,
     geom: *const Geometry,
     par: *const Params,
 ) relele.Error!Gi {
+    return calcGiFromStateG(f64, st, vprim, &geom.gg, &geom.GG, par);
+}
+
+/// calcGiFromState over lane type T.
+pub fn calcGiFromStateG(
+    comptime T: type,
+    st: *const RadStateOf(T),
+    vprim: [3]T,
+    gg: *const [4][5]T,
+    GG: *const [4][5]T,
+    par: *const Params,
+) GiOf(T) {
+    const sp = simd.splat;
     const c = &par.consts;
-    const b = c.sigma_rad_over_pi * st.te * st.te * st.te * st.te;
+    const b = sp(T, c.sigma_rad_over_pi) * st.te * st.te * st.te * st.te;
 
     const k_rad_abs = st.opac.rad_abs;
     const k_gas_abs = st.opac.gas_abs;
@@ -256,22 +312,22 @@ pub fn calcGiFromState(
     const kappaes = st.kappaes;
     const ruu = st.ehat;
 
-    var gi_lab: [4]f64 = undefined;
+    var gi_lab: [4]T = undefined;
     for (0..4) |i| {
-        var ru: f64 = 0;
+        var ru: T = sp(T, 0);
         for (0..4) |j| {
             ru += st.rij[i][j] * st.ucov[j];
         }
         gi_lab[i] = -(k_rad_ross + kappaes) * ru -
-            ((k_rad_ross + kappaes - k_rad_abs) * ruu + k_gas_abs * c.fourpi * b) * st.ucon[i];
+            ((k_rad_ross + kappaes - k_rad_abs) * ruu + k_gas_abs * sp(T, c.fourpi) * b) * st.ucon[i];
     }
 
     // boost to the fluid frame, then rewrite the time component directly
-    var gi_ff = try frames.boost2Lab2Ff(gi_lab, vprim, &geom.gg, &geom.GG);
-    gi_ff[0] = -k_gas_abs * c.fourpi * b + k_rad_abs * st.ehat;
+    var gi_ff = frames.boost2Lab2FfG(T, gi_lab, vprim, gg, GG);
+    gi_ff[0] = -k_gas_abs * sp(T, c.fourpi) * b + k_rad_abs * st.ehat;
 
     if (par.channels.comptonization) {
-        const coeff = comptonGiCoeff(c, st);
+        const coeff = comptonGiCoeffG(T, c, st);
         // lab: coeff·u^μ; ff: coeff·(1,0,0,0)
         for (0..4) |i| gi_lab[i] += coeff * st.ucon[i];
         gi_ff[0] += coeff;

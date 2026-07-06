@@ -182,12 +182,59 @@ Post halo `Isend/Irecv`, sweep interior tiles, `Waitall`, sweep the boundary she
 | **P0** | Per-pass wall-clock instrumentation (cheap timers around each §1 pass, printed with the scalar cadence) | Replaces the assumptions in this doc with measurements; sizes P1–P4 | none |
 | **P1** | Persistent worker team; thread all §1 passes; dynamic tiles; per-tile reductions; false-sharing fixes; NUMA first-touch + pinning | The big one: unlocks 64-core nodes; expect ~order-of-magnitude on today's serial share | Barrier bugs → caught by the existing bitwise threading test, extended to every pass |
 | **P2** | Memory diet: dead fields + dead Jacobian arrays out; fuse/swap stage arithmetic; axisymmetric metric-cache indexing (3D-critical) | Raises the bandwidth ceiling P1 will hit; −50%+ step traffic | Low; golden-checked deletions |
-| **P3a** | `comptime T`-generic residual chain + implicit FD-Jacobian lane vectorization (§2.3 #1) | ~2–3× on the dominant solver, on any CPU, no layout change | Moderate: needs the opacity/RadState chain generic over T |
+| **P3a** | `comptime T`-generic residual chain + implicit FD-Jacobian lane vectorization (§2.3 #1) — **DONE 2026-07-06**, see §7.1 | ~2–3× on the dominant solver, on any CPU, no layout change → **measured 1.16× solve-level on NEON** (see §7.1 for why) | Moderate: needs the opacity/RadState chain generic over T |
 | **P3b** | AoSoA batch view + `@Vector` explicit-path kernels (§2.4) | Near-width on flux/recon/wavespeeds — 8× lanes on AVX-512 cluster CPUs, 2× on Mac | Highest-touch SIMD item; keep AoS fallback comptime-selectable |
 | **P4** | MPI backend phases A+B (§4.2): bindings, cart grid, C-placed exchanges, single dt collective, hybrid rank-per-NUMA deployment, scalars-under-MPI, MPI-IO dumps | Multi-node; 3D-capable | Validation ladder in §4.2; keep 1-rank ≡ serial bitwise as the anchor |
 | **P5** | Comm/compute overlap, persistent requests, load-balance tuning, async I/O | Last 10–30% at scale | Only with P0 profiles in hand |
 
 P3 and P4 are independent tracks after P1+P2; sequence by hardware availability (Mac-only → P3a first; cluster access → P4 first).
+
+### 7.1 P3a results (implemented 2026-07-06)
+
+Shipped as designed in §2.2/§2.3 #1: the whole residual chain
+(`fillRadStateG` → opacities → `calcGiFromStateG` → `residualG`, plus the
+relele/frames/radiation/bfield/thermo/hydro/units helpers underneath) is
+`comptime T`-generic over `f64` / `@Vector(W, f64)` (helpers in
+`koral/math/simd.zig`), and `solve4dPrim` evaluates the FD Jacobian's 4
+perturbed residuals as one `@Vector(4, f64)` batch
+(`ImplicitParams.simd_jacobian`, default on; the per-lane perturbation +
+`applyConstraints` sign-retry stays scalar, then the 4 lanes batch — valid
+because the fill chain is infallible for VELR primitives). Bit-identity
+holds exactly as §2.2 predicted: `simd_tests.zig` gates the chain per lane
+and the whole solver (scalar vs SIMD bitwise, converged and failed cells
+alike), and every existing golden passes with the batch on.
+
+Measured on the M9 golden battery (336 PUFFY cells × full rung ladder,
+`zig build bench-implicit`, ReleaseFast, Apple M-series; C = the oracle
+build, clang -O2 + GSL, same deterministic battery via
+`oracle/harness_bench_implicit.c`):
+
+| Configuration | ns/solve | vs C |
+|---|---|---|
+| C `solve_implicit_lab` | 109 178 | 1.00× |
+| Zig scalar Jacobian | 84 406 | 1.29× |
+| Zig SIMD Jacobian | 73 060 | **1.49×** |
+
+SIMD vs scalar: **1.16× solve-level** (1.17× with the bisect pre-pass
+disabled — same number, so the dilution is not the bisect). Why below the
+§2.3 2–3× estimate: the chain's cost is dominated by (a) ~17 libm
+transcendentals per residual evaluation (pow/exp/log1p/cbrt in the
+opacities + sFromU), which the bit-identity rule deliberately keeps as
+per-lane scalar calls, and (b) the per-lane scalar `applyConstraints`
+(p2u/u2p inversions). Only the pure-arithmetic share of the batched 4-of-5
+evaluations vectorizes; Amdahl does the rest. The estimate's error was
+assuming arithmetic dominance in §2.3, not the design — which is exactly
+what it promised: bit-identical, no layout change, and the entire chain is
+now T-generic, which is the prerequisite P3b (AoSoA, wider lanes) and any
+future `-Dfast` vector-libm build both reuse. Getting past ~1.2× on this
+kernel requires breaking one of the two constraints above: a `-Dfast`
+build with vector transcendental approximations (field-scale-tolerance
+gates instead of goldens), or masked-batch u2p. Both are follow-on items,
+not part of P3a.
+
+Side-finding: PUFFY's `RADIMP_START_WITH_BISECT` pays for itself — the
+battery runs 84 μs/solve with the bisect vs 113 μs without (the better
+starting guess saves more Newton iterations than the bisect costs).
 
 ---
 

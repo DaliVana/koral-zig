@@ -37,8 +37,18 @@
 //!    DORADIMPFIXUPS 0. PUFFY's "RADIMPLICIMAXENCHANGEUP 10." define is
 //!    a typo (code reads RADIMPLICITMAXENCHANGEUP → choices.h default
 //!    10., coincidentally equal).
+//!
+//! SIMD (Zig-only, parallelization plan §2.3 rank 1): with
+//! ImplicitParams.simd_jacobian (default on) the FD Jacobian's 4 perturbed
+//! residual evaluations run as lanes of one @Vector(4, f64) batch through
+//! the comptime-T-generic chain (fillRadStateG → calcGiFromStateG →
+//! residualG). The batch is bit-identical to the scalar loop — same
+//! per-lane arithmetic, per-lane libm transcendentals, selects of
+//! both-sides-computed values — gated in simd_tests.zig, so all C goldens
+//! see identical results either way.
 
 const std = @import("std");
+const simd = @import("../math/simd.zig");
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const relele = @import("../relele.zig");
@@ -52,6 +62,9 @@ const p2u_mod = @import("../p2u.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 const small: f64 = 1.0e-80; // C: SMALL
+
+/// One lane per FD-Jacobian perturbation (the batch is the 4 columns).
+const V4 = @Vector(4, f64);
 
 pub const WhichPrim = enum(i32) { rad = 1, mhd = 2 }; // mnemonics.h:7-8
 pub const WhichEq = enum(i32) { energy = 0, entropy = 1 };
@@ -78,6 +91,13 @@ pub const ImplicitParams = struct {
     scale_jacobian: bool = false, // SCALE_JACOBIAN
     allow_rad_ceiling: bool = false, // ALLOWRADCEILINGINIMPLICIT
     allow_entr_in_4dprim: bool = false, // ALLOWFORENTRINF4DPRIM
+
+    /// Zig-only, no C counterpart (parallelization plan §2.3 rank 1):
+    /// evaluate the FD Jacobian's 4 perturbed residuals as lanes of one
+    /// @Vector(4, f64) batch. Bit-identical to the scalar loop (gated in
+    /// simd_tests.zig), so goldens are unaffected; flip off to A/B against
+    /// the scalar reference path.
+    simd_jacobian: bool = true,
 
     pub const cdefault = ImplicitParams{};
 
@@ -258,6 +278,9 @@ pub fn Solver(comptime cfg: config.Config) type {
         /// "converged" solution actually satisfies the equations (the
         /// relative-change exit can accept heavily-damped near-stalls,
         /// in C exactly as here).
+        ///
+        /// The error union is kept for API compatibility; with
+        /// VELPRIM == VELR the evaluation is infallible (see residualG).
         pub fn residual(
             uu: *const [NV]f64,
             pp: *const [NV]f64,
@@ -272,36 +295,56 @@ pub fn Solver(comptime cfg: config.Config) type {
             whichframe: WhichFrame,
             f: *[4]f64,
         ) relele.Error!f64 {
-            const gdetu = geom.gdet;
+            return residualG(f64, uu, pp, st, uu0, st0, dt, &geom.gg, &geom.GG, geom.gdet, opac, whichprim, whicheq, whichframe, f);
+        }
+
+        /// residual over lane type T — the batched Jacobian evaluates the
+        /// 4 perturbed states as lanes of one @Vector(4, f64) call. uu0/st0
+        /// stay scalar (the base state is shared by all lanes).
+        pub fn residualG(
+            comptime T: type,
+            uu: *const [NV]T,
+            pp: *const [NV]T,
+            st: *const radforce.RadStateOf(T),
+            uu0: *const [NV]f64,
+            st0: *const radforce.RadState,
+            dt: f64,
+            gg: *const [4][5]T,
+            GG: *const [4][5]T,
+            gdet: T,
+            opac: *const radforce.Params,
+            whichprim: WhichPrim,
+            whicheq: WhichEq,
+            whichframe: WhichFrame,
+            f: *[4]T,
+        ) T {
+            const sp = simd.splat;
+            const gdetu = gdet;
             const tgas = st.tgas;
-            const ehat0 = st0.ehat;
+            const ehat0 = sp(T, st0.ehat);
             const ehat = st.ehat;
-            const dtau = dt / st.ucon[0];
+            const dtau = sp(T, dt) / st.ucon[0];
 
-            const gi_pair = try radforce.calcGiFromState(st, .{
+            const gi_pair = radforce.calcGiFromStateG(T, st, .{
                 pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)],
-            }, geom, opac);
+            }, gg, GG, opac);
             const giff = gi_pair.ff;
-            const gi = relele.indices21(gi_pair.lab, &geom.gg); // G_μ
+            const gi = relele.indices21G(T, gi_pair.lab, gg); // G_μ
 
-            var err: [4]f64 = @splat(0);
+            var err: [4]T = @splat(sp(T, 0));
 
             // momenta — always in the lab frame
             if (whichprim == .mhd) {
                 inline for (1..4) |k| {
-                    f[k] = uu[i_uu + k] - uu0[i_uu + k] - dt * gdetu * gi[k];
-                    err[k] = if (@abs(f[k]) > small)
-                        @abs(f[k]) / (1.0e-20 * uu[i_uu] + @abs(uu[i_uu + k]) + @abs(uu0[i_uu + k]) + @abs(dt * gdetu * gi[k]))
-                    else
-                        0.0;
+                    f[k] = uu[i_uu + k] - sp(T, uu0[i_uu + k]) - sp(T, dt) * gdetu * gi[k];
+                    err[k] = simd.select(T, @abs(f[k]) > sp(T, small), @abs(f[k]) /
+                        (sp(T, 1.0e-20) * uu[i_uu] + @abs(uu[i_uu + k]) + sp(T, @abs(uu0[i_uu + k])) + @abs(sp(T, dt) * gdetu * gi[k])), sp(T, 0.0));
                 }
             } else {
                 inline for (1..4) |k| {
-                    f[k] = uu[i_ee + k] - uu0[i_ee + k] + dt * gdetu * gi[k];
-                    err[k] = if (@abs(f[k]) > small)
-                        @abs(f[k]) / (1.0e-20 * uu[i_ee] + @abs(uu[i_ee + k]) + @abs(uu0[i_ee + k]) + @abs(dt * gdetu * gi[k]))
-                    else
-                        0.0;
+                    f[k] = uu[i_ee + k] - sp(T, uu0[i_ee + k]) + sp(T, dt) * gdetu * gi[k];
+                    err[k] = simd.select(T, @abs(f[k]) > sp(T, small), @abs(f[k]) /
+                        (sp(T, 1.0e-20) * uu[i_ee] + @abs(uu[i_ee + k]) + sp(T, @abs(uu0[i_ee + k])) + @abs(sp(T, dt) * gdetu * gi[k])), sp(T, 0.0));
                 }
             }
 
@@ -309,17 +352,13 @@ pub fn Solver(comptime cfg: config.Config) type {
             if (whichframe == .lab) {
                 std.debug.assert(whicheq == .energy); // ENTROPYEQ+LAB is my_err in C
                 if (whichprim == .rad) {
-                    f[0] = uu[i_ee] - uu0[i_ee] + dt * gdetu * gi[0];
-                    err[0] = if (@abs(f[0]) > small)
-                        @abs(f[0]) / (@abs(uu[i_ee]) + @abs(uu0[i_ee]) + @abs(dt * gdetu * gi[0]))
-                    else
-                        0.0;
+                    f[0] = uu[i_ee] - sp(T, uu0[i_ee]) + sp(T, dt) * gdetu * gi[0];
+                    err[0] = simd.select(T, @abs(f[0]) > sp(T, small), @abs(f[0]) /
+                        (@abs(uu[i_ee]) + sp(T, @abs(uu0[i_ee])) + @abs(sp(T, dt) * gdetu * gi[0])), sp(T, 0.0));
                 } else {
-                    f[0] = uu[i_uu] - uu0[i_uu] - dt * gdetu * gi[0];
-                    err[0] = if (@abs(f[0]) > small)
-                        @abs(f[0]) / (@abs(uu[i_uu]) + @abs(uu0[i_uu]) + @abs(dt * gdetu * gi[0]))
-                    else
-                        0.0;
+                    f[0] = uu[i_uu] - sp(T, uu0[i_uu]) - sp(T, dt) * gdetu * gi[0];
+                    err[0] = simd.select(T, @abs(f[0]) > sp(T, small), @abs(f[0]) /
+                        (@abs(uu[i_uu]) + sp(T, @abs(uu0[i_uu])) + @abs(sp(T, dt) * gdetu * gi[0])), sp(T, 0.0));
                 }
             } else {
                 if (whicheq == .energy) {
@@ -328,23 +367,23 @@ pub fn Solver(comptime cfg: config.Config) type {
                         err[0] = @abs(f[0]) / (@abs(ehat) + @abs(ehat0) + @abs(dtau * giff[0]));
                     } else {
                         // C: pp[UU] − pp0[UU] − dτ·Ĝ⁰ (pp0 = post-explicit)
-                        f[0] = pp[i_uu] - st0.uint - dtau * giff[0];
-                        err[0] = @abs(f[0]) / (@abs(pp[i_uu]) + @abs(st0.uint) + @abs(dtau * giff[0]));
+                        f[0] = pp[i_uu] - sp(T, st0.uint) - dtau * giff[0];
+                        err[0] = @abs(f[0]) / (@abs(pp[i_uu]) + sp(T, @abs(st0.uint)) + @abs(dtau * giff[0]));
                     }
                 } else {
                     // C BUG transcribed (rad.c:1749/1767): S = state->Tgas,
                     // S0 = state0->Sgas — the entropy equation compares the
                     // gas TEMPERATURE against the initial entropy
-                    const s0 = st0.sgas;
+                    const s0 = sp(T, st0.sgas);
                     const s = st.tgas;
                     f[0] = tgas * (s - s0) - dtau * giff[0];
                     err[0] = @abs(f[0]) / (@abs(tgas * s) + @abs(tgas * s0) + @abs(dtau * giff[0]));
                 }
             }
 
-            var err0: f64 = 0;
+            var err0: T = sp(T, 0);
             for (0..4) |k| {
-                if (err[k] > err0) err0 = err[k];
+                err0 = simd.select(T, err[k] > err0, err[k], err0);
             }
             return err0;
         }
@@ -503,6 +542,15 @@ pub fn Solver(comptime cfg: config.Config) type {
             uu: [NV]f64,
         };
 
+        /// The one-sided FD step of Jacobian perturbation j (rad.c:600-621),
+        /// shared by the scalar and the lane-batched paths.
+        fn fdDel(j: usize, sign: f64, ppp: *const [NV]f64, sh: usize, eps: f64, geom: *const Geometry) f64 {
+            if (j == 0) return sign * eps * ppp[sh];
+            const veleps = eps * mySign(ppp[j + sh]) *
+                @max(1.0e-8 / @sqrt(geom.gg[j][j]), @abs(ppp[j + sh]));
+            return if (ppp[j + sh] >= 0.0) sign * veleps else -sign * veleps;
+        }
+
         /// C: solve_implicit_lab_4dprim (rad.c:341), 4 equations.
         pub fn solve4dPrim(
             uu00: *const [NV]f64,
@@ -540,6 +588,12 @@ pub fn Solver(comptime cfg: config.Config) type {
             var f2: [4]f64 = undefined;
             var jac: [4][4]f64 = undefined;
 
+            // lane-broadcast geometry for the batched Jacobian (used only
+            // when ip.simd_jacobian)
+            const ggv = simd.splatBlock(V4, &geom.gg);
+            const GGv = simd.splatBlock(V4, &geom.GG);
+            const gdetv = simd.splat(V4, geom.gdet);
+
             var iter: usize = 0;
             var failed = false;
 
@@ -558,50 +612,104 @@ pub fn Solver(comptime cfg: config.Config) type {
 
                 // Step 1: one-sided FD Jacobian, retrying the other
                 // perturbation sign on constraint failure
-                for (0..4) |j| {
-                    var sign: f64 = -1.0; // minus avoids u2p_mhd errors on rad
-                    while (true) {
-                        var del: f64 = undefined;
-                        if (j == 0) {
-                            del = sign * ip.eps * ppp[sh];
+                if (ip.simd_jacobian) {
+                    // (a) scalar per lane: perturbation + constraints with
+                    // the sign retry — exactly the scalar path below minus
+                    // the state fill and residual. The retry decision only
+                    // reads applyConstraints' fret: fillRadState is
+                    // infallible for VELR primitives, so the scalar path's
+                    // `catch → fret = -2` can never fire and the fill can
+                    // move behind the retry without changing any decision.
+                    var lane_pp: [4][NV]f64 = undefined;
+                    var lane_uu: [4][NV]f64 = undefined;
+                    var lane_del: [4]f64 = undefined;
+                    for (0..4) |j| {
+                        var sign: f64 = -1.0; // minus avoids u2p_mhd errors on rad
+                        while (true) {
+                            const del = fdDel(j, sign, &ppp, sh, ip.eps, geom);
                             pp[j + sh] = ppp[j + sh] + del;
-                        } else {
-                            const veleps = ip.eps * mySign(ppp[j + sh]) *
-                                @max(1.0e-8 / @sqrt(geom.gg[j][j]), @abs(ppp[j + sh]));
-                            del = if (ppp[j + sh] >= 0.0) sign * veleps else -sign * veleps;
-                            pp[j + sh] = ppp[j + sh] + del;
+
+                            fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
+
+                            if (fret < -1) {
+                                if (sign > 0.0) { // both signs failed
+                                    failed = true;
+                                    break;
+                                } else {
+                                    pp[j + sh] = ppp[j + sh];
+                                    sign *= -1.0;
+                                    continue;
+                                }
+                            }
+
+                            lane_pp[j] = pp;
+                            lane_uu[j] = uu;
+                            lane_del[j] = del;
+                            pp[j + sh] = ppp[j + sh];
+                            break;
                         }
+                        if (failed) break;
+                    }
+                    if (failed) break;
 
-                        fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
-                        state = radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac) catch blk: {
-                            fret = -2;
-                            break :blk state;
-                        };
+                    // (b) the 4 perturbed residuals as one 4-lane batch
+                    var ppv: [NV]V4 = undefined;
+                    var uuv: [NV]V4 = undefined;
+                    for (0..NV) |iv| {
+                        ppv[iv] = .{ lane_pp[0][iv], lane_pp[1][iv], lane_pp[2][iv], lane_pp[3][iv] };
+                        uuv[iv] = .{ lane_uu[0][iv], lane_uu[1][iv], lane_uu[2][iv], lane_uu[3][iv] };
+                    }
+                    const stv = radforce.fillRadStateG(cfg, V4, ppv, &ggv, &GGv, gamma_adiab, opac);
+                    var f2v: [4]V4 = undefined;
+                    _ = residualG(V4, &uuv, &ppv, &stv, uu00, &state00, dt, &ggv, &GGv, gdetv, opac, whichprim, whicheq, whichframe, &f2v);
+                    for (0..4) |i| {
+                        const fi: [4]f64 = f2v[i]; // lane j = perturbation j
+                        for (0..4) |j| {
+                            jac[i][j] = (fi[j] - f1[i]) / lane_del[j];
+                        }
+                    }
+                    // the scalar loop leaves `state` holding the 4th
+                    // perturbation's fill — preserved (it is overwritten in
+                    // Step 3 before any read; kept for exactness)
+                    state = simd.extractLane(radforce.RadState, stv, 3);
+                } else {
+                    for (0..4) |j| {
+                        var sign: f64 = -1.0; // minus avoids u2p_mhd errors on rad
+                        while (true) {
+                            const del = fdDel(j, sign, &ppp, sh, ip.eps, geom);
+                            pp[j + sh] = ppp[j + sh] + del;
 
-                        if (fret < -1) {
-                            if (sign > 0.0) { // both signs failed
+                            fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
+                            state = radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac) catch blk: {
+                                fret = -2;
+                                break :blk state;
+                            };
+
+                            if (fret < -1) {
+                                if (sign > 0.0) { // both signs failed
+                                    failed = true;
+                                    break;
+                                } else {
+                                    pp[j + sh] = ppp[j + sh];
+                                    sign *= -1.0;
+                                    continue;
+                                }
+                            }
+
+                            _ = residual(&uu, &pp, &state, uu00, &state00, dt, geom, opac, whichprim, whicheq, whichframe, &f2) catch {
                                 failed = true;
                                 break;
-                            } else {
-                                pp[j + sh] = ppp[j + sh];
-                                sign *= -1.0;
-                                continue;
+                            };
+                            for (0..4) |i| {
+                                jac[i][j] = (f2[i] - f1[i]) / del;
                             }
-                        }
-
-                        _ = residual(&uu, &pp, &state, uu00, &state00, dt, geom, opac, whichprim, whicheq, whichframe, &f2) catch {
-                            failed = true;
+                            pp[j + sh] = ppp[j + sh];
                             break;
-                        };
-                        for (0..4) |i| {
-                            jac[i][j] = (f2[i] - f1[i]) / del;
                         }
-                        pp[j + sh] = ppp[j + sh];
-                        break;
+                        if (failed) break;
                     }
                     if (failed) break;
                 }
-                if (failed) break;
 
                 // Jacobian scaling (SCALE_JACOBIAN, on in PUFFY):
                 // scalevec = {pp[sh], 1, 1, 1}

@@ -20,19 +20,26 @@
 //!    CHIANTI are off in every target build and are not implemented.
 
 const std = @import("std");
+const simd = @import("../math/simd.zig");
 const thermo = @import("thermo.zig");
 const units_mod = @import("../units.zig");
 
-/// C: struct opacities (the fields the M8 path fills).
-pub const Opac = struct {
-    gas_abs: f64, // kappaGasAbs — Planck emission at T_e
-    rad_abs: f64, // kappaRadAbs — Planck absorption at T_r, T_e
-    gas_num: f64, // kappaGasNum
-    rad_num: f64, // kappaRadNum
-    gas_ross: f64, // kappaGasRoss
-    rad_ross: f64, // kappaRadRoss
-    tot_emissivity: f64,
-};
+/// C: struct opacities (the fields the M8 path fills), over lane type T —
+/// the `<name>G` functions below are the comptime-T-generic cores of the
+/// opacity chain (parallelization plan §2.2); the plain `<name>` scalar
+/// API delegates to T = f64.
+pub fn OpacOf(comptime T: type) type {
+    return struct {
+        gas_abs: T, // kappaGasAbs — Planck emission at T_e
+        rad_abs: T, // kappaRadAbs — Planck absorption at T_r, T_e
+        gas_num: T, // kappaGasNum
+        rad_num: T, // kappaRadNum
+        gas_ross: T, // kappaGasRoss
+        rad_ross: T, // kappaRadRoss
+        tot_emissivity: T,
+    };
+}
+pub const Opac = OpacOf(f64);
 
 /// Channel switches (comptime macros in C; runtime here — they only gate
 /// whole terms). Defaults = the PUFFY build.
@@ -45,108 +52,120 @@ pub const Channels = struct {
     pub const puffy = Channels{};
 };
 
-/// Scalar inputs of calc_opacities_from_state.
-pub const StateIn = struct {
-    rho: f64,
-    tgas: f64,
-    te: f64,
-    trad: f64,
-    tradbb: f64,
-    ne: f64,
-    bsq: f64,
-};
+/// Scalar inputs of calc_opacities_from_state, over lane type T.
+pub fn StateInOf(comptime T: type) type {
+    return struct {
+        rho: T,
+        tgas: T,
+        te: T,
+        trad: T,
+        tradbb: T,
+        ne: T,
+        bsq: T,
+    };
+}
+pub const StateIn = StateInOf(f64);
 
 /// C: calc_opacities_from_state (opacities.c:186), BREMSSTRAHLUNG +
 /// SYNCHROTRON channels, no SKIPFANCYOPACITIES. Returns kappa=kappaGasAbs
 /// with all six opacity fields (tot_emissivity is filled by the caller,
 /// calc_kappa_from_state — see calcKappaFromState).
 pub fn calcOpacitiesFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) Opac {
+    return calcOpacitiesFromStateG(f64, c, ch, s);
+}
+
+/// calcOpacitiesFromState over lane type T. Scalar constants and the
+/// all-scalar parens are broadcast whole (same f64 product as the scalar
+/// code); the B = 0 Rosseland guard becomes a select with pow(0, −0.463)
+/// computed-and-discarded on the guarded lanes.
+pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Channels, s: StateInOf(T)) OpacOf(T) {
+    const sp = simd.splat;
     const rho = s.rho;
     const te = s.te;
     const trad = s.trad;
     const rt_te = @sqrt(te);
 
-    const rhocgs = c.rhogu2cgs * rho;
-    const nethcgs = s.ne * c.numdensgu2cgs;
+    const rhocgs = sp(T, c.rhogu2cgs) * rho;
+    const nethcgs = s.ne * sp(T, c.numdensgu2cgs);
 
     const zeta = trad / te;
-    const zeta_inv = 1.0 / zeta;
+    const zeta_inv = sp(T, 1.0) / zeta;
     const zeta_inv_3 = zeta_inv * zeta_inv * zeta_inv;
-    const zeta_root5 = std.math.pow(f64, zeta, 0.2);
-    const zeta_root5_inv_4 = 1.0 / (zeta_root5 * zeta_root5 * zeta_root5 * zeta_root5);
+    const zeta_root5 = simd.pow(T, zeta, 0.2);
+    const zeta_root5_inv_4 = sp(T, 1.0) / (zeta_root5 * zeta_root5 * zeta_root5 * zeta_root5);
     const zeta_root5_inv_3 = zeta_root5 * zeta_root5_inv_4;
 
     // C: bsqcgs = fourmpi*endenGU2CGS(bsq) — exact M_PI and the ko.h macro
-    const bsqcgs = c.fourmpi * c.units.endenGu2Cgs(s.bsq);
+    const bsqcgs = sp(T, c.fourmpi) * c.units.endenGu2CgsG(T, s.bsq);
     const bmagcgs = @sqrt(bsqcgs);
 
-    const bbenergy = 4.0 * c.sigma_rad_cgs * te * te * te * te;
+    const bbenergy = sp(T, 4.0 * c.sigma_rad_cgs) * te * te * te * te;
 
-    var kappagasff: f64 = 0;
-    var kapparadff: f64 = 0;
-    var kappagasffross: f64 = 0;
-    var kapparadffross: f64 = 0;
-    var kappagassyn: f64 = 0;
-    var kapparadsyn: f64 = 0;
-    var kapparadnumsyn: f64 = 0;
-    var kapparadsynross: f64 = 0;
-    var kappagassynross: f64 = 0;
+    var kappagasff: T = sp(T, 0);
+    var kapparadff: T = sp(T, 0);
+    var kappagasffross: T = sp(T, 0);
+    var kapparadffross: T = sp(T, 0);
+    var kappagassyn: T = sp(T, 0);
+    var kapparadsyn: T = sp(T, 0);
+    var kapparadnumsyn: T = sp(T, 0);
+    var kapparadsynross: T = sp(T, 0);
+    var kappagassynross: T = sp(T, 0);
 
     if (ch.bremsstrahlung) {
         // free-free emissivity with Gaunt factor 1.2 and a relativistic
         // correction; n_avg = (X + Y + <Z²/A>·Z)·ρ/mp
-        const emis_ff = 1.4e-27 * nethcgs *
-            ((c.comp.hfrac + c.comp.hefrac + c.comp.z2diva_mean * c.comp.mfrac()) / c.m_proton_cgs) *
-            rt_te * 1.2 * (1.0 + 4.4e-10 * te);
-        kappagasff = c.kappacgs2gu * (emis_ff / bbenergy) * rho;
+        const emis_ff = sp(T, 1.4e-27) * nethcgs *
+            sp(T, (c.comp.hfrac + c.comp.hefrac + c.comp.z2diva_mean * c.comp.mfrac()) / c.m_proton_cgs) *
+            rt_te * sp(T, 1.2) * (sp(T, 1.0) + sp(T, 4.4e-10) * te);
+        kappagasff = sp(T, c.kappacgs2gu) * (emis_ff / bbenergy) * rho;
 
-        const scale_pla_ros_ff = 14.12 / (432.7 - 106.8 * zeta_root5_inv_3 +
-            43.17 * zeta_root5_inv_4 + 57.88 * zeta_inv);
-        kappagasffross = kappagasff * 0.0330;
+        const scale_pla_ros_ff = sp(T, 14.12) / (sp(T, 432.7) - sp(T, 106.8) * zeta_root5_inv_3 +
+            sp(T, 43.17) * zeta_root5_inv_4 + sp(T, 57.88) * zeta_inv);
+        kappagasffross = kappagasff * sp(T, 0.0330);
 
         // no GRAY_BREMSS
-        kapparadff = kappagasff * std.math.log1p(1.6 * zeta) * c.one_over_log_2p6 * zeta_inv_3;
+        kapparadff = kappagasff * simd.log1p(T, sp(T, 1.6) * zeta) * sp(T, c.one_over_log_2p6) * zeta_inv_3;
         kapparadffross = kappagasff * scale_pla_ros_ff * zeta_inv_3;
     }
 
     if (ch.synchrotron) {
-        const emis_synchro = 3.61e-34 * (nethcgs / rhocgs) * te * te * bmagcgs * bmagcgs;
-        const nu_mbsyn = 1.19e-13 * te * te;
-        const zbr = c.k_boltz_cgs * trad / c.h_cgs / nu_mbsyn;
-        const zbg = c.k_boltz_cgs * te / c.h_cgs / nu_mbsyn;
+        const emis_synchro = sp(T, 3.61e-34) * (nethcgs / rhocgs) * te * te * bmagcgs * bmagcgs;
+        const nu_mbsyn = sp(T, 1.19e-13) * te * te;
+        const zbr = sp(T, c.k_boltz_cgs) * trad / sp(T, c.h_cgs) / nu_mbsyn;
+        const zbg = sp(T, c.k_boltz_cgs) * te / sp(T, c.h_cgs) / nu_mbsyn;
 
         const zeta_a_denom_rad =
-            1.79 * std.math.cbrt(zbr * zbr * zbr * zbr * zbr * bmagcgs * bmagcgs * bmagcgs * bmagcgs) +
-            1.35 * std.math.cbrt(zbr * zbr * zbr * zbr * zbr * zbr * zbr * bmagcgs * bmagcgs) +
-            0.248 * zbr * zbr * zbr;
+            sp(T, 1.79) * simd.cbrt(T, zbr * zbr * zbr * zbr * zbr * bmagcgs * bmagcgs * bmagcgs * bmagcgs) +
+            sp(T, 1.35) * simd.cbrt(T, zbr * zbr * zbr * zbr * zbr * zbr * zbr * bmagcgs * bmagcgs) +
+            sp(T, 0.248) * zbr * zbr * zbr;
         const ia_by_b_rad = bmagcgs * bmagcgs / zeta_a_denom_rad;
 
         const te5 = te * te * te * te * te;
-        kapparadsyn = c.kappacgs2gu * (2.13e39 * (nethcgs / rhocgs) / te5 * ia_by_b_rad) * rho;
-        kappagassyn = c.kappacgs2gu * (emis_synchro / bbenergy) * rho;
+        kapparadsyn = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_rad) * rho;
+        kappagassyn = sp(T, c.kappacgs2gu) * (emis_synchro / bbenergy) * rho;
 
         // number-of-photons averaged opacity
         const zeta_a_denom_num =
-            (0.025 * std.math.cbrt(zbr * zbr * zbr * zbr * bmagcgs * bmagcgs) +
-                0.169 * std.math.cbrt(zbr * zbr * zbr * zbr * zbr * bmagcgs) +
-                0.287 * zbr * zbr);
+            (sp(T, 0.025) * simd.cbrt(T, zbr * zbr * zbr * zbr * bmagcgs * bmagcgs) +
+                sp(T, 0.169) * simd.cbrt(T, zbr * zbr * zbr * zbr * zbr * bmagcgs) +
+                sp(T, 0.287) * zbr * zbr);
         const ia_by_b_num = bmagcgs / zeta_a_denom_num;
-        kapparadnumsyn = c.kappacgs2gu * (2.13e39 * (nethcgs / rhocgs) / te5 * ia_by_b_num) * rho;
+        kapparadnumsyn = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_num) * rho;
 
         // Rosseland; Bmb guards B = 0
-        const bmb: f64 = if (bmagcgs > 0.0) std.math.pow(f64, bmagcgs, -0.463) else 0.0;
-        const ia_by_b_ross_rad = 0.13 * std.math.pow(f64, bmagcgs, 0.69) /
-            (std.math.pow(f64, zbr, 1.69) * @exp(1.6 * std.math.pow(f64, zbr, 0.463) * bmb));
-        kapparadsynross = c.kappacgs2gu * (2.13e39 * (nethcgs / rhocgs) / te5 * ia_by_b_ross_rad) * rho;
+        const bmb: T = simd.select(T, bmagcgs > sp(T, 0.0), simd.pow(T, bmagcgs, -0.463), sp(T, 0.0));
+        const ia_by_b_ross_rad = sp(T, 0.13) * simd.pow(T, bmagcgs, 0.69) /
+            (simd.pow(T, zbr, 1.69) * simd.exp(T, sp(T, 1.6) * simd.pow(T, zbr, 0.463) * bmb));
+        kapparadsynross = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_ross_rad) * rho;
 
-        const ia_by_b_ross_gas = 0.13 * std.math.pow(f64, bmagcgs, 0.69) /
-            (std.math.pow(f64, zbg, 1.69) * @exp(1.6 * std.math.pow(f64, zbg, 0.463) * bmb));
-        kappagassynross = c.kappacgs2gu * (2.13e39 * (nethcgs / rhocgs) / te5 * ia_by_b_ross_gas) * rho;
+        const ia_by_b_ross_gas = sp(T, 0.13) * simd.pow(T, bmagcgs, 0.69) /
+            (simd.pow(T, zbg, 1.69) * simd.exp(T, sp(T, 1.6) * simd.pow(T, zbg, 0.463) * bmb));
+        kappagassynross = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_ross_gas) * rho;
 
         // suppress synchrotron at nonrelativistic temperatures
         // (no USE_SYNCHROTRON_BRIDGE_FUNCTIONS)
-        const terel = te * c.k_over_mecsq;
-        const terelfactor = (terel * terel) / (1.0 + terel * terel);
+        const terel = te * sp(T, c.k_over_mecsq);
+        const terelfactor = (terel * terel) / (sp(T, 1.0) + terel * terel);
         kapparadsyn *= terelfactor;
         kappagassyn *= terelfactor;
         kapparadnumsyn *= terelfactor;
@@ -162,20 +181,29 @@ pub fn calcOpacitiesFromState(c: *const thermo.Consts, ch: Channels, s: StateIn)
         .rad_num = kapparadff + kapparadnumsyn,
         .gas_ross = kappagasffross + kappagassynross,
         .rad_ross = kapparadffross + kapparadsynross,
-        .tot_emissivity = 0, // filled by calcKappaFromState
+        .tot_emissivity = sp(T, 0), // filled by calcKappaFromState
     };
 }
 
-pub const KappaResult = struct { kappa: f64, opac: Opac };
+pub fn KappaResultOf(comptime T: type) type {
+    return struct { kappa: T, opac: OpacOf(T) };
+}
+pub const KappaResult = KappaResultOf(f64);
 
 /// C: calc_kappa_from_state (opacities.c:37) — the default (no PR_KAPPA)
 /// path plus the totEmissivity bookkeeping. Returns kappa = kappaGasAbs.
 pub fn calcKappaFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) KappaResult {
-    const b = c.sigma_rad_over_pi * s.te * s.te * s.te * s.te;
-    var opac = calcOpacitiesFromState(c, ch, s);
+    return calcKappaFromStateG(f64, c, ch, s);
+}
+
+/// calcKappaFromState over lane type T.
+pub fn calcKappaFromStateG(comptime T: type, c: *const thermo.Consts, ch: Channels, s: StateInOf(T)) KappaResultOf(T) {
+    const sp = simd.splat;
+    const b = sp(T, c.sigma_rad_over_pi) * s.te * s.te * s.te * s.te;
+    var opac = calcOpacitiesFromStateG(T, c, ch, s);
     // kappaGasAbs >= 0 always holds here, so totEmissivity uses it and no
     // field rewriting happens (opacities.c:80-99)
-    opac.tot_emissivity = opac.gas_abs * c.fourpi * b;
+    opac.tot_emissivity = opac.gas_abs * sp(T, c.fourpi) * b;
     return .{ .kappa = opac.gas_abs, .opac = opac };
 }
 
@@ -184,12 +212,18 @@ pub fn calcKappaFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) Kap
 /// calc_kappaes path and TradBB on the struct_of_state path). Uses the
 /// ko.h kappaCGS2GU *macro* shape.
 pub fn kappaEsPuffy(c: *const thermo.Consts, ch: Channels, rho: f64, trad: f64) f64 {
-    var opac_correction: f64 = 1.0;
+    return kappaEsPuffyG(f64, c, ch, rho, trad);
+}
+
+/// kappaEsPuffy over lane type T.
+pub fn kappaEsPuffyG(comptime T: type, c: *const thermo.Consts, ch: Channels, rho: T, trad: T) T {
+    const sp = simd.splat;
+    var opac_correction: T = sp(T, 1.0);
     if (ch.kleinnishina) {
         const tkn = trad;
-        opac_correction = 1.0 / (1.0 + std.math.pow(f64, tkn / 4.5e8, 0.86));
+        opac_correction = sp(T, 1.0) / (sp(T, 1.0) + simd.pow(T, tkn / sp(T, 4.5e8), 0.86));
     }
-    return c.units.kappaCgs2Gu(0.2 * (1.0 + c.comp.hfrac) * opac_correction) * rho;
+    return c.units.kappaCgs2GuG(T, sp(T, 0.2 * (1.0 + c.comp.hfrac)) * opac_correction) * rho;
 }
 
 /// C: calc_tautot (opacities.c:159) — τ = χ·dx per direction.

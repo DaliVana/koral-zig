@@ -120,6 +120,7 @@ build_harness puffy harness_init
 build_harness puffy harness_visc
 build_harness puffy harness_dynamo
 build_harness puffy harness_scalars
+build_harness puffy harness_bench_implicit # timing only — run by hand, no golden
 
 echo "== [puffy] running harnesses"
 mkdir -p "$ROOT/tests/golden/metric" "$ROOT/tests/golden/state" "$ROOT/tests/golden/flux" "$ROOT/tests/golden/rad" "$ROOT/tests/golden/init"

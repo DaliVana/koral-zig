@@ -4,6 +4,7 @@
 //! CONSISTENTGAMMA is off for PUFFY, so Γ is a plain parameter here.
 
 const std = @import("std");
+const simd = @import("../math/simd.zig");
 const relele = @import("../relele.zig");
 const mhd = @import("bfield.zig");
 const config = @import("../config.zig");
@@ -13,10 +14,15 @@ const Geometry = @import("../geometry.zig").Geometry;
 /// Specific-entropy-like conserved S(ρ, u) (C: calc_Sfromu, physics.c:1457;
 /// log form — NOLOGINS is not defined for PUFFY).
 pub fn sFromU(rho: f64, u: f64, gamma_adiab: f64) f64 {
+    return sFromUG(f64, rho, u, gamma_adiab);
+}
+
+/// sFromU over lane type T.
+pub fn sFromUG(comptime T: type, rho: T, u: T, gamma_adiab: f64) T {
     const gammam1 = gamma_adiab - 1.0;
     const indexn = 1.0 / gammam1;
-    const pre = gammam1 * u;
-    return rho * @log(std.math.pow(f64, pre, indexn) / std.math.pow(f64, rho, indexn + 1.0));
+    const pre = simd.splat(T, gammam1) * u;
+    return rho * simd.log(T, simd.pow(T, pre, indexn) / simd.pow(T, rho, indexn + 1.0));
 }
 
 /// Inverse of sFromU (C: calc_ufromS, physics.c:1497).

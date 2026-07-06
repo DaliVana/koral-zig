@@ -9,7 +9,13 @@
 //! arithmetic transcribes 1:1 from relele.c; the 5th column is ignored.
 
 const std = @import("std");
+const simd = @import("math/simd.zig");
 const Geometry = @import("geometry.zig").Geometry;
+
+// The `<name>G(comptime T, ...)` functions are the comptime-T-generic cores
+// of the radiative-source chain (parallelization plan §2.2): T is f64 or
+// @Vector(W, f64), the plain `<name>` scalar API delegates to T = f64, and
+// the vector instantiation is bit-identical per lane (simd_tests.zig).
 
 /// C: mnemonics.h:16-18 (numeric values matter for golden records).
 pub const VelType = enum(u8) {
@@ -27,6 +33,10 @@ pub const Error = error{
 };
 
 pub inline fn dot(a: [4]f64, b: [4]f64) f64 {
+    return dotG(f64, a, b);
+}
+
+pub inline fn dotG(comptime T: type, a: [4]T, b: [4]T) T {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
 }
 
@@ -40,7 +50,11 @@ pub inline fn kron(i: usize, j: usize) f64 {
 
 /// A_μ -> A^μ (C: indices_12). Safe to call with aliased in/out.
 pub fn indices12(a1: [4]f64, GG: *const [4][5]f64) [4]f64 {
-    var a2: [4]f64 = @splat(0);
+    return indices12G(f64, a1, GG);
+}
+
+pub fn indices12G(comptime T: type, a1: [4]T, GG: *const [4][5]T) [4]T {
+    var a2: [4]T = @splat(simd.splat(T, 0));
     for (0..4) |i| {
         for (0..4) |k| {
             a2[i] += a1[k] * GG[i][k];
@@ -51,7 +65,11 @@ pub fn indices12(a1: [4]f64, GG: *const [4][5]f64) [4]f64 {
 
 /// A^μ -> A_μ (C: indices_21).
 pub fn indices21(a1: [4]f64, gg: *const [4][5]f64) [4]f64 {
-    var a2: [4]f64 = @splat(0);
+    return indices21G(f64, a1, gg);
+}
+
+pub fn indices21G(comptime T: type, a1: [4]T, gg: *const [4][5]T) [4]T {
+    var a2: [4]T = @splat(simd.splat(T, 0));
     for (0..4) |i| {
         for (0..4) |j| {
             a2[i] += a1[j] * gg[i][j];
@@ -118,7 +136,11 @@ pub fn indices2221(t1: [4][4]f64, gg: *const [4][5]f64) [4][4]f64 {
 
 /// uout^μ = A^μ_ν uin^ν (C: frames.c multiply2). Alias-safe.
 pub fn multiply2(uin: [4]f64, a: [4][4]f64) [4]f64 {
-    var uout: [4]f64 = @splat(0);
+    return multiply2G(f64, uin, a);
+}
+
+pub fn multiply2G(comptime T: type, uin: [4]T, a: [4][4]T) [4]T {
+    var uout: [4]T = @splat(simd.splat(T, 0));
     for (0..4) |i| {
         for (0..4) |j| {
             uout[i] += a[i][j] * uin[j];
@@ -180,15 +202,32 @@ pub fn utInUcon(u: [4]f64, gg: *const [4][5]f64) Error!f64 {
 /// α·γ for a VELR vector (C: calc_alpgam, relele.c:309). On alpgam² < 0
 /// C prints and returns 1 — mirrored.
 pub fn calcAlpgam(u: [4]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) f64 {
-    var qsq: f64 = 0;
+    return calcAlpgamG(f64, u, gg, GG);
+}
+
+pub fn calcAlpgamG(comptime T: type, u: [4]T, gg: *const [4][5]T, GG: *const [4][5]T) T {
+    const sp = simd.splat;
+    var qsq: T = sp(T, 0);
     for (1..4) |i| {
         for (1..4) |j| {
             qsq += u[i] * u[j] * gg[i][j];
         }
     }
-    const alpgam2 = (-1.0 / GG[0][0]) * (1.0 + qsq);
-    if (alpgam2 < 0) return 1.0;
-    return @sqrt(alpgam2);
+    const alpgam2 = (sp(T, -1.0) / GG[0][0]) * (sp(T, 1.0) + qsq);
+    return simd.select(T, alpgam2 < sp(T, 0), sp(T, 1.0), @sqrt(alpgam2));
+}
+
+/// The VELR → VEL4 conversion (convVelsCore's velr branch) — infallible:
+/// calcAlpgam absorbs alpgam² < 0 by returning 1, C-faithfully. This is
+/// the only conv_vels direction the T-generic radiative chain needs.
+pub fn velrToVel4G(comptime T: type, uin: [4]T, gg: *const [4][5]T, GG: *const [4][5]T) [4]T {
+    const alpgam = calcAlpgamG(T, uin, gg, GG);
+    return .{
+        -alpgam * GG[0][0],
+        uin[1] - alpgam * GG[0][1],
+        uin[2] - alpgam * GG[0][2],
+        uin[3] - alpgam * GG[0][3],
+    };
 }
 
 //
@@ -232,11 +271,7 @@ pub fn convVelsCore(
             uout[i] = uin[i] - ut * GG[0][i] / GG[0][0];
         }
     } else if (from == .velr and to == .vel4) {
-        const alpgam = calcAlpgam(uin, gg, GG);
-        uout[0] = -alpgam * GG[0][0];
-        uout[1] = uin[1] - alpgam * GG[0][1];
-        uout[2] = uin[2] - alpgam * GG[0][2];
-        uout[3] = uin[3] - alpgam * GG[0][3];
+        uout = velrToVel4G(f64, uin, gg, GG);
     } else { // VELR -> VEL3
         const alpgam = calcAlpgam(uin, gg, GG);
         uout[0] = -alpgam * GG[0][0];
@@ -257,7 +292,10 @@ pub fn convVelsUt(uin: [4]f64, from: VelType, to: VelType, gg: *const [4][5]f64,
     return convVelsCore(uin, from, to, gg, GG, true);
 }
 
-pub const ConCov = struct { con: [4]f64, cov: [4]f64 };
+pub fn ConCovOf(comptime T: type) type {
+    return struct { con: [4]T, cov: [4]T };
+}
+pub const ConCov = ConCovOf(f64);
 
 /// C: conv_vels_both — only to == VEL4 is supported.
 pub fn convVelsBoth(uin: [4]f64, from: VelType, gg: *const [4][5]f64, GG: *const [4][5]f64) Error!ConCov {
@@ -265,10 +303,22 @@ pub fn convVelsBoth(uin: [4]f64, from: VelType, gg: *const [4][5]f64, GG: *const
     return .{ .con = con, .cov = indices21(con, gg) };
 }
 
+/// conv_vels_both for VELR input over lane type T (infallible, see
+/// velrToVel4G).
+pub fn convVelsBothVelrG(comptime T: type, uin: [4]T, gg: *const [4][5]T, GG: *const [4][5]T) ConCovOf(T) {
+    const con = velrToVel4G(T, uin, gg, GG);
+    return .{ .con = con, .cov = indices21G(T, con, gg) };
+}
+
 /// Gas u^μ, u_μ from primitives' velocity slots (C: calc_ucon_ucov_from_prims;
 /// VELPRIM == VELR). `v` are the three VELPRIM components pp[VX..VZ].
 pub fn uconUcovFromPrims(v: [3]f64, geom: *const Geometry) Error!ConCov {
     return convVelsBoth(.{ 0, v[0], v[1], v[2] }, .velr, &geom.gg, &geom.GG);
+}
+
+/// uconUcovFromPrims over lane type T.
+pub fn uconUcovFromPrimsG(comptime T: type, v: [3]T, gg: *const [4][5]T, GG: *const [4][5]T) ConCovOf(T) {
+    return convVelsBothVelrG(T, .{ simd.splat(T, 0), v[0], v[1], v[2] }, gg, GG);
 }
 
 //

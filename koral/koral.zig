@@ -37,6 +37,7 @@ pub const math = struct {
     pub const Dual3 = dual.Dual3;
     pub const quad = @import("math/quad.zig");
     pub const misc = @import("math/misc.zig");
+    pub const simd = @import("math/simd.zig");
 };
 
 pub const metric = struct {
@@ -122,6 +123,7 @@ test {
     _ = comm.serial;
     _ = geometry;
     _ = math.dual;
+    _ = math.simd;
     _ = metric.core;
     _ = metric.forms;
     _ = metric.coco;
@@ -152,6 +154,7 @@ test {
     _ = @import("radiation_tests.zig");
     _ = @import("opacity_tests.zig");
     _ = @import("implicit_tests.zig");
+    _ = @import("simd_tests.zig");
     _ = @import("state_tests.zig");
     _ = @import("flux_tests.zig");
     _ = @import("metric_golden_tests.zig");

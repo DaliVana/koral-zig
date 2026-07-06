@@ -8,6 +8,7 @@
 //! C oracle at the few-ulp level.
 
 const std = @import("std");
+const simd = @import("math/simd.zig");
 
 // Physical constants, CGS (ko.h:12-31 — exact values, do not "improve").
 pub const GGG0: f64 = 6.674e-8;
@@ -94,7 +95,12 @@ pub const Units = struct {
         return x * ((u.masscm * CCC * CCC) / GGG);
     }
     pub fn kappaCgs2Gu(u: Units, x: f64) f64 {
-        return x * ((CCC * CCC) / (GGG * u.masscm));
+        return u.kappaCgs2GuG(f64, x);
+    }
+    /// kappaCgs2Gu over lane type T (the conversion factor is one scalar
+    /// paren in the ko.h macro, so broadcasting it preserves the bits).
+    pub fn kappaCgs2GuG(u: Units, comptime T: type, x: T) T {
+        return x * simd.splat(T, (CCC * CCC) / (GGG * u.masscm));
     }
     pub fn kappaGu2Cgs(u: Units, x: f64) f64 {
         return x * ((GGG * u.masscm) / (CCC * CCC));
@@ -103,7 +109,11 @@ pub const Units = struct {
         return x * ((GGG * u.masscm * u.masscm) / (CCC * CCC * CCC * CCC));
     }
     pub fn endenGu2Cgs(u: Units, x: f64) f64 {
-        return x * ((CCC * CCC * CCC * CCC) / (GGG * u.masscm * u.masscm));
+        return u.endenGu2CgsG(f64, x);
+    }
+    /// endenGu2Cgs over lane type T (same broadcast argument as kappaCgs2GuG).
+    pub fn endenGu2CgsG(u: Units, comptime T: type, x: T) T {
+        return x * simd.splat(T, (CCC * CCC * CCC * CCC) / (GGG * u.masscm * u.masscm));
     }
     pub fn fluxCgs2Gu(u: Units, x: f64) f64 {
         return x * ((GGG * u.masscm * u.masscm) / (CCC * CCC * CCC * CCC * CCC));

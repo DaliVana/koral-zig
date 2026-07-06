@@ -15,6 +15,7 @@
 //!    at TEMPEMINIMAL = TEMPIMINIMAL = 1e2 (Tgas itself is NOT floored).
 
 const std = @import("std");
+const simd = @import("../math/simd.zig");
 const units_mod = @import("../units.zig");
 const Units = units_mod.Units;
 
@@ -144,14 +145,23 @@ pub const Consts = struct {
     }
     /// C: calc_LTE_TfromE (rad.c:3147).
     pub fn lteTfromE(c: *const Consts, e: f64) f64 {
-        return @sqrt(@sqrt(c.one_over_four_sigmarad * e));
+        return c.lteTfromEG(f64, e);
+    }
+    /// lteTfromE over lane type T.
+    pub fn lteTfromEG(c: *const Consts, comptime T: type, e: T) T {
+        return @sqrt(@sqrt(simd.splat(T, c.one_over_four_sigmarad) * e));
     }
 };
 
 /// C: calc_PEQ_Tfromurho (physics.c) — Tgas from u and ρ.
 pub fn tFromUrho(c: *const Consts, uint: f64, rho: f64, gamma_adiab: f64) f64 {
-    const p = uint * (gamma_adiab - 1.0);
-    return c.mugas_mp_over_kb * p / rho;
+    return tFromUrhoG(f64, c, uint, rho, gamma_adiab);
+}
+
+/// tFromUrho over lane type T.
+pub fn tFromUrhoG(comptime T: type, c: *const Consts, uint: T, rho: T, gamma_adiab: f64) T {
+    const p = uint * simd.splat(T, gamma_adiab - 1.0);
+    return simd.splat(T, c.mugas_mp_over_kb) * p / rho;
 }
 
 /// C: calc_PEQ_ufromTrho (physics.c:1912) — u from T and ρ
@@ -161,24 +171,39 @@ pub fn uFromTrho(c: *const Consts, t: f64, rho: f64, gamma_adiab: f64) f64 {
     return p / (gamma_adiab - 1.0);
 }
 
-pub const GasTemps = struct { tgas: f64, te: f64, ti: f64 };
+pub fn GasTempsOf(comptime T: type) type {
+    return struct { tgas: T, te: T, ti: T };
+}
+pub const GasTemps = GasTempsOf(f64);
 
 /// C: calc_PEQ_Teifrompp (physics.c:1869), single-temperature branch:
 /// Te = Ti = Tgas, non-finite → BIG, floored at TEMPE/IMINIMAL.
 pub fn tempsFromUrho(c: *const Consts, uint: f64, rho: f64, gamma_adiab: f64) GasTemps {
-    const tgas = tFromUrho(c, uint, rho, gamma_adiab);
+    return tempsFromUrhoG(f64, c, uint, rho, gamma_adiab);
+}
+
+/// tempsFromUrho over lane type T (the scalar `if`s become selects of
+/// both-sides-computed values — identical results per lane).
+pub fn tempsFromUrhoG(comptime T: type, c: *const Consts, uint: T, rho: T, gamma_adiab: f64) GasTempsOf(T) {
+    const sp = simd.splat;
+    const tgas = tFromUrhoG(T, c, uint, rho, gamma_adiab);
     var te = tgas;
     var ti = tgas;
-    if (!std.math.isFinite(te)) te = units_mod.BIG;
-    if (!std.math.isFinite(ti)) ti = units_mod.BIG;
-    if (te < tempeminimal) te = tempeminimal;
-    if (ti < tempiminimal) ti = tempiminimal;
+    te = simd.select(T, simd.isFinite(T, te), te, sp(T, units_mod.BIG));
+    ti = simd.select(T, simd.isFinite(T, ti), ti, sp(T, units_mod.BIG));
+    te = simd.select(T, te < sp(T, tempeminimal), sp(T, tempeminimal), te);
+    ti = simd.select(T, ti < sp(T, tempiminimal), sp(T, tempiminimal), ti);
     return .{ .tgas = tgas, .te = te, .ti = ti };
 }
 
 /// C: calc_thermal_ne (physics.c:341), no RELELECTRONS.
 pub fn thermalNe(c: *const Consts, rho: f64) f64 {
-    return c.one_over_mue_mp * rho;
+    return thermalNeG(f64, c, rho);
+}
+
+/// thermalNe over lane type T.
+pub fn thermalNeG(comptime T: type, c: *const Consts, rho: T) T {
+    return simd.splat(T, c.one_over_mue_mp) * rho;
 }
 
 test "thermo: default composition is pure hydrogen; PUFFY overrides mu directly" {

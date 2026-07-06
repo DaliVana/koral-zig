@@ -29,6 +29,31 @@ pub fn build(b: *std.Build) !void {
     const test_step = b.step("test", "run koral library tests");
     test_step.dependOn(&run_koral_tests.step);
 
+    // Implicit-solver benchmark (always ReleaseFast; the dev-mode koral
+    // module above keeps whatever -Doptimize the user picked)
+    const koral_fast = b.createModule(.{
+        .root_source_file = b.path("koral/koral.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+    });
+    koral_fast.addOptions("build_options", build_opts);
+    const bench = b.addExecutable(.{
+        .name = "bench_implicit",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/bench_implicit.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{.{ .name = "koral", .module = koral_fast }},
+        }),
+    });
+    const run_bench = b.addRunArtifact(bench);
+    run_bench.addArg(b.pathFromRoot("tests/golden/rad/rad_implicit.kgld"));
+    if (b.args) |args| run_bench.addArgs(args);
+    b.step("bench-implicit", "time the implicit solver: scalar vs SIMD Jacobian")
+        .dependOn(&run_bench.step);
+
     // One executable per PROBLEMS/<name>/main.zig
     const io = b.graph.io;
     var dir = try b.build_root.handle.openDir(io, "PROBLEMS", .{ .iterate = true });

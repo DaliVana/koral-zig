@@ -22,6 +22,7 @@
 //!   functional chaining in transPallCoco matches the aliased behavior.
 
 const std = @import("std");
+const simd = @import("math/simd.zig");
 const relele = @import("relele.zig");
 const mhd = @import("physics/bfield.zig");
 const coco = @import("metric/coco.zig");
@@ -37,38 +38,53 @@ const VelType = relele.VelType;
 //
 
 fn lorentzFromPair(ucon: [4]f64, ucov: [4]f64, wcon: [4]f64, wcov: [4]f64) [4][4]f64 {
-    var om: [4][4]f64 = undefined;
+    return lorentzFromPairG(f64, ucon, ucov, wcon, wcov);
+}
+
+fn lorentzFromPairG(comptime T: type, ucon: [4]T, ucov: [4]T, wcon: [4]T, wcov: [4]T) [4][4]T {
+    const sp = simd.splat;
+    var om: [4][4]T = undefined;
     for (0..4) |i| {
         for (0..4) |j| {
             om[i][j] = ucon[i] * wcov[j] - wcon[i] * ucov[j];
         }
     }
-    const gam = -relele.dot(wcon, ucov);
+    const gam = -relele.dotG(T, wcon, ucov);
 
-    var l: [4][4]f64 = undefined;
+    var l: [4][4]T = undefined;
     for (0..4) |i| {
         for (0..4) |j| {
-            var omsum: f64 = 0;
+            var omsum: T = sp(T, 0);
             for (0..4) |k| {
                 omsum += om[i][k] * om[k][j];
             }
-            l[i][j] = relele.kron(i, j) + 1.0 / (1.0 + gam) * omsum + om[i][j];
+            l[i][j] = sp(T, relele.kron(i, j)) + sp(T, 1.0) / (sp(T, 1.0) + gam) * omsum + om[i][j];
         }
     }
     return l;
 }
 
 fn normalObsConCov(GG: *const [4][5]f64) relele.ConCov {
-    const alpha = @sqrt(-1.0 / GG[0][0]);
-    const wcov = [4]f64{ -alpha, 0, 0, 0 };
-    return .{ .con = relele.indices12(wcov, GG), .cov = wcov };
+    return normalObsConCovG(f64, GG);
+}
+
+fn normalObsConCovG(comptime T: type, GG: *const [4][5]T) relele.ConCovOf(T) {
+    const sp = simd.splat;
+    const alpha = @sqrt(sp(T, -1.0) / GG[0][0]);
+    const wcov = [4]T{ -alpha, sp(T, 0), sp(T, 0), sp(T, 0) };
+    return .{ .con = relele.indices12G(T, wcov, GG), .cov = wcov };
 }
 
 /// C: calc_Lorentz_lab2ff — u = fluid (from VELPRIM prims), w = normal observer.
 pub fn lorentzLab2Ff(vprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) relele.Error![4][4]f64 {
-    const u = try relele.convVelsBoth(.{ 0, vprim[0], vprim[1], vprim[2] }, .velr, gg, GG);
-    const w = normalObsConCov(GG);
-    return lorentzFromPair(u.con, u.cov, w.con, w.cov);
+    return lorentzLab2FfG(f64, vprim, gg, GG);
+}
+
+/// lorentzLab2Ff over lane type T (VELPRIM == VELR makes it infallible).
+pub fn lorentzLab2FfG(comptime T: type, vprim: [3]T, gg: *const [4][5]T, GG: *const [4][5]T) [4][4]T {
+    const u = relele.uconUcovFromPrimsG(T, vprim, gg, GG);
+    const w = normalObsConCovG(T, GG);
+    return lorentzFromPairG(T, u.con, u.cov, w.con, w.cov);
 }
 
 /// C: calc_Lorentz_ff2lab — u = normal observer, w = fluid.
@@ -84,9 +100,14 @@ pub fn lorentzFf2Lab(vprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) 
 
 /// A2 = α · (L_lab2ff A1).
 pub fn boost2Lab2Ff(a1: [4]f64, vprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) relele.Error![4]f64 {
-    const l = try lorentzLab2Ff(vprim, gg, GG);
-    var a2 = relele.multiply2(a1, l);
-    const alpha = @sqrt(-1.0 / GG[0][0]);
+    return boost2Lab2FfG(f64, a1, vprim, gg, GG);
+}
+
+/// boost2Lab2Ff over lane type T (infallible for VELR primitives).
+pub fn boost2Lab2FfG(comptime T: type, a1: [4]T, vprim: [3]T, gg: *const [4][5]T, GG: *const [4][5]T) [4]T {
+    const l = lorentzLab2FfG(T, vprim, gg, GG);
+    var a2 = relele.multiply2G(T, a1, l);
+    const alpha = @sqrt(simd.splat(T, -1.0) / GG[0][0]);
     for (0..4) |i| a2[i] *= alpha;
     return a2;
 }
