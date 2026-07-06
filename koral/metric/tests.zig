@@ -189,6 +189,14 @@ test "metric: compatibility ∂_c g_ab = Γ^d_ca g_db + Γ^d_cb g_ad" {
     }
 }
 
+test "metric: MKS2 metric and coco flavors share one π" {
+    const x2 = 0.37;
+    const h0 = 0.9;
+    const metric_theta = forms.mks2ThetaMetric(Dual3.constant(x2), h0).v;
+    const coco_theta = forms.mks2Theta(Dual3.constant(x2), h0).v;
+    try expectClose(metric_theta, coco_theta, 1e-15, 1e-15);
+}
+
 test "metric: √−g analytic — KS(a=0) = r² sinθ; MKS2 = KS × e^{x1} dθ/dx2; BL ≡ KS" {
     // Schwarzschild KS
     var buf: [64][4]f64 = undefined;

@@ -24,7 +24,7 @@ pub const M_ELECTR_CGS: f64 = 9.1094e-28;
 pub const M_PROTON_CGS: f64 = 1.67262158e-24;
 pub const SIGMA_RAD_CGS: f64 = 5.670367e-5;
 pub const H_CGS: f64 = 6.6260755e-27;
-pub const SIGMATH_CGS: f64 = 6.6524e-25;
+pub const SIGMATH_CGS: f64 = 6.6524587158e-25;
 pub const HFRAC_SUN: f64 = 0.7381;
 pub const HEFRAC_SUN: f64 = 0.2485;
 pub const MFRAC_SUN: f64 = 1.0 - HFRAC_SUN - HEFRAC_SUN;
@@ -160,7 +160,7 @@ pub const Units = struct {
         return u.kappaCgs2Gu(0.2 * (1.0 + hfrac));
     }
     pub fn sigmaThompson(u: Units) f64 {
-        return u.crossCgs2Gu(0.665e-24);
+        return u.crossCgs2Gu(SIGMATH_CGS);
     }
 
     /// GM/c^2 in cm for this mass (C: GMC2 = MSUNCM*MASS == masscm).
@@ -196,6 +196,12 @@ fn expectRel(expected: f64, actual: f64, rtol: f64) !void {
         std.debug.print("expected {e}, got {e}, rel err {e} > rtol {e}\n", .{ expected, actual, rel, rtol });
         return error.ToleranceExceeded;
     }
+}
+
+test "units: sigmaThompson uses the standard Thomson cross section" {
+    const u = Units.init(1.0);
+    const expected = u.crossCgs2Gu(SIGMATH_CGS);
+    try expectRel(expected, u.sigmaThompson(), 1e-15);
 }
 
 test "units: CGS→GU→CGS round-trips at 1e-15 across magnitudes and masses" {

@@ -10,7 +10,7 @@
 const std = @import("std");
 const Dual3 = @import("../math/dual.zig").Dual3;
 
-const pi = std.math.pi;
+pub const pi: f64 = std.math.pi;
 
 pub const MetricParams = struct {
     /// BH spin (C: BHSPIN).
@@ -84,18 +84,9 @@ pub fn gcovKs(x: [4]Dual3, mp: MetricParams) [4][4]Dual3 {
 
 // --- the MKS2 map (C: coco_MKS22KS metric.c:2626, dxdx_MKS22KS :3689) ---
 //
-// KORAL uses TWO values of π for MKS2, and we mirror both faithfully:
-//  * the Mathematica-exported metric/Christoffel/Jacobian expressions use
-//    ko.h's truncated `#define Pi (3.141592654)` (relative error 1.3e-10),
-//  * the coco_* point transforms use exact M_PI (plus exact literals for
-//    π/2 and 1/π).
-// The truncated-π map is still an exact diffeomorphism, so every metric
-// identity holds exactly within the "metric flavor" — but metric-flavor θ
-// and coco-flavor θ disagree at ~1e-9. This inconsistency is C's, inherited
-// deliberately so oracle comparisons hold at 1e-12 instead of 5e-9.
-
-/// C ko.h:28 — the truncated π of the exported metric expressions.
-pub const pi_truncated: f64 = 3.141592654;
+// The Zig port now uses one exact value of π for both the MKS2 metric flavor
+// and the coco point transforms. That keeps metric-flavor θ and coco-flavor θ
+// consistent instead of preserving the old C split.
 
 /// cot(π H0 / 2) with the exact-π/2 literal (C: Cot(1.5707963267948966*H0)
 /// in both flavors).
@@ -109,21 +100,19 @@ pub fn mks2Theta(x2: Dual3, h0: f64) Dual3 {
     return u.tan().scale(0.5 * pi * mks2Cot(h0)).addc(0.5 * pi);
 }
 
-/// Metric flavor: θ = (Pi/2)·(1 + cot(πH0/2)·tan(H0·Pi·(x2−1/2))) with the
-/// truncated Pi everywhere *including the additive π/2* — exactly the form
-/// `Cos((Pi*(1 + Cot(1.5707963267948966*H0)*Tan(H0*Pi*(-0.5 + x2))))/2.)`
-/// in C's exported expressions.
+/// Metric flavor: θ = (π/2)·(1 + cot(πH0/2)·tan(H0·π·(x2−1/2))) using the
+/// same exact π as the coco transform.
 pub fn mks2ThetaMetric(x2: Dual3, h0: f64) Dual3 {
-    const u = x2.addc(-0.5).scale(h0 * pi_truncated);
-    return u.tan().scale(mks2Cot(h0)).addc(1.0).scale(0.5 * pi_truncated);
+    const u = x2.addc(-0.5).scale(h0 * pi);
+    return u.tan().scale(mks2Cot(h0)).addc(1.0).scale(0.5 * pi);
 }
 
-/// Metric flavor dθ/dx2 = (H0 Pi²/2) cot(πH0/2) sec²(H0 Pi (x2 − 1/2)) —
-/// matches C's dxdx_MKS22KS bit-structure (truncated Pi², exact-π/2 cot).
+/// Metric flavor dθ/dx2 = (H0 π²/2) cot(πH0/2) sec²(H0 π (x2 − 1/2)) using
+/// the same exact π as the coco transform.
 pub fn mks2DThetaDx2Metric(x2: Dual3, h0: f64) Dual3 {
-    const u = x2.addc(-0.5).scale(h0 * pi_truncated);
+    const u = x2.addc(-0.5).scale(h0 * pi);
     const t = u.tan();
-    return t.sq().addc(1.0).scale(0.5 * h0 * pi_truncated * pi_truncated * mks2Cot(h0));
+    return t.sq().addc(1.0).scale(0.5 * h0 * pi * pi * mks2Cot(h0));
 }
 
 /// x2(θ) — inverse point transform (C: coco_KS2MKS2, exact-π literals).

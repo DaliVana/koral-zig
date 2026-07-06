@@ -8,9 +8,9 @@
 //!    `1./GGG*CCC*CCC/MASSCM/MASSCM`, while the ko.h *macros* parenthesize
 //!    differently — both shapes exist in the same C build and they differ
 //!    by ulps; opacities use the globals, the PR_KAPPAES hook the macros).
-//!  * fourpi = 4·Pi uses ko.h's truncated Pi (3.141592654) while
-//!    fourmpi = 4·M_PI is exact — the two-π split reaches the four-force:
-//!    the emission term is kappaGasAbs·fourpi·B with B = SIGMA_RAD/Pi·Te⁴.
+//!  * fourpi and fourmpi both use the same exact π, so the four-force
+//!    emission term is consistent: kappaGasAbs·fourpi·B with
+//!    B = SIGMA_RAD/Pi·Te⁴.
 //!  * Single-temperature gas (no EVOLVEELECTRONS): Te = Ti = Tgas, floored
 //!    at TEMPEMINIMAL = TEMPIMINIMAL = 1e2 (Tgas itself is NOT floored).
 
@@ -18,8 +18,8 @@ const std = @import("std");
 const units_mod = @import("../units.zig");
 const Units = units_mod.Units;
 
-/// ko.h:28 — the truncated Pi used throughout KORAL's own constants.
-pub const pi_truncated: f64 = 3.141592654;
+/// Exact π used throughout the port for a single consistent constant.
+const pi = std.math.pi;
 
 /// C: choices.h:441-457 (no PUFFY override).
 pub const tempeminimal: f64 = 1.0e2;
@@ -123,9 +123,9 @@ pub const Consts = struct {
             .sigma_rad_cgs = units_mod.SIGMA_RAD_CGS,
             .m_proton_cgs = units_mod.M_PROTON_CGS,
             .m_electr_cgs = units_mod.M_ELECTR_CGS,
-            .fourpi = 4.0 * pi_truncated,
-            .fourmpi = 4.0 * std.math.pi,
-            .sigma_rad_over_pi = sigma_rad / pi_truncated,
+            .fourpi = 4.0 * pi,
+            .fourmpi = 4.0 * pi,
+            .sigma_rad_over_pi = sigma_rad / pi,
             .four_sigmarad = four_sigmarad,
             .one_over_four_sigmarad = 1.0 / four_sigmarad,
             .k_over_mecsq = 1.69e-10,

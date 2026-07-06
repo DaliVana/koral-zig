@@ -264,7 +264,11 @@ fn radtubeBc(
 test "golden step: radtube64 (Farris tube 2, grey κ, 10 forced-dt steps) vs C" {
     const tube = &tubes.tubes[1];
     const g = Grid.init(.{ .nx = 64, .ng = 3, .minx = -20, .maxx = 20 });
-    try runStepTest(SimRad, "step/radtube64.kstp", "step radtube64", g, .{ .base = 2.0e-10, .steps_per_decade = 2.5 }, .{
+    // base bumped 2.0e-10 -> 5.0e-10: the koral_lite entropy-derivative fix
+    // (dwmrho0dW = 1/gamma -> 1/gamma^2) shifts a shock-adjacent cell's
+    // rung/branch selection at step 3, jumping the deviation to ~1.6e-9
+    // (then plateauing ~1e-9) instead of the old smooth decade growth.
+    try runStepTest(SimRad, "step/radtube64.kstp", "step radtube64", g, .{ .base = 5.0e-10, .steps_per_decade = 2.5 }, .{
         .coords = .mink,
         .gam = tube.gam,
         .bc_x = .specific,

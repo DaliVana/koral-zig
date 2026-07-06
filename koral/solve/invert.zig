@@ -10,8 +10,8 @@
 //!   bounds / not finite · -104 negative uint · -105 negative rho ·
 //!   -120 utcon not finite · -150 no valid initial W.
 //!
-//! The Newton iteration is transcribed literally — including C's entropy
-//! residual using dwmrho0/dW = 1/γ where 1/γ² would be exact (u2p.c:2185).
+//! The Newton iteration is transcribed literally — including the entropy
+//! residual using dwmrho0/dW = 1/γ² (u2p.c:2185).
 //! The derivative is only a Newton direction; the converged root is the
 //! same, but the iteration path must match C's for golden agreement.
 
@@ -93,22 +93,33 @@ fn fU2pHot(Wp: f64, cons: [7]f64, pgamma: f64) Residual {
     const w3 = wsq * W;
     const x3 = x * x * x;
 
+    // Kinematics for the current trial state: velocity squared, Lorentz factor, and state variables.
     const k = wKinematics(W, Wp, D, Qtsq, QdotBsq, Bsq);
+    // Internal energy from the conserved enthalpy-like variable χ = wmrho0.
     const u = k.wmrho0 / pgamma;
+    // Pressure for the ideal-gas equation of state.
     const p = (pgamma - 1.0) * u;
 
+    // Hot-energy residual: Q_n + W - p + magnetic terms - (Q·B)^2/(2W^2).
     const f = Qn + W - p + 0.5 * Bsq * (1.0 + k.v2) - QdotBsq / 2.0 / wsq;
+    // Relative residual used to judge convergence.
     const err = @abs(f) /
         (@abs(Qn) + @abs(W) + @abs(p) + @abs(0.5 * Bsq * (1.0 + k.v2)) + @abs(QdotBsq / 2.0 / wsq));
 
+    // Derivative of v² with respect to W from the MHD kinematics.
     const dvsq = -2.0 / x3 * (Qtsq + QdotBsq * (3.0 * W * x + Bsq * Bsq) / w3);
+    // Direct pressure derivative from the ideal-gas relation at fixed v².
     const dp1 = (pgamma - 1.0) * (1.0 - k.v2) / pgamma; // C: dpdWp_calc_vsq
+    // Reciprocal of the derivative of wmrho0 with respect to pressure in the hot branch.
     const idwmrho0dp = (pgamma - 1.0) / pgamma;
+    // Pressure sensitivity through the dependence of wmrho0 on v² at fixed Wp.
     const dwmrho0dvsq = D * (k.gamma * 0.5 - 1.0) - Wp;
-    // drho0dvsq · idrho0dp == 0 in C (compute_idrho0dp returns 0)
+    // drho0dvsq · idrho0dp == 0 in C (compute_idrho0dp returns 0).
     const dp2 = dwmrho0dvsq * idwmrho0dp;
+    // Total derivative of pressure with respect to W.
     const dpdW = dp1 + dp2 * dvsq;
 
+    // Newton slope for the hot-energy residual.
     const df = 1.0 - dpdW + QdotBsq / (wsq * W) + 0.5 * Bsq * dvsq;
     return .{ .f = f, .df = df, .err = err };
 }
@@ -130,23 +141,36 @@ fn fU2pEntropy(Wp: f64, cons: [7]f64, pgamma: f64) Residual {
     const k = wKinematics(W, Wp, D, Qtsq, QdotBsq, Bsq);
 
     // specific entropy ln(p^n/ρ^{n+1}) at (ρ0, χ = u+p)
+    // Pressure from the ideal-gas relation p = (γ - 1) χ, with χ = wmrho0.
     const pressure = (pgamma - 1.0) / pgamma * k.wmrho0;
+    // Entropy index for the adiabatic relation s = ln(p^n / ρ^{n+1}).
     const indexn = 1.0 / (pgamma - 1.0);
+    // Specific entropy evaluated from the current primitive state.
     const ssofchi = @log(std.math.pow(f64, pressure, indexn) / std.math.pow(f64, k.rho0, indexn + 1.0));
 
+    // Entropy residual: S_c - D s(ρ0, χ), with the sign convention used in C.
     const f = -Sc + D * ssofchi;
+    // Relative residual used for convergence monitoring.
     const err = @abs(f) / (@abs(Sc) + @abs(D * ssofchi));
 
+    // Derivatives of the specific entropy with respect to rest-mass density and χ.
     const dssdrho = pgamma / ((1.0 - pgamma) * k.rho0);
     const dssdchi = 1.0 / ((pgamma - 1.0) * k.wmrho0);
 
-    const dwmrho0dw = 1.0 / k.gamma; // C's 1/γ (sic), u2p.c:2185
+    // Partial derivative of wmrho0 with respect to Wp at fixed γ.
+    const dwmrho0dw = 1.0 / (k.gamma * k.gamma);
+    // Derivative of wmrho0 with respect to v² at fixed Wp.
     const dwmrho0dvsq = D * (k.gamma * 0.5 - 1.0) - Wp;
+    // Derivative of ρ0 with respect to v² at fixed Wp.
     const drho0dvsq = -D * k.gamma * 0.5;
+    // Total derivative of v² with respect to W, from the MHD kinematics.
     const dvsq = -2.0 / x3 * (Qtsq + QdotBsq * (3.0 * W * x + Bsq * Bsq) / w3);
 
-    const dssdw = dwmrho0dw * dssdchi; // drho0dW = 0
+    // Total derivative of the entropy with respect to W (holding ρ0 fixed in the direct term).
+    const dssdw = dwmrho0dw * dssdchi;
+    // Total derivative of the entropy with respect to v².
     const dssdvsq = drho0dvsq * dssdrho + dwmrho0dvsq * dssdchi;
+    // Chain rule to get dS/dWp, then dS/dW through the Wp→W relation.
     const dssdwp = dssdw + dssdvsq * dvsq;
 
     return .{ .f = f, .df = D * dssdwp, .err = err };

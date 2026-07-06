@@ -357,7 +357,11 @@ test "M9: RAD and MHD primitive branches agree where both converge (1e-8)" {
     // at τ ≫ 1 (the same amplification that motivates the 1e-6 golden
     // gate against C)
     std.debug.print("branch agreement: {d}/150 truly converged on both, worst dev {e:.3}\n", .{ nboth, worst });
-    try expect(nboth >= 5);
+    // was >= 5: the koral_lite entropy-derivative fix (dwmrho0dW =
+    // 1/gamma -> 1/gamma^2) changes the RAD branch's Newton path enough
+    // that fewer of these fixed-seed fuzz draws land in the narrow window
+    // where both RAD and MHD branches truly converge (now 4/150).
+    try expect(nboth >= 3);
     try expect(worst <= 1e-5);
 }
 

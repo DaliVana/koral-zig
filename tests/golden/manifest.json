@@ -2,7 +2,7 @@
   "koral_lite_sha": "87d73e5",
   "problem": [147, 200, 201, 202, 203, 204],
   "compiler": "Apple clang version 21.0.0 (clang-2100.0.123.102)",
-  "generated": "2026-07-06T11:04:16Z",
+  "generated": "2026-07-06T19:11:32Z",
   "files": {
     "metric/metric_points.kgld": "coords,x0..x3 -> gg16 GG16 gdet dlgdet3 Kr64 gttpert",
     "metric/coco_dxdx.kgld": "co1,co2,x0..x3 -> xout4 dxdx16",

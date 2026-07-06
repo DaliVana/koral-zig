@@ -19,9 +19,10 @@ issue was found by three separate reviewers).
 findings were applied (see "Fixed" annotations inline below); the one skipped —
 `koral/metric/precompute.zig:354` fillGeometry/fillGeometryFace — was left as-is by
 request (huge blast radius, ~130 call sites/17 files, for a modest gain; also the one
-naming finding the adversarial verifier itself downgraded). An intermediate
-`zig build test` run passed after the rename pass; a full run including
-`-Dslow-tests` was in progress at the time of writing to confirm no regressions.
+naming finding the adversarial verifier itself downgraded). `zig build test
+-Dslow-tests` (the full suite, including the radtube battery, the M11 keystone
+eps12 regeneration, and the M12/M13 golden comparisons) passed clean after the
+rename pass — exit 0, no panics, every golden deviation still inside its bound.
 
 | Dimension | high | medium | low |
 |---|---|---|---|

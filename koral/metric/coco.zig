@@ -105,8 +105,8 @@ pub fn dxdxKsToBl(x: [4]f64, mp: MetricParams) [4][4]f64 {
     return m;
 }
 
-/// C: dxdx_MKS22KS (metric.c:3689) — metric flavor (truncated Pi², see
-/// forms.zig). Input x in MKS2.
+/// C: dxdx_MKS22KS (metric.c:3689) — metric flavor using the same exact π
+/// as the coco transform. Input x in MKS2.
 pub fn dxdxMks2ToKs(x: [4]f64, mp: MetricParams) [4][4]f64 {
     const Dual3 = @import("../math/dual.zig").Dual3;
     var m = eye();
@@ -115,15 +115,15 @@ pub fn dxdxMks2ToKs(x: [4]f64, mp: MetricParams) [4][4]f64 {
     return m;
 }
 
-/// C: dxdx_KS2MKS2 (metric.c:3638) — exact-π literals inside, truncated Pi²
-/// in the denominator (C's mix, mirrored). Input x in KS.
+/// C: dxdx_KS2MKS2 (metric.c:3638) — unified exact π in both the transform
+/// and its Jacobian. Input x in KS.
 pub fn dxdxKsToMks2(x: [4]f64, mp: MetricParams) [4][4]f64 {
     const h0 = mp.mksh0;
     var m = eye();
     m[1][1] = 1.0 / (x[1] - mp.mksr0);
     // dx2/dθ = 2 tan(πH0/2) / (H0 Pi² (1 + v²)),  v = (2/π)(θ−π/2)·tan(πH0/2)
     const v = (2.0 / pi) * (x[2] - 0.5 * pi) * @tan(0.5 * pi * h0);
-    m[2][2] = 2.0 * @tan(0.5 * pi * h0) / (h0 * forms.pi_truncated * forms.pi_truncated * (1.0 + v * v));
+    m[2][2] = 2.0 * @tan(0.5 * pi * h0) / (h0 * pi * pi * (1.0 + v * v));
     return m;
 }
 

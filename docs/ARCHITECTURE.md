@@ -58,15 +58,7 @@ index-for-index and to a few ulps, against a C dump. Concretely:
   keeps it rather than "fixing" it, because fixing it would break the golden diff. A
   representative (non-exhaustive) list:
   - `Grid.xc` is the face average `0.5*(xl(i)+xl(i+1))`, *not* `minx+(i+0.5)*dx` — an
-    ulp-level match to C `set_grid`.
-  - MKS2 uses **two different values of π**: a truncated `Pi = 3.141592654` in the
-    Mathematica-exported metric/Christoffel/Jacobian expressions, and exact
-    `std.math.pi` in the coco point transforms. Metric-flavour θ and coco-flavour θ
-    disagree at ~1e-9 *on purpose*.
-  - `sigmaThompson()` uses the literal `0.665e-24` while the module also defines
-    `SIGMATH_CGS = 6.6524e-25` (different numbers) — a C inconsistency kept.
-  - The implicit solver's entropy residual uses `dwmrho0dw = 1/γ` where `1/γ²` would be
-    mathematically exact; the Newton *path* must match C.
+    ulp-level match to C `set_grid`. -Validated by DaliVana and keep it as is.
   - The radiation z-wavespeed limiter uses the *y* optical depth (`rv2z = rv2dim[1]`).
   - The tensor boosts have "dead-code" α-corrections in the ff→lab direction that C never
     actually applies, so lab↔ff boosts are not mutual inverses. Reproduced verbatim.
