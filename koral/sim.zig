@@ -45,9 +45,11 @@ const invert_rad = @import("solve/invert_rad.zig");
 const implicit = @import("solve/implicit.zig");
 const radiation = @import("physics/radiation.zig");
 const radforce = @import("physics/radforce.zig");
+const radvisc_mod = @import("physics/radvisc.zig");
 const p2u_mod = @import("p2u.zig");
 const laxf_mod = @import("flux/laxf.zig");
 const ct = @import("magn/ct.zig");
+const dynamo_mod = @import("magn/dynamo.zig");
 
 const Grid = grid_mod.Grid;
 const Geometry = geometry.Geometry;
@@ -223,6 +225,15 @@ pub fn Sim(comptime cfg: config.Config) type {
             correct_polaraxis: bool = false,
             /// C: NCCORRECTPOLAR (PUFFY: 2).
             nccorrectpolar: i64 = 2,
+            /// C: RADVISCOSITY==SHEARVISCOSITY (PUFFY define.h:96) — the
+            /// radiative shear-viscosity contribution to R^ij, computed once
+            /// per step (calc_Rij_visc_total) and added at the faces.
+            radviscosity: bool = false,
+            radvisc: radvisc_mod.Params = .{},
+            /// C: MIMICDYNAMO (PUFFY define.h:66) — the mean-field dynamo run
+            /// after each explicit sub-step (problem.c:210,326).
+            dynamo: bool = false,
+            dynamo_params: dynamo_mod.Params = .{},
             bc_x: BcKind = .copy,
             bc_y: BcKind = .copy,
             bc_z: BcKind = .copy,
@@ -270,6 +281,15 @@ pub fn Sim(comptime cfg: config.Config) type {
         // lives in slots B1..B3, the curl result in slots 1..3, coexisting).
         // Here: slots 0..2 = corner A_i, slots 3..5 = B^i.
         vecpot: field_mod.Field(6),
+
+        // C: Rijviscglobal — the per-cell viscous R^i_j (flattened i*4+j),
+        // filled once per step over the domain + one non-corner ghost ring.
+        rijvisc: field_mod.Field(16),
+
+        // C: ptemp1 — the dynamo's cell-centered ΔA_φ scratch (slot 2 = φ);
+        // and scaleth_otg — the per-radius density-weighted scale height.
+        dynA: field_mod.Field(3),
+        scaleth: []f64,
 
         t: f64 = 0,
         /// C: global_time — frozen at step start, used by set_bc.
@@ -331,6 +351,10 @@ pub fn Sim(comptime cfg: config.Config) type {
                 @memset(self.emf[c], 0);
             }
             self.vecpot = try field_mod.Field(6).init(a, g);
+            self.rijvisc = try field_mod.Field(16).init(a, g);
+            self.dynA = try field_mod.Field(3).init(a, g);
+            self.scaleth = try a.alloc(f64, g.nx);
+            @memset(self.scaleth, 0);
 
             // C: set_grid's min-size scan (finite.c:1946-1961), including its
             // quirk of comparing dy/dz against *mdx*.
@@ -379,6 +403,9 @@ pub fn Sim(comptime cfg: config.Config) type {
             a.free(self.flags);
             for (0..3) |c| a.free(self.emf[c]);
             self.vecpot.deinit();
+            self.rijvisc.deinit();
+            self.dynA.deinit();
+            a.free(self.scaleth);
             self.cache.deinit();
             self.* = undefined;
         }
@@ -394,7 +421,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub fn nzi(self: *const Self) i64 {
             return @intCast(self.grid.nz);
         }
-        fn nDim(self: *const Self, dim: usize) i64 {
+        pub fn nDim(self: *const Self, dim: usize) i64 {
             return switch (dim) {
                 0 => self.nxi(),
                 1 => self.nyi(),
@@ -1104,6 +1131,23 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// One direction of op_explicit's interpolation sweep
         /// (finite.c:708-1181): reconstruct cell → face states, floor them,
         /// compute one-sided fluxes, stash into pb/fl face arrays.
+        /// Face-averaged viscous R^i_j at the face (fx,fy,fz) in dimension
+        /// `dim` (between that cell and its dim−1 neighbour), C:
+        /// f_flux_prime_rad_total's ifacedim>−1 branch (rad.c:3782-3786).
+        fn rijviscFace(self: *const Self, dim: usize, fx: i64, fy: i64, fz: i64) [4][4]f64 {
+            var a: [16]f64 = undefined;
+            var b: [16]f64 = undefined;
+            self.rijvisc.load(fx, fy, fz, &a);
+            var c = [3]i64{ fx, fy, fz };
+            c[dim] -= 1;
+            self.rijvisc.load(c[0], c[1], c[2], &b);
+            var out: [4][4]f64 = undefined;
+            for (0..4) |i| {
+                for (0..4) |j| out[i][j] = 0.5 * (a[i * 4 + j] + b[i * 4 + j]);
+            }
+            return out;
+        }
+
         fn sweep(self: *Self, dim: usize) Error!void {
             const n = self.nDim(dim);
             if (n <= 1) return;
@@ -1168,6 +1212,11 @@ pub fn Sim(comptime cfg: config.Config) type {
                             const geom = self.cache.fillGeometryFace(cell[0], cell[1], cell[2], dim);
                             _ = try invert.checkFloorsMhd(cfg, &pl, &geom, self.opt.gam, self.opt.floors);
                             ffl = try flux_mod.fFluxPrime(cfg, pl, dim, &geom, self.opt.gam);
+                            // radiative viscosity: face i is between cells i−1 and i
+                            if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
+                                const rv = self.rijviscFace(dim, cell[0], cell[1], cell[2]);
+                                try radvisc_mod.addRadViscFlux(Self, self, &ffl, &pl, &geom, dim, &rv);
+                            }
                         }
                         if (dor) {
                             var cp = cell;
@@ -1175,6 +1224,11 @@ pub fn Sim(comptime cfg: config.Config) type {
                             const geom = self.cache.fillGeometryFace(cp[0], cp[1], cp[2], dim);
                             _ = try invert.checkFloorsMhd(cfg, &pr, &geom, self.opt.gam, self.opt.floors);
                             ffr = try flux_mod.fFluxPrime(cfg, pr, dim, &geom, self.opt.gam);
+                            // radiative viscosity: face i+1 is between cells i and i+1
+                            if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
+                                const rv = self.rijviscFace(dim, cp[0], cp[1], cp[2]);
+                                try radvisc_mod.addRadViscFlux(Self, self, &ffr, &pr, &geom, dim, &rv);
+                            }
                         }
 
                         // pbR[dim] at face i ← pl; pbL[dim] at face i+1 ← pr
@@ -1545,6 +1599,12 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.tstepdenmax = -1;
             self.tstepdenmin = big;
 
+            // C: calc_Rij_visc_total (problem.c:127) — once per step, with
+            // global_dt = this step's dt, feeding the RADVISCNUDAMP cap.
+            if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
+                try radvisc_mod.calcRijViscTotal(Self, self, dt);
+            }
+
             const gam_imex = 1.0 - 1.0 / @sqrt(2.0);
 
             // my_finger: PR_FINGER not defined for any target problem
@@ -1564,7 +1624,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             try self.doCorrect();
             try self.setBc(t, false);
             try self.opExplicit(t, dt); // F(U(1))
-            // apply_dynamo (M12), op_intermediate (electrons) — no-ops
+            if (self.opt.dynamo and comptime L.hasVar(.b1)) try dynamo_mod.applyDynamo(Self, self, t, dt);
+            // op_intermediate (electrons) — no-op
             self.copyEntropyCount();
             self.stageDeriv(&self.dut1, &self.u, &self.ut1, dt);
 
@@ -1586,6 +1647,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             try self.doCorrect();
             try self.setBc(t, false);
             try self.opExplicit(t, dt); // F(U(2))
+            if (self.opt.dynamo and comptime L.hasVar(.b1)) try dynamo_mod.applyDynamo(Self, self, t, dt);
             self.stageDeriv(&self.dut2, &self.u, &self.ut2, dt);
 
             // ---- explicit together: u = ut0 + dt/2·(dut1 + dut2) ----

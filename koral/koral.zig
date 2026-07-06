@@ -61,6 +61,7 @@ pub const physics = struct {
     pub const thermo = @import("physics/thermo.zig");
     pub const opacities = @import("physics/opacities.zig");
     pub const radforce = @import("physics/radforce.zig");
+    pub const radvisc = @import("physics/radvisc.zig");
 };
 
 pub const solve = struct {
@@ -80,6 +81,7 @@ pub const Sim = sim.Sim;
 
 pub const magn = struct {
     pub const ct = @import("magn/ct.zig");
+    pub const dynamo = @import("magn/dynamo.zig");
 };
 
 pub const problems = struct {
@@ -125,10 +127,12 @@ test {
     _ = physics.thermo;
     _ = physics.opacities;
     _ = physics.radforce;
+    _ = physics.radvisc;
     _ = recon;
     _ = riemann.laxf;
     _ = sim;
     _ = magn.ct;
+    _ = magn.dynamo;
     _ = solve.invert_rad;
     _ = solve.implicit;
     _ = @import("metric/tests.zig");
@@ -154,4 +158,8 @@ test {
     _ = @import("problems/puffy.zig");
     _ = @import("puffy_tests.zig");
     _ = @import("golden_puffy_test.zig");
+    _ = @import("golden_visc_test.zig");
+    _ = @import("dynamo_tests.zig");
+    _ = @import("golden_dynamo_test.zig");
+    _ = @import("radvisc_tests.zig");
 }

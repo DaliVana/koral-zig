@@ -217,5 +217,28 @@ natural conserved scale.
       epsrel-1e-12 attribution variant collapsing the torus deviation; the
       analytic atmosphere matches near machine precision (full cell-by-cell
       + attribution under -Dslow-tests)
-- [ ] M12 — dynamo + radiative viscosity + Comptonization
+- [x] M12 — dynamo + radiative viscosity + Comptonization.
+      **Radiative shear viscosity** (koral/physics/radvisc.zig, PUFFY's
+      RADVISCOSITY==SHEARVISCOSITY): calc_shear_lab (the lab-frame σ_ij from
+      the radiation-frame velocity field with Christoffel corrections + the
+      grid-corner-avoidance branches), calc_rad_visccoeff (ν = ALPHARADVISC·mfp
+      with the RADVISCMFPSPH spherical mfp limiter and the RADVISCNUDAMP
+      diffusion cap), R^ij_visc = −2 ν Ê σ^ij filled once per step
+      (calc_Rij_visc_total) and added at the faces with the RADVISCMAXVELDAMP
+      velocity cap (f_flux_prime_rad_total). **Mean-field dynamo**
+      (koral/magn/dynamo.zig, MIMICDYNAMO): the CALCHRONTHEGO density-weighted
+      scale height, the BL field-pitch angle, the ΔA_φ ∝ α_dyn·(dt/P_K)·B^φ
+      prescription with its ALPHAFLIPSSIGN equatorial flip, the DAMPBETA
+      azimuthal damping, and calc_BfromA of ΔA_φ superimposed on the poloidal
+      field (calc_BfromA refactored to curl any A-source). **Comptonization**
+      was already wired in M8/M9 (calc_Compt_Gi thermal G^t into the implicit
+      solver). Theory gates: the dampBphi formula (saturation below β_sat,
+      monotone damping + no-overshoot clamp above), the ΔA_φ equatorial
+      sign flip, dynamo divB-preservation (acts through A_φ), calcScaleHeight
+      vs a density-weighted RMS, and the RADVISCNUDAMP / RADVISCMAXVELDAMP caps.
+      C goldens (oracle/harness_visc.c + harness_dynamo.c, PUFFY t=0): the
+      shear σ^ij isolates the FD/Christoffel code (6.4e-8, MKS2 near-axis
+      floor), while ν, R^i_j and the dynamo B inherit C's qags kink error
+      through calc_chi / Ê (~1e-3, the M11 keystone story; a bug would show
+      far above it), under -Dslow-tests
 - [ ] M13 — full PUFFY

@@ -2,9 +2,10 @@
 //! `idim` (C: f_flux_prime, physics.c:1167 + f_flux_prime_rad, rad.c:3858).
 //!
 //! The energy flux uses the same cancellation-free utp1 assembly as p2u.
-//! The radiative rows are the pure M1 tensor for now — the shear-viscosity
-//! correction (Rijvisc, PUFFY's RADVISCOSITY) is added in M12 and is zero
-//! at t=0 / in these kernels' golden records.
+//! The radiative rows here are the pure M1 tensor; PUFFY's shear-viscosity
+//! correction (Rijvisc) is added on top at the faces by the sweep
+//! (sim.rijviscFace + radvisc.addRadViscFlux, M12), so it is absent from
+//! this function's golden records (harness_flux zeroes Rijviscglobal).
 
 const std = @import("std");
 const relele = @import("../relele.zig");

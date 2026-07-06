@@ -116,6 +116,8 @@ build_harness puffy harness_rad
 build_harness puffy harness_opac
 build_harness puffy harness_implicit
 build_harness puffy harness_init
+build_harness puffy harness_visc
+build_harness puffy harness_dynamo
 
 echo "== [puffy] running harnesses"
 mkdir -p "$ROOT/tests/golden/metric" "$ROOT/tests/golden/state" "$ROOT/tests/golden/flux" "$ROOT/tests/golden/rad" "$ROOT/tests/golden/init"
@@ -134,6 +136,17 @@ echo "== [puffy] running harness_init (keystone t=0)"
 for kf in puffy_t0_A puffy_t0_p puffy_t0_pfinal; do
   gzip -9 -f "$ROOT/tests/golden/init/$kf.kini"
 done
+
+# ---- PUFFY radiative shear-viscosity tensor (M12) --------------------------
+echo "== [puffy] running harness_visc (radviscosity R^i_j + shear at t=0)"
+./harness_visc "$ROOT/tests/golden/init"
+gzip -9 -f "$ROOT/tests/golden/init/puffy_visc.kini"
+gzip -9 -f "$ROOT/tests/golden/init/puffy_shear.kini"
+
+# ---- PUFFY dynamo (M12): apply_dynamo on injected toroidal field ----------
+echo "== [puffy] running harness_dynamo (mimic_dynamo on B³=10·B²)"
+./harness_dynamo "$ROOT/tests/golden/init"
+gzip -9 -f "$ROOT/tests/golden/init/puffy_dynamo.kini"
 
 # ---- PUFFY t=0 epsrel-1e-12 variant (isolates C's qags tolerance) ----------
 # same problem, but tools.c qags epsrel tightened 1e-8 -> 1e-12; only the
@@ -227,7 +240,10 @@ cat > "$ROOT/tests/golden/manifest.json" <<EOF
     "init/puffy_t0_A.kini.gz": "PUFFY (147) t=0 keystone snapshot 0: A_phi in B slots after set_bc, full 384x360 + ghosts",
     "init/puffy_t0_p.kini.gz": "PUFFY (147) t=0 keystone snapshot 1: all 13 primitives after calc_BfromA + set_bc, full grid + ghosts",
     "init/puffy_t0_pfinal.kini.gz": "PUFFY (147) t=0 keystone snapshot 2: beta-normalized B slots (domain scaled, ghosts stale)",
-    "init/puffy_t0_eps12.kini.gz": "PUFFY (147) t=0 with qags epsrel 1e-12: stride-4 domain, all 13 prims (quadrature attribution)"
+    "init/puffy_t0_eps12.kini.gz": "PUFFY (147) t=0 with qags epsrel 1e-12: stride-4 domain, all 13 prims (quadrature attribution)",
+    "init/puffy_visc.kini.gz": "PUFFY (147) t=0 viscous R^i_j (calc_Rij_visc_total, global_dt=1): 16 tensor comps, domain + 1 ghost ring",
+    "init/puffy_shear.kini.gz": "PUFFY (147) t=0 shear sigma^ij + nu (calc_rad_shearviscosity): 17 comps, domain + 1 ghost ring (isolates FD/Christoffel + calc_chi)",
+    "init/puffy_dynamo.kini.gz": "PUFFY (147) apply_dynamo on injected B³=10·B² (dt=10): B1,B2,B3 over the domain (scaleth + field-angle + ΔA_φ + calc_BfromA + DAMPBETA)"
   }
 }
 EOF

@@ -145,46 +145,14 @@ pub fn calcBfromA(comptime SimT: type, sim: *SimT, ifoverwrite: bool) relele.Err
     const ny = sim.nyi();
     const nz = sim.nzi();
 
-    // corner A_i ← average of the neighboring cell centers (magn.c:499-515)
-    var iz: i64 = 0;
-    while (iz <= nz) : (iz += 1) {
-        var iy: i64 = 0;
-        while (iy <= ny) : (iy += 1) {
-            var ix: i64 = 0;
-            while (ix <= nx) : (ix += 1) {
-                if (nz == 1 and iz > 0) continue;
-                if (ny == 1 and iy > 0) continue;
-
-                for (0..3) |iv| {
-                    const c = b1 + iv;
-                    var a_val: f64 = undefined;
-                    if (ny == 1 and nz == 1) {
-                        a_val = 1.0 / 2.0 * (sim.p.get(c, ix, iy, iz) + sim.p.get(c, ix - 1, iy, iz));
-                    } else if (ny > 1 and nz == 1) {
-                        a_val = 1.0 / 4.0 * (sim.p.get(c, ix, iy, iz) + sim.p.get(c, ix, iy - 1, iz) +
-                            sim.p.get(c, ix - 1, iy, iz) + sim.p.get(c, ix - 1, iy - 1, iz));
-                    } else if (nz > 1 and ny == 1) {
-                        a_val = 1.0 / 4.0 * (sim.p.get(c, ix, iy, iz) + sim.p.get(c, ix, iy, iz - 1) +
-                            sim.p.get(c, ix - 1, iy, iz) + sim.p.get(c, ix - 1, iy, iz - 1));
-                    } else {
-                        a_val = 1.0 / 8.0 * (sim.p.get(c, ix, iy, iz) + sim.p.get(c, ix, iy - 1, iz) +
-                            sim.p.get(c, ix - 1, iy, iz) + sim.p.get(c, ix - 1, iy - 1, iz) +
-                            sim.p.get(c, ix, iy, iz - 1) + sim.p.get(c, ix, iy - 1, iz - 1) +
-                            sim.p.get(c, ix - 1, iy, iz - 1) + sim.p.get(c, ix - 1, iy - 1, iz - 1));
-                    }
-                    sim.vecpot.set(iv, ix, iy, iz, a_val);
-                }
-            }
-        }
-    }
-
+    cornerAverageA(SimT, sim, &sim.p, b1);
     calcBfromACore(SimT, sim);
 
     if (ifoverwrite) {
         const ngx: i64 = @intCast(sim.grid.ngx);
         const ngy: i64 = @intCast(sim.grid.ngy);
         const ngz: i64 = @intCast(sim.grid.ngz);
-        iz = -ngz;
+        var iz: i64 = -ngz;
         while (iz < nz + ngz) : (iz += 1) {
             var iy: i64 = -ngy;
             while (iy < ny + ngy) : (iy += 1) {
@@ -203,6 +171,57 @@ pub fn calcBfromA(comptime SimT: type, sim: *SimT, ifoverwrite: bool) relele.Err
             }
         }
     }
+}
+
+/// Corner-averaged vector potential (magn.c:499-515): A_i at each corner is
+/// the average of the surrounding cell-centered A_i, read from `src` slots
+/// [base, base+1, base+2] and written into vecpot 0..2. `src` is any Field on
+/// the same grid — sim.p (B slots) for calc_BfromA, the dynamo scratch for
+/// mimic_dynamo. Exposed via pub so the dynamo can reuse the curl.
+pub fn cornerAverageA(comptime SimT: type, sim: *SimT, src: anytype, base: usize) void {
+    const nx = sim.nxi();
+    const ny = sim.nyi();
+    const nz = sim.nzi();
+
+    var iz: i64 = 0;
+    while (iz <= nz) : (iz += 1) {
+        var iy: i64 = 0;
+        while (iy <= ny) : (iy += 1) {
+            var ix: i64 = 0;
+            while (ix <= nx) : (ix += 1) {
+                if (nz == 1 and iz > 0) continue;
+                if (ny == 1 and iy > 0) continue;
+
+                for (0..3) |iv| {
+                    const c = base + iv;
+                    var a_val: f64 = undefined;
+                    if (ny == 1 and nz == 1) {
+                        a_val = 1.0 / 2.0 * (src.get(c, ix, iy, iz) + src.get(c, ix - 1, iy, iz));
+                    } else if (ny > 1 and nz == 1) {
+                        a_val = 1.0 / 4.0 * (src.get(c, ix, iy, iz) + src.get(c, ix, iy - 1, iz) +
+                            src.get(c, ix - 1, iy, iz) + src.get(c, ix - 1, iy - 1, iz));
+                    } else if (nz > 1 and ny == 1) {
+                        a_val = 1.0 / 4.0 * (src.get(c, ix, iy, iz) + src.get(c, ix, iy, iz - 1) +
+                            src.get(c, ix - 1, iy, iz) + src.get(c, ix - 1, iy, iz - 1));
+                    } else {
+                        a_val = 1.0 / 8.0 * (src.get(c, ix, iy, iz) + src.get(c, ix, iy - 1, iz) +
+                            src.get(c, ix - 1, iy, iz) + src.get(c, ix - 1, iy - 1, iz) +
+                            src.get(c, ix, iy, iz - 1) + src.get(c, ix, iy - 1, iz - 1) +
+                            src.get(c, ix - 1, iy, iz - 1) + src.get(c, ix - 1, iy - 1, iz - 1));
+                    }
+                    sim.vecpot.set(iv, ix, iy, iz, a_val);
+                }
+            }
+        }
+    }
+}
+
+/// Curl of a cell-centered vector potential held in `src` slots
+/// [base..base+2]: corner-average then curl, leaving B^i in vecpot 3..5
+/// (C: calc_BfromA(pinput, 0) — the ifoverwrite==0 path the dynamo uses).
+pub fn curlFromA(comptime SimT: type, sim: *SimT, src: anytype, base: usize) void {
+    cornerAverageA(SimT, sim, src, base);
+    calcBfromACore(SimT, sim);
 }
 
 /// C: calc_BfromA_core (magn.c:568) — curl of the corner A over the domain,
