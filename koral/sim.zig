@@ -53,6 +53,7 @@ const dynamo_mod = @import("magn/dynamo.zig");
 const storage = @import("sim/storage.zig");
 const bc = @import("sim/bc.zig");
 const threading = @import("sim/threading.zig");
+const timers_mod = @import("sim/timers.zig");
 
 const Grid = grid_mod.Grid;
 const Geometry = geometry.Geometry;
@@ -62,13 +63,15 @@ pub const Error = relele.Error || error{OutOfMemory};
 const big: f64 = 1.0e50; // C: BIG (ko.h) — only compared against, value moot
 
 // Storage & bookkeeping (face buffers, integer-flag / scalar-slot enums) live
-// in sim/storage.zig; the boundary-condition enums + logic in sim/bc.zig.
-// Re-exported here so external code keeps referencing them as sim.BcFace /
-// sim.Flag / sim.FaceStore.
+// in sim/storage.zig; the boundary-condition enums + logic in sim/bc.zig;
+// the per-pass wall-clock instrumentation (P0 of the parallelization plan)
+// in sim/timers.zig. Re-exported here so external code keeps referencing
+// them as sim.BcFace / sim.Flag / sim.FaceStore / sim.PassTimers.
 pub const BcKind = bc.BcKind;
 pub const BcFace = bc.BcFace;
 pub const FaceStore = storage.FaceStore;
 pub const Flag = storage.Flag;
+pub const PassTimers = timers_mod.PassTimers;
 const n_flags = storage.n_flags;
 const Scal = storage.Scal;
 const n_scal = storage.n_scal;
@@ -220,6 +223,9 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// (the per-cell inversions are independent, so this is set once per
         /// pass and read by every worker row).
         impl_dt: f64 = 0,
+        /// P0 per-pass wall-clock instrumentation (sim/timers.zig) — always
+        /// accumulating; the driver prints/resets it at its output cadence.
+        timers: timers_mod.PassTimers = .{},
 
         pub fn init(allocator: std.mem.Allocator, g: Grid, opt: Options) !Self {
             var self: Self = undefined;
@@ -235,6 +241,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.nstep = 0;
             self.n_radimp_failures = 0;
             self.n_radimp_iters = 0;
+            self.impl_dt = 0;
+            self.timers = .{};
 
             self.cache = try precompute.MetricCache.init(allocator, g, .{
                 .coords = opt.coords,
@@ -449,6 +457,8 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// corner filling, and the MPI-growth seam) lives in sim/bc.zig; this
         /// is the stable method entry point that problems/tests call.
         pub fn setBc(self: *Self, t: f64, ifinit: bool) Error!void {
+            self.timers.begin(.bc);
+            defer self.timers.end();
             return bc.setBc(Self, self, t, ifinit);
         }
 
@@ -457,6 +467,8 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         /// C: calc_wavespeeds (finite.c:356) over domain + 1 ghost layer.
         pub fn calcWavespeeds(self: *Self) Error!void {
+            self.timers.begin(.wavespeeds);
+            defer self.timers.end();
             const active_dims = [3]bool{ self.grid.nx > 1, self.grid.ny > 1, self.grid.nz > 1 };
             const lx: i64 = if (active_dims[0]) 1 else 0;
             const ly: i64 = if (active_dims[1]) 1 else 0;
@@ -600,6 +612,8 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// row-parallel; the neighbour-averaging fixup and BC refresh stay
         /// serial (they read across rows).
         pub fn calcU2p(self: *Self) Error!void {
+            self.timers.begin(.u2p);
+            defer self.timers.end();
             try threading.parallelRows(Self, self, u2pRowsWorker);
 
             try self.cellFixup(.hd_fixup);
@@ -686,6 +700,8 @@ pub fn Sim(comptime cfg: config.Config) type {
                 else => @compileError("cellFixup: bad type"),
             };
             if (!enabled) return;
+            self.timers.begin(.fixup);
+            defer self.timers.end();
 
             @memcpy(self.u_bak.data, self.u.data);
             @memcpy(self.p_bak.data, self.p.data);
@@ -838,6 +854,8 @@ pub fn Sim(comptime cfg: config.Config) type {
         fn sweep(self: *Self, dim: usize) Error!void {
             const n = self.nDim(dim);
             if (n <= 1) return;
+            self.timers.begin(.sweep);
+            defer self.timers.end();
             const cross = switch (dim) {
                 0 => [2]usize{ 1, 2 },
                 1 => [2]usize{ 0, 2 },
@@ -934,6 +952,8 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// combine the one-sided fluxes with LAXF or HLL using the saved
         /// cell wavespeeds. Hydro and radiation rows use separate speeds.
         fn fluxesAtFaces(self: *Self) Error!void {
+            self.timers.begin(.fluxes);
+            defer self.timers.end();
             for (0..3) |d| self.flb[d].zero();
 
             for (0..3) |dim| {
@@ -1029,33 +1049,39 @@ pub fn Sim(comptime cfg: config.Config) type {
             try self.fluxesAtFaces();
 
             if (comptime cfg.has(.mhd)) {
+                self.timers.begin(.fluxct);
+                defer self.timers.end();
                 ct.fluxCt(Self, self);
             }
 
             // conserved update: du from flux divergence + source terms
-            var iz: i64 = 0;
-            while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = 0;
-                while (iy < self.nyi()) : (iy += 1) {
-                    var ix: i64 = 0;
-                    while (ix < self.nxi()) : (ix += 1) {
-                        const ms = try self.metricSource(ix, iy, iz);
-                        const dx = self.grid.cellSize(ix, 0);
-                        const dy = self.grid.cellSize(iy, 1);
-                        const dz = self.grid.cellSize(iz, 2);
-                        const dt = dtin;
+            {
+                self.timers.begin(.update);
+                defer self.timers.end();
+                var iz: i64 = 0;
+                while (iz < self.nzi()) : (iz += 1) {
+                    var iy: i64 = 0;
+                    while (iy < self.nyi()) : (iy += 1) {
+                        var ix: i64 = 0;
+                        while (ix < self.nxi()) : (ix += 1) {
+                            const ms = try self.metricSource(ix, iy, iz);
+                            const dx = self.grid.cellSize(ix, 0);
+                            const dy = self.grid.cellSize(iy, 1);
+                            const dz = self.grid.cellSize(iz, 2);
+                            const dt = dtin;
 
-                        for (0..NV) |iv| {
-                            const flxl = self.flb[0].get(iv, ix, iy, iz);
-                            const flxr = self.flb[0].get(iv, ix + 1, iy, iz);
-                            const flyl = self.flb[1].get(iv, ix, iy, iz);
-                            const flyr = self.flb[1].get(iv, ix, iy + 1, iz);
-                            const flzl = self.flb[2].get(iv, ix, iy, iz);
-                            const flzr = self.flb[2].get(iv, ix, iy, iz + 1);
+                            for (0..NV) |iv| {
+                                const flxl = self.flb[0].get(iv, ix, iy, iz);
+                                const flxr = self.flb[0].get(iv, ix + 1, iy, iz);
+                                const flyl = self.flb[1].get(iv, ix, iy, iz);
+                                const flyr = self.flb[1].get(iv, ix, iy + 1, iz);
+                                const flzl = self.flb[2].get(iv, ix, iy, iz);
+                                const flzr = self.flb[2].get(iv, ix, iy, iz + 1);
 
-                            const du = -(flxr - flxl) * dt / dx - (flyr - flyl) * dt / dy - (flzr - flzl) * dt / dz;
-                            const val = self.u.get(iv, ix, iy, iz) + du + ms[iv] * dt;
-                            self.u.set(iv, ix, iy, iz, val);
+                                const du = -(flxr - flxl) * dt / dx - (flyr - flyl) * dt / dy - (flzr - flzl) * dt / dz;
+                                const val = self.u.get(iv, ix, iy, iz) + du + ms[iv] * dt;
+                                self.u.set(iv, ix, iy, iz, val);
+                            }
                         }
                     }
                 }
@@ -1069,12 +1095,16 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         // ---- stage arithmetic (exact C expression shapes) ------------------------
 
-        fn copyFull(dst: *FieldT, src: *const FieldT) void {
+        fn copyFull(self: *Self, dst: *FieldT, src: *const FieldT) void {
+            self.timers.begin(.stage);
+            defer self.timers.end();
             @memcpy(dst.data, src.data);
         }
 
         /// dst = (1/Δ)·a + (−1/Δ)·b over the domain (problem.c:181/230/…).
         fn stageDeriv(self: *Self, dst: *FieldT, a_f: *const FieldT, b_f: *const FieldT, delta: f64) void {
+            self.timers.begin(.stage);
+            defer self.timers.end();
             const f1 = 1.0 / delta;
             const f2 = -1.0 / delta;
             var iz: i64 = 0;
@@ -1093,6 +1123,8 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         /// dst = a + f1·b + f2·c over the domain (problem.c:243/357).
         fn stageCombine(self: *Self, dst: *FieldT, a_f: *const FieldT, f1: f64, b_f: *const FieldT, f2: f64, c_f: *const FieldT) void {
+            self.timers.begin(.stage);
+            defer self.timers.end();
             var iz: i64 = 0;
             while (iz < self.nzi()) : (iz += 1) {
                 var iy: i64 = 0;
@@ -1125,6 +1157,8 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// C: update_entropy (u2p.c:2257) — recompute S(ρ,u) and refresh the
         /// MHD conserveds.
         pub fn updateEntropy(self: *Self) Error!void {
+            self.timers.begin(.entropy);
+            defer self.timers.end();
             var iz: i64 = 0;
             while (iz < self.nzi()) : (iz += 1) {
                 var iy: i64 = 0;
@@ -1155,6 +1189,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             if (comptime !L.hasVar(.ee)) return;
             _ = self.opt.opac orelse return;
 
+            self.timers.begin(.implicit);
+            defer self.timers.end();
             self.impl_dt = dtin; // read by every worker row (single pass)
             try threading.parallelRows(Self, self, implicitRowsWorker);
 
@@ -1205,7 +1241,11 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// C: do_correct (finite.c:594) — CORRECT_POLARAXIS only; the 3D /
         /// smoothing / NS-surface variants are not PUFFY machinery.
         pub fn doCorrect(self: *Self) Error!void {
-            if (self.opt.correct_polaraxis) try self.correctPolaraxis();
+            if (self.opt.correct_polaraxis) {
+                self.timers.begin(.correct);
+                defer self.timers.end();
+                try self.correctPolaraxis();
+            }
         }
 
         /// C: correct_polaraxis (finite.c:5525) — the NCCORRECTPOLAR
@@ -1285,6 +1325,9 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub fn step(self: *Self, forced_dt: ?f64) Error!void {
             comptime std.debug.assert(cfg.timestepping == .rk2imex);
 
+            self.timers.begin(.step);
+            defer self.timers.end();
+
             const t = self.t;
             self.time = t; // C: global_time = t
 
@@ -1299,6 +1342,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             // C: calc_Rij_visc_total (problem.c:127) — once per step, with
             // global_dt = this step's dt, feeding the RADVISCNUDAMP cap.
             if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
+                self.timers.begin(.radvisc);
+                defer self.timers.end();
                 try radvisc_mod.calcRijViscTotal(Self, self, dt);
             }
 
@@ -1309,19 +1354,23 @@ pub fn Sim(comptime cfg: config.Config) type {
             // set_gammagas: CONSISTENTGAMMA off
 
             // ---- 1st implicit ----
-            copyFull(&self.ut0, &self.u);
-            copyFull(&self.ptm1, &self.p);
+            self.copyFull(&self.ut0, &self.u);
+            self.copyFull(&self.ptm1, &self.p);
             try self.opImplicit(t, dt * gam_imex); // U(1)
-            copyFull(&self.ppostimplicit, &self.p);
+            self.copyFull(&self.ppostimplicit, &self.p);
             self.stageDeriv(&self.drt1, &self.u, &self.ut0, dt * gam_imex);
 
             // ---- 1st explicit ----
-            copyFull(&self.ut1, &self.u);
+            self.copyFull(&self.ut1, &self.u);
             try self.calcU2p();
             try self.doCorrect();
             try self.setBc(t, false);
             try self.opExplicit(t, dt); // F(U(1))
-            if (self.opt.dynamo and comptime L.hasVar(.b1)) try dynamo_mod.applyDynamo(Self, self, t, dt);
+            if (self.opt.dynamo and comptime L.hasVar(.b1)) {
+                self.timers.begin(.dynamo);
+                defer self.timers.end();
+                try dynamo_mod.applyDynamo(Self, self, t, dt);
+            }
             // op_intermediate (electrons) — no-op
             self.copyEntropyCount();
             self.stageDeriv(&self.dut1, &self.u, &self.ut1, dt);
@@ -1330,21 +1379,25 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.stageCombine(&self.u, &self.ut0, dt, &self.dut1, dt * (1.0 - 2.0 * gam_imex), &self.drt1);
 
             // ---- 2nd implicit ----
-            copyFull(&self.uforget, &self.u);
+            self.copyFull(&self.uforget, &self.u);
             try self.calcU2p();
-            copyFull(&self.ptm1, &self.p);
+            self.copyFull(&self.ptm1, &self.p);
             try self.doCorrect();
             try self.opImplicit(t, gam_imex * dt); // U(2)
-            copyFull(&self.ppostimplicit, &self.p);
+            self.copyFull(&self.ppostimplicit, &self.p);
             self.stageDeriv(&self.drt2, &self.u, &self.uforget, dt * gam_imex);
 
             // ---- 2nd explicit ----
-            copyFull(&self.ut2, &self.u);
+            self.copyFull(&self.ut2, &self.u);
             try self.calcU2p();
             try self.doCorrect();
             try self.setBc(t, false);
             try self.opExplicit(t, dt); // F(U(2))
-            if (self.opt.dynamo and comptime L.hasVar(.b1)) try dynamo_mod.applyDynamo(Self, self, t, dt);
+            if (self.opt.dynamo and comptime L.hasVar(.b1)) {
+                self.timers.begin(.dynamo);
+                defer self.timers.end();
+                try dynamo_mod.applyDynamo(Self, self, t, dt);
+            }
             self.stageDeriv(&self.dut2, &self.u, &self.ut2, dt);
 
             // ---- explicit together: u = ut0 + dt/2·(dut1 + dut2) ----
@@ -1366,4 +1419,5 @@ pub fn Sim(comptime cfg: config.Config) type {
 
 test {
     _ = FaceStore(5);
+    _ = timers_mod;
 }

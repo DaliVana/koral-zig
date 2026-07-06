@@ -172,6 +172,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // ---- RK2IMEX time loop -------------------------------------------------
+    s.timers.reset(); // drop init-time bc/u2p/wavespeed samples
     while (s.t < p.tmax and s.nstep < p.nstep_max) {
         var dt = 1.0 / s.tstepdenmax; // CFL dt from the previous step's speeds
         if (s.t + dt > p.tmax) dt = p.tmax - s.t;
@@ -190,6 +191,10 @@ pub fn main(init: std.process.Init) !void {
                 "puffy: t={d:.2} nstep={d} dt={e:.3} | Ṁ={e:.3} L={e:.3} H/R={d:.3} β⁻¹={e:.3} | nan={d} hdfix={d} radimpfail={d}\n",
                 .{ s.t, s.nstep, dt, row.mdot, row.radlum, row.scaleheight, row.max_pmag_ptot, row.n_nan, row.n_hd_fixup, row.n_radimp_fail },
             );
+            // P0 (parallelization plan §7): per-pass wall-clock table for
+            // the steps since the previous output row.
+            s.timers.printReport();
+            s.timers.reset();
             if (row.n_nan > 0) {
                 std.debug.print("puffy: NaN detected — aborting\n", .{});
                 return;

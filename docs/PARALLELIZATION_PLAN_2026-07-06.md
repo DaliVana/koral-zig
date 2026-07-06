@@ -18,7 +18,7 @@ Recommended order: **instrument → thread everything → memory diet → SIMD �
 
 ## 1. Where the time goes — one RK2IMEX step today
 
-`step()` (`sim.zig:1667`) per-pass inventory. "Threaded" = runs under `parallelRows` (`sim.zig:937`), which spawns and joins up to `min(nthreads, 64, ny)` OS threads *per invocation*.
+`step()` (`sim.zig:1667`) per-pass inventory. "Threaded" = runs under `parallelRows` (`sim.zig:937`), which spawns and joins up to `min(nthreads, 64, ny)` OS threads *per invocation*. **Measured wall-clock per pass now in §7.2** (P0 done) — headline: implicit 45%, dynamo 28% of the serial step.
 
 | # | Pass | Where | Calls/step | Threaded | Character |
 |---|------|-------|-----------|----------|-----------|
@@ -179,7 +179,7 @@ Post halo `Isend/Irecv`, sweep interior tiles, `Waitall`, sweep the boundary she
 
 | Phase | Work | Payoff | Risk |
 |-------|------|--------|------|
-| **P0** | Per-pass wall-clock instrumentation (cheap timers around each §1 pass, printed with the scalar cadence) | Replaces the assumptions in this doc with measurements; sizes P1–P4 | none |
+| **P0** | Per-pass wall-clock instrumentation (cheap timers around each §1 pass, printed with the scalar cadence) — **DONE 2026-07-06**, see §7.2 | Replaces the assumptions in this doc with measurements; sizes P1–P4 → **headline: the dynamo is the #2 serial cost (28%) and the #1 cost once inversions are threaded (50%)** | none |
 | **P1** | Persistent worker team; thread all §1 passes; dynamic tiles; per-tile reductions; false-sharing fixes; NUMA first-touch + pinning | The big one: unlocks 64-core nodes; expect ~order-of-magnitude on today's serial share | Barrier bugs → caught by the existing bitwise threading test, extended to every pass |
 | **P2** | Memory diet: dead fields + dead Jacobian arrays out; fuse/swap stage arithmetic; axisymmetric metric-cache indexing (3D-critical) | Raises the bandwidth ceiling P1 will hit; −50%+ step traffic | Low; golden-checked deletions |
 | **P3a** | `comptime T`-generic residual chain + implicit FD-Jacobian lane vectorization (§2.3 #1) — **DONE 2026-07-06**, see §7.1 | ~2–3× on the dominant solver, on any CPU, no layout change → **measured 1.16× solve-level on NEON** (see §7.1 for why) | Moderate: needs the opacity/RadState chain generic over T |
@@ -235,6 +235,82 @@ not part of P3a.
 Side-finding: PUFFY's `RADIMP_START_WITH_BISECT` pays for itself — the
 battery runs 84 μs/solve with the bisect vs 113 μs without (the better
 starting guess saves more Newton iterations than the bisect costs).
+
+### 7.2 P0 results (implemented & measured 2026-07-06)
+
+**Implementation.** `koral/sim/timers.zig` — `PassTimers`, one bucket per
+§1 pass, with *self-time* attribution: `begin()/end()` keep a small pass
+stack and charge elapsed time to the innermost active pass, so nested
+timed calls (op_implicit → cell_fixup, apply_dynamo → set_bc/calc_u2p,
+op_explicit → everything) never double-count and the buckets sum exactly
+to the wall time inside `step()`. Always on (~60 begin/end pairs per
+step, one monotonic clock read each — µs against a multi-second step; no
+FP effect, so goldens/threading bit-identity untouched; attribution unit-
+tested with synthetic timestamps). The PUFFY driver prints the table at
+each scalar cadence and resets, so every report covers the interval since
+the previous row. The untimed remainder (`save_timesteps`,
+`copy_entropycount`, inter-pass gaps) prints as `(other)` — measured
+0.05%, i.e. the §1 inventory covers the step.
+
+**Measurement.** PUFFY 384×360 (production 2D), ReleaseFast, Apple
+M-series (12 cores), first 20 steps from t=0 (dt at the CFL value
+3.5e-3 by step 2; flat-`iy`-band row threading = today's `parallelRows`):
+
+| Pass (§1 row) | serial ms/step | % | 10-thread ms/step | % | speedup |
+|---|---|---|---|---|---|
+| opImplicit (1) | 1152.1 | 45.0 | 155.3 | 10.7 | 7.4× |
+| **applyDynamo (11)** | **723.5** | **28.2** | **724.0** | **50.0** | 1× |
+| sweep (7) | 196.4 | 7.7 | 198.8 | 13.7 | 1× |
+| calcU2p (2) | 145.2 | 5.7 | 25.9 | 1.8 | 5.6× |
+| setBc (4) | 72.9 | 2.8 | 73.2 | 5.1 | 1× |
+| calcWavespeeds (6) | 68.3 | 2.7 | 68.8 | 4.7 | 1× |
+| fluxesAtFaces (8) | 68.1 | 2.7 | 68.2 | 4.7 | 1× |
+| radvisc (0) | 50.6 | 2.0 | 50.9 | 3.5 | 1× |
+| conserved update (10) | 32.7 | 1.3 | 32.0 | 2.2 | 1× |
+| stage arithmetic (12) | 28.7 | 1.1 | 28.5 | 2.0 | 1× |
+| cellFixup (3) | 7.9 | 0.3 | 7.9 | 0.5 | 1× |
+| updateEntropy (13) | 8.4 | 0.3 | 8.5 | 0.6 | 1× |
+| fluxCt (9) | 5.1 | 0.2 | 5.1 | 0.4 | 1× |
+| doCorrect (5) | 0.3 | 0.0 | 0.3 | 0.0 | 1× |
+| (other) | 1.2 | 0.0 | 1.2 | 0.1 | — |
+| **whole step** | **2561** | 100 | **1449** | 100 | **1.77×** |
+
+**What the measurements confirm.** The implicit solver is the dominant
+serial pass at 45% — the §1 "~50–60%" ballpark, at a t≈0 state (expect it
+to grow as MRI turbulence stiffens the torus). Whole-step speedup from
+threading only the two inversion passes is 1.77× at 10 threads — the
+Amdahl cap §3.1 predicted. Per-cell implicit cost averages 4.2 µs/cell
+here vs 73 µs/solve on the (torus-cell) M9 battery — a ~17× spread
+between floor/funnel and torus cells, which is the §3.1-3 imbalance
+argument, quantified. The serial tails the plan proposed to leave for
+last (fixup, entropy, fluxct, correct, stage, update) total ~6% — 
+correctly deprioritized.
+
+**What they refute: `apply_dynamo` is the plan's biggest miss.** §1
+listed it as a minor pass; measured, its *self* cost (scale-height +
+mimic ΔA_φ + curl + superpose-p2u, excluding its nested set_bc/calc_u2p
+which are attributed to their own rows) is 723 ms/step — 28% serial, and
+**50% of the whole step once the inversions are threaded**. It runs twice
+per step over domain+1-ring doing per-cell MKS2→BL frame transforms
+(`calc_angle_brbphibsq`), Ê extraction, and a p2u superpose — per-cell,
+cell-local, embarrassingly parallel, just never threaded (in C either).
+Consequences for the roadmap: (a) P1 must thread the dynamo like any §1
+pass — it was already in scope, but it is the single largest P1 line
+item, ahead of sweep; (b) the dynamo is also a P2-grade optimization
+target in its own right (the BL transform per cell per call is
+recomputable-vs-cacheable, and the two calls per step re-derive identical
+geometry). Post-P1 projection from this table: threading everything
+threadable at the observed ~7× row-thread efficiency puts the step at
+~360 ms (≈7× whole-step) on this hardware before any P2/P3 work; row
+imbalance (the 17× cell spread) is what stands between 7.4× and 10× on
+the inversion passes, confirming dynamic tiles.
+
+**Threading efficiency today.** implicit 7.4× and u2p 5.6× on 10 threads
+with static contiguous row bands: acceptable at this near-axisymmetric
+t≈0 state where cost varies mostly with θ-row, but u2p's lower efficiency
+already shows the per-pass spawn/join + band-imbalance overheads (u2p's
+pass is only 18 ms — spawn/join is a fixed ~ms-scale tax). Both numbers
+should rise with the persistent team + dynamic tiles.
 
 ---
 
