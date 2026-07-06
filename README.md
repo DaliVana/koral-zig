@@ -4,7 +4,13 @@ A Zig reimplementation of [KORAL](../koral_lite) — general-relativistic
 radiation magnetohydrodynamics — targeting the **PUFFY** disk problem
 (Lančová et al. 2019). Serial/threaded only for now; MPI comes later.
 
-Design documents live in the C repo:
+**Project documentation** ([`docs/`](docs/README.md)): a deep
+[architecture overview](docs/ARCHITECTURE.md) (how the simulation works, for
+programmers), a [physics & numerics reference](docs/PHYSICS.md) (the equations
+solved, for physicists), and a [user & developer guide](docs/USER_GUIDE.md) (build/run,
+config, and how to create a new problem or modify the code).
+
+The original design documents live in the C repo:
 `../koral_lite/docs/zig-rewrite-architecture.md` (architecture),
 `../koral_lite/docs/zig-theory-background.md` (physics + validation ladder).
 
