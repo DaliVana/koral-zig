@@ -21,7 +21,7 @@ nz = 16            # azimuthal (φ) — subdivides the π/2 wedge, periodic
 [run]
 tstart = 0.0
 tmax = 10000.0     # GM/c³ (reduce for a quick look)
-nstep_max = 100    # hard cap on steps
+nstep_max = 1000    # hard cap on steps
 tsteplim = 0.5     # CFL factor
 dtout1 = 100.0     # scalar-diagnostics cadence (code time)
 dtout2 = 500.0     # primitive-dump cadence (0 disables prim dumps)

@@ -6,9 +6,22 @@ pub fn build(b: *std.Build) !void {
     const use_mpi = b.option(bool, "mpi", "link system MPI (not yet implemented)") orelse false;
     const slow_tests = b.option(bool, "slow-tests", "run slow tests (convergence studies, soaks)") orelse false;
 
+    // `-Dsilo` links LLNL Silo into the built problem executables so they can
+    // export VisIt-openable `.silo` files (koral/io/silo.zig). Default off so
+    // `zig build test` and Silo-less machines keep building. `-Dsilo-prefix`
+    // points at the Silo install root; the default is VisIt 3.5's bundled Silo
+    // (its `libsiloh5` — guaranteeing the files match what VisIt 3.5 reads).
+    const enable_silo = b.option(bool, "silo", "link Silo for .silo export (needs VisIt / a Silo install)") orelse false;
+    const silo_prefix = b.option(
+        []const u8,
+        "silo-prefix",
+        "Silo install root (contains lib/libsiloh5.dylib)",
+    ) orelse "/Applications/VisIt.app/Contents/Resources/3.5.0/darwin-arm64";
+
     const build_opts = b.addOptions();
     build_opts.addOption(bool, "mpi", use_mpi);
     build_opts.addOption(bool, "slow_tests", slow_tests);
+    build_opts.addOption(bool, "silo", enable_silo);
     build_opts.addOption([]const u8, "golden_dir", b.pathFromRoot("tests/golden"));
 
     const koral = b.addModule("koral", .{
@@ -70,6 +83,16 @@ pub fn build(b: *std.Build) !void {
                 .imports = &.{.{ .name = "koral", .module = koral }},
             }),
         });
+        if (enable_silo) {
+            const m = exe.root_module;
+            m.link_libc = true;
+            m.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{silo_prefix}) });
+            // Silo's install name is `@rpath/lib/libsiloh5.dylib` (and its
+            // hdf5/mpi/z deps are `@rpath/lib/...`), so a single rpath at the
+            // prefix resolves the whole chain at load time.
+            m.addRPath(.{ .cwd_relative = silo_prefix });
+            m.linkSystemLibrary("siloh5", .{});
+        }
         b.installArtifact(exe);
 
         const install = b.addInstallArtifact(exe, .{});

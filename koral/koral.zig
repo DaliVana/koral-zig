@@ -104,6 +104,7 @@ pub const comm = struct {
 pub const io = struct {
     pub const scalars = @import("io/scalars.zig");
     pub const dump = @import("io/dump.zig");
+    pub const silo = @import("io/silo.zig");
 };
 
 test {
@@ -178,6 +179,7 @@ test {
     _ = @import("radvisc_tests.zig");
     _ = io.scalars;
     _ = io.dump;
+    _ = io.silo;
     _ = @import("scalars_tests.zig");
     _ = @import("threading_tests.zig");
     _ = @import("puffystep_golden_tests.zig");

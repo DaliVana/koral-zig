@@ -19,6 +19,7 @@ const L = koral.VarLayout(cfg);
 const puffy = koral.problems.puffy;
 const scalars = koral.io.scalars;
 const dump = koral.io.dump;
+const silo = koral.io.silo;
 
 const SimT = koral.Sim(cfg);
 
@@ -128,6 +129,22 @@ fn writePrimDump(io: std.Io, out_dir: []const u8, allocator: std.mem.Allocator, 
     };
 }
 
+/// Write a VisIt-openable `.silo` snapshot (koral/io/silo.zig). No-op unless
+/// built with `-Dsilo`; the internal comptime guard keeps this side-effect-free
+/// (and Silo-symbol-free) otherwise.
+fn writeSiloDump(io: std.Io, out_dir: []const u8, allocator: std.mem.Allocator, s: *const SimT, idx: usize) void {
+    if (comptime !silo.enabled) return;
+    var dbuf: [1024]u8 = undefined;
+    const dir = std.fmt.bufPrint(&dbuf, "{s}/silo", .{out_dir}) catch return;
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    var buf: [1024]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&buf, "{s}/silo/puffy{d:0>4}.silo", .{ out_dir, idx }) catch return;
+    const cycle: i32 = @intCast(@min(s.nstep, @as(u64, std.math.maxInt(i32))));
+    silo.write(SimT, s, allocator, path, s.t, cycle, .{}) catch |err| {
+        std.debug.print("puffy: cannot write {s}: {s}\n", .{ path, @errorName(err) });
+    };
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
@@ -182,6 +199,7 @@ pub fn main(init: std.process.Init) !void {
         try dump.appendScalarLine(&log, allocator, row);
         writeScalars(io, p.out_dir, allocator, log.items);
         writePrimDump(io, p.out_dir, allocator, &s, out_idx);
+        writeSiloDump(io, p.out_dir, allocator, &s, out_idx);
     }
 
     // ---- RK2IMEX time loop -------------------------------------------------
@@ -200,6 +218,7 @@ pub fn main(init: std.process.Init) !void {
             try dump.appendScalarLine(&log, allocator, row);
             writeScalars(io, p.out_dir, allocator, log.items);
             if (p.dtout2 > 0) writePrimDump(io, p.out_dir, allocator, &s, out_idx);
+            writeSiloDump(io, p.out_dir, allocator, &s, out_idx);
             std.debug.print(
                 "puffy: t={d:.2} nstep={d} dt={e:.3} | Ṁ={e:.3} L={e:.3} H/R={d:.3} β⁻¹={e:.3} | nan={d} hdfix={d} radimpfail={d}\n",
                 .{ s.t, s.nstep, dt, row.mdot, row.radlum, row.scaleheight, row.max_pmag_ptot, row.n_nan, row.n_hd_fixup, row.n_radimp_fail },
