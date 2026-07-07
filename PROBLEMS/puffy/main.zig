@@ -137,11 +137,11 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next(); // program name
     const params_path = args.next() orelse "PROBLEMS/puffy/puffy.toml";
 
-    const p = koral.Params.load(allocator, io, params_path) catch |err| {
+    var p = koral.Params.load(allocator, io, params_path) catch |err| {
         std.debug.print("puffy: cannot load params from '{s}': {s}\n", .{ params_path, @errorName(err) });
         return err;
     };
-    defer allocator.free(p.out_dir);
+    defer p.deinit(allocator);
 
     var s = try SimT.init(allocator, puffy.makeGrid(p.nx, p.ny), options(&p));
     defer s.deinit();

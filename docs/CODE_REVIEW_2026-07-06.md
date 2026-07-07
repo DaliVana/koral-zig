@@ -62,6 +62,8 @@ Params.parse dupes string values with the caller's allocator (parseValue, params
 
 **Fix:** Make ownership uniform: in parse(), dupe every []const u8 field up-front (including defaults) so all strings are always allocator-owned, add `pub fn deinit(self: *Params, a: std.mem.Allocator) void` that frees them, free the previous value before overwriting on repeated keys, and put `errdefer` cleanup in parse so error returns don't leak. Then main.zig's cleanup becomes `defer p.deinit(a);` and is correct for every input file.
 
+**Fixed (2026-07-07):** All string fields (currently just `out_dir`) are now uniformly heap-owned. `parse` does a comptime `inline for` over `std.meta.fields(Params)`: a first pass neutralizes every `[]const u8` field to `""`, a second dupes each field's comptime default (`f.defaultValue().?`) — so with `errdefer p.deinit(allocator)` armed, a field is always either `""` (free is a no-op) or heap-owned, never a literal, even if a dupe OOMs mid-loop. Added `deinit(self, allocator)` (frees every string field via the same `inline for`, then poisons `self.* = undefined`, matching `Field.deinit`). `setField` now frees the previous (always-owned) value before overwriting on a repeated key. main.zig:140 is now `var p = …` + `defer p.deinit(allocator)`. Two regression tests added under `std.testing.allocator` (itself the invalid-free/leak detector): default `out_dir` deinit-safety, and repeated-key no-leak. `zig build test` exit 0; `zig build puffy` compiles clean. Generalizes to any future string field with no per-field edits.
+
 ---
 
 ## Medium severity

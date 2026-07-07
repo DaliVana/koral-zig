@@ -65,9 +65,35 @@ pub const Params = struct {
         return parse(allocator, text);
     }
 
-    /// Parse from a buffer. String values are duplicated with `allocator`.
+    /// Free the allocator-owned string fields. Every []const u8 field is
+    /// heap-owned (parse dupes the defaults too), so this frees them all
+    /// unconditionally — no literal-vs-heap guessing at the call site.
+    pub fn deinit(self: *Params, allocator: std.mem.Allocator) void {
+        inline for (std.meta.fields(Params)) |f| {
+            if (f.type == []const u8) allocator.free(@field(self, f.name));
+        }
+        self.* = undefined;
+    }
+
+    /// Parse from a buffer. Every []const u8 field is allocator-owned on
+    /// success (including untouched defaults); release with `deinit`.
     pub fn parse(allocator: std.mem.Allocator, text: []const u8) !Params {
         var p = Params{};
+        // Uniform string ownership: dupe every string default up front so all
+        // strings are heap-owned and deinit frees unconditionally. Neutralize
+        // to "" first so p is deinit-safe at every step — free("") is a no-op,
+        // so an OOM mid-loop never leaves a field pointing at a literal for the
+        // errdefer to invalid-free.
+        errdefer p.deinit(allocator);
+        inline for (std.meta.fields(Params)) |f| {
+            if (f.type == []const u8) @field(p, f.name) = "";
+        }
+        inline for (std.meta.fields(Params)) |f| {
+            if (f.type == []const u8) {
+                @field(p, f.name) = try allocator.dupe(u8, comptime f.defaultValue().?);
+            }
+        }
+
         var lines = std.mem.splitScalar(u8, text, '\n');
         var lineno: usize = 0;
         while (lines.next()) |raw| {
@@ -100,10 +126,14 @@ pub const Params = struct {
     fn setField(allocator: std.mem.Allocator, p: *Params, key: []const u8, val: []const u8, lineno: usize) !void {
         inline for (std.meta.fields(Params)) |f| {
             if (std.mem.eql(u8, key, f.name)) {
-                @field(p, f.name) = parseValue(f.type, allocator, val) catch {
+                const parsed = parseValue(f.type, allocator, val) catch {
                     std.log.warn("params: line {d}: bad value for {s}: '{s}'", .{ lineno, key, val });
                     return error.BadParamsValue;
                 };
+                // Repeated key: release the previous (always-owned) dupe before
+                // overwriting so the earlier value doesn't leak.
+                if (f.type == []const u8) allocator.free(@field(p, f.name));
+                @field(p, f.name) = parsed;
                 return;
             }
         }
@@ -153,8 +183,8 @@ test "params: parse TOML subset with sections, comments, all value kinds" {
         \\deterministic = true
         \\out_dir = "out/puffy"
     ;
-    const p = try Params.parse(std.testing.allocator, text);
-    defer std.testing.allocator.free(p.out_dir);
+    var p = try Params.parse(std.testing.allocator, text);
+    defer p.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(f64, 10.0), p.mass);
     try std.testing.expectEqual(@as(usize, 384), p.nx);
     try std.testing.expectEqual(@as(usize, 360), p.ny);
@@ -178,4 +208,21 @@ test "params: bad value is an error" {
         error.BadParamsValue,
         Params.parse(std.testing.allocator, "mass = ten\n"),
     );
+}
+
+test "params: default string field is heap-owned, deinit is safe" {
+    // No out_dir line: the default "dumps" must be duped, not left a literal,
+    // so deinit frees a real allocation rather than invalid-freeing a literal.
+    // std.testing.allocator asserts both no-leak and no-invalid-free.
+    var p = try Params.parse(std.testing.allocator, "mass = 10.0\n");
+    defer p.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("dumps", p.out_dir);
+}
+
+test "params: repeated string key frees the earlier dupe" {
+    // The first out_dir dupe must be freed when the key is set again; otherwise
+    // std.testing.allocator reports the leak.
+    var p = try Params.parse(std.testing.allocator, "out_dir = \"a\"\nout_dir = \"b\"\n");
+    defer p.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("b", p.out_dir);
 }
