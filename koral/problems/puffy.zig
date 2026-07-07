@@ -66,13 +66,32 @@ pub const gam: f64 = 5.0 / 3.0; // GAMMA
 /// params file's `bhspin` for a spinning preset. Tests and every golden leave
 /// `a = 0` (Schwarzschild, matching C PUFFY's BHSPIN = 0), so they are
 /// bit-identical. The full torus/dynamo/metric chain is already general in `a`
-/// (limotorus `computeGd`/`lK`, `rHorizonBL`/`rIscoBL`, MKS2 Kerr–Schild); the
-/// grid extents (MKSR0/MKSH0, RMIN/RMAX) do NOT depend on spin. Caveat: RMIN =
-/// 1.85 sits inside the horizon only for a ≲ 0.5 (r_h = 1+√(1−a²)); at higher
-/// spin the inner boundary moves outside the horizon and the plain-copy XBCLO
-/// excision is no longer causally clean with this fixed grid.
+/// (limotorus `computeGd`/`lK`, `rHorizonBL`/`rIscoBL`, MKS2 Kerr–Schild).
+/// MKSR0/MKSH0 do not depend on spin, but RMIN does: it is recomputed from `a`
+/// (see `rminForSpin`) so the inner boundary stays inside the shrinking Kerr
+/// horizon and the plain-copy XBCLO excision remains causally clean.
 pub var mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
-pub const rmin: f64 = 1.85; // RMIN
+/// RMIN — the active inner radial boundary read by `makeGridNz`. A module
+/// global (like `mass`/`mp`): the driver overwrites it once at startup from the
+/// spin via `rminForSpin` (or an explicit params override) so the excision
+/// tracks the Kerr horizon. Tests/goldens leave it at the fiducial 1.85.
+pub var rmin: f64 = 1.85; // RMIN
+
+/// The fiducial (Schwarzschild) RMIN — PUFFY's define.h value, immutable. Used
+/// as the reference depth for `rminForSpin`; also the value tests/goldens use.
+pub const rmin_ref: f64 = 1.85;
+
+/// Inner boundary placed the same fraction inside the (Kerr) horizon as the
+/// fiducial a = 0 setup: RMIN(a) = rmin_ref · r_h(a)/r_h(0), i.e. 0.925·r_h(a)
+/// (r_h(0) = 2). This is the standard KORAL idiom — other problems define
+/// `RMIN = 0.7…0.825·RH` — and it is bit-exactly rmin_ref at a = 0 (·2/2 is
+/// exact), so a Schwarzschild run is unchanged. For a = 0.9375, r_h = 1.348 →
+/// RMIN ≈ 1.247 (~3.5 cells inside the horizon at nx = 256), restoring the
+/// clean, causally-disconnected plain-copy excision at high spin.
+pub fn rminForSpin(a: f64) f64 {
+    return rmin_ref * metric.rHorizonBL(a) / metric.rHorizonBL(0.0);
+}
+
 pub const rmax: f64 = 500.0; // RMAX
 pub const rhoatmmin: f64 = 1.0e-24; // RHOATMMIN
 pub const maxbeta: f64 = 1.0 / 20.0; // MAXBETA (after #undef, BETANORMFULL)

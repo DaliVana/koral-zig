@@ -237,26 +237,42 @@ pub fn main(init: std.process.Init) !void {
     // and — via options() → radforce.puffyMass(p.mass) — the stepping opacity);
     // BHSPIN (mp.a) drives the metric, the limotorus construction, and the
     // dynamo's horizon/ISCO/Ωₖ. options() copies puffy.mp into the sim, so mp.a
-    // must be set first. The grid extents (RMIN/RMAX, MKSR0/MKSH0) are fixed
-    // PUFFY problem constants — independent of both mass and spin.
+    // must be set first. RMIN is recomputed from the spin BEFORE makeGridNz so
+    // the inner radial boundary stays inside the shrinking Kerr horizon (a
+    // params `rmin > 0` is an explicit override; otherwise rminForSpin keeps
+    // the fiducial fractional excision depth — bit-exactly 1.85 at a = 0).
+    // RMAX/MKSR0/MKSH0 stay fixed PUFFY constants, independent of mass/spin.
     puffy.mass = p.mass;
     puffy.mp.a = p.bhspin;
+    puffy.rmin = if (p.rmin > 0.0) p.rmin else puffy.rminForSpin(p.bhspin);
 
     var s = try SimT.init(allocator, puffy.makeGridNz(p.nx, p.ny, p.nz), options(&p));
     defer s.deinit();
 
     const u = koral.Units.init(p.mass);
     const r_hor = koral.metric.core.rHorizonBL(p.bhspin);
+    const cells_inside = if (puffy.rmin < r_hor)
+        (@log(r_hor - puffy.mp.mksr0) - @log(puffy.rmin - puffy.mp.mksr0)) /
+            ((@log(puffy.rmax - puffy.mp.mksr0) - @log(puffy.rmin - puffy.mp.mksr0)) / @as(f64, @floatFromInt(p.nx)))
+    else
+        0.0;
     std.debug.print(
-        "puffy: NV={d} grid {d}×{d}×{d} (+{d} ghosts) | M={d} M☉ (GM/c³={e:.4}s) a={d} (r_h={d:.4}) | threads={d} | build={s}\n",
-        .{ L.count, s.grid.nx, s.grid.ny, s.grid.nz, s.grid.ng, p.mass, u.gmc3(), p.bhspin, r_hor, p.nthreads, @tagName(builtin.mode) },
+        "puffy: NV={d} grid {d}×{d}×{d} (+{d} ghosts) | M={d} M☉ (GM/c³={e:.4}s) a={d} r_h={d:.4} RMIN={d:.4} (~{d:.1} cells inside) | threads={d} | build={s}\n",
+        .{ L.count, s.grid.nx, s.grid.ny, s.grid.nz, s.grid.ng, p.mass, u.gmc3(), p.bhspin, r_hor, puffy.rmin, cells_inside, p.nthreads, @tagName(builtin.mode) },
     );
-    if (p.bhspin != 0.0 and puffy.rmin > r_hor) {
+    if (puffy.rmin >= r_hor) {
         std.debug.print(
-            "puffy: *** NOTE: RMIN={d} is OUTSIDE the horizon r_h={d:.4} at a={d}; the " ++
-                "plain-copy inner boundary is no longer a clean excision. This spin is " ++
-                "unvalidated (no C oracle at a≠0) — treat as an experiment. ***\n",
-            .{ puffy.rmin, r_hor, p.bhspin },
+            "puffy: *** NOTE: RMIN={d:.4} is OUTSIDE the horizon r_h={d:.4}; the plain-copy " ++
+                "inner boundary is not a clean excision. (An explicit params `rmin` override " ++
+                "defeats the auto horizon-tracking — drop it to restore a clean inner edge.) ***\n",
+            .{ puffy.rmin, r_hor },
+        );
+    }
+    if (p.bhspin != 0.0) {
+        std.debug.print(
+            "puffy: *** NOTE: a≠0 is UNVALIDATED — C KORAL PUFFY uses BHSPIN=0, so there is " ++
+                "no bit-for-bit oracle at this spin. Treat spinning runs as experiments. ***\n",
+            .{},
         );
     }
     // A production GRRMHD run in Debug pays every bounds-check/assert and no

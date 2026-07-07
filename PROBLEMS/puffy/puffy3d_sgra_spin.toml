@@ -23,32 +23,32 @@
 # the general expressions. The metric/torus/dynamo therefore respond correctly
 # to spin (the frame-dragging ISCO moves inward, the initial field/torus shift).
 #
-# TWO THINGS TO KNOW:
+# ONE THING TO KNOW:
 #
-#   1. NOT ORACLE-VALIDATED.  The C KORAL PUFFY sets BHSPIN = 0, so every
-#      bit-for-bit golden in this port is at a = 0. There is NO C reference at
-#      a != 0. This spinning run is therefore an UNVALIDATED experiment: the
-#      spin-dependent code paths are exercised but not checked against C. (To
-#      validate, one would rebuild the C oracle with BHSPIN = 0.9375 and add
-#      goldens — a separate task.)
+#   NOT ORACLE-VALIDATED.  The C KORAL PUFFY sets BHSPIN = 0, so every
+#   bit-for-bit golden in this port is at a = 0. There is NO C reference at
+#   a != 0. This spinning run is therefore an UNVALIDATED experiment: the
+#   spin-dependent code paths are exercised but not checked against C (the
+#   driver prints a loud NOTE at startup). To validate, one would rebuild the C
+#   oracle with BHSPIN = 0.9375 and add goldens — a separate task.
 #
-#   2. INNER BOUNDARY.  RMIN = 1.85 M is a fixed PUFFY grid constant. At a = 0
-#      that is inside the horizon (2 M), so the plain-copy inner boundary
-#      (XBCLO) is a clean, causally-disconnected excision. At a = 0.9375 the
-#      horizon shrinks to 1.348 M, so RMIN now sits OUTSIDE the horizon and the
-#      plain-copy boundary is no longer a clean excision (the driver prints a
-#      loud NOTE at startup). A short smoke run (64x60, 40 steps) stays stable
-#      with no NaNs/fixups, but long-time behavior at the inner edge is not
-#      guaranteed. For a numerically clean run with THIS grid use bhspin <= 0.5
-#      (r_h >= 1.866 > RMIN); a proper high-spin setup would move RMIN inside
-#      the horizon, which needs a grid change (RMIN is currently hardcoded).
+# INNER BOUNDARY — now handled automatically.  RMIN is no longer a fixed
+# constant: the driver recomputes it from the spin BEFORE grid construction,
+# RMIN(a) = 1.85 * r_h(a)/r_h(0) = 0.925 * r_h(a) (the standard KORAL
+# "fraction of the horizon" idiom; bit-exactly 1.85 at a = 0). So the inner
+# boundary always sits the same fraction inside the Kerr horizon — at a =
+# 0.9375, r_h = 1.348 M -> RMIN = 1.247 M, ~3.6 cells inside at nx = 256 — and
+# the plain-copy XBCLO excision stays causally clean at any spin. The startup
+# line reports "RMIN=... (~N cells inside)". (An explicit params `rmin > 0`
+# overrides the auto value; if that lands outside the horizon the driver warns.)
+# RMAX / MKSR0 / MKSH0 remain fixed PUFFY constants.
 # ============================================================================
 
 [physical]
 mass = 4.297e6     # Sagittarius A* (GRAVITY / EHT 2022), see puffy3d_sgra.toml
-bhspin = 0.9375    # dimensionless Kerr spin a. Set to 0.5 for a numerically
-                   # clean run with the current grid; 0.0 = the validated
-                   # Schwarzschild case. Prograde torus.
+bhspin = 0.9375    # dimensionless Kerr spin a (prograde torus). RMIN auto-tracks
+                   # the horizon, so any 0 <= a < 1 gets a clean inner boundary;
+                   # 0.0 = the validated Schwarzschild case.
 
 [grid]
 nx = 128           # radial
