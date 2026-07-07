@@ -68,12 +68,23 @@ pub const lt = struct {
     pub const rin: f64 = 35.0; // LT_RIN
 };
 
-/// The production grid (define.h: TNX=384, TNY=360, TNZ=1, NG=3); ny/nx can
-/// be reduced for cheaper tests — the coordinate extents stay PUFFY's.
+/// The production grid (define.h: TNX=384, TNY=360, TNZ=1, NG=3); nx/ny can
+/// be reduced for cheaper tests — the coordinate extents stay PUFFY's. The
+/// 2D axisymmetric slice (nz=1).
 pub fn makeGrid(nx: usize, ny: usize) Grid {
+    return makeGridNz(nx, ny, 1);
+}
+
+/// Grid with an explicit azimuthal resolution (define.h TNZ). nz=1 is the 2D
+/// axisymmetric slice and reproduces `makeGrid` byte-for-byte; nz>1 subdivides
+/// the fixed PHIWEDGE=π/2 wedge with periodic z (φ) boundaries. Only the
+/// resolution is tunable — the extents (RMIN/RMAX, MINY/MAXY, ±PHIWEDGE/2)
+/// stay PUFFY's problem constants, exactly as nx/ny do.
+pub fn makeGridNz(nx: usize, ny: usize, nz: usize) Grid {
     return Grid.init(.{
         .nx = nx,
         .ny = ny,
+        .nz = nz,
         .ng = 3,
         .minx = @log(rmin - mp.mksr0), // MINX = log(RMIN-MKSR0)
         .maxx = @log(rmax - mp.mksr0),

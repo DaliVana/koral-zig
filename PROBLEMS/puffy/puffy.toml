@@ -8,25 +8,29 @@ gam = 1.6666666666666667   # GAMMA 5/3
 [grid]
 nx = 384           # TNX (radial)
 ny = 360           # TNY (theta)
-nz = 1             # TNZ — 2D axisymmetric
-rmin = 1.85        # RMIN
-rmax = 500.0       # RMAX
-mksr0 = 0.1        # MKSR0
-mksh0 = 0.9        # MKSH0
-miny = 0.001       # MINY
-maxy = 0.999       # MAXY = 1 - 0.001
-minz = -0.7853981633974483   # -pi/4 (PHIWEDGE pi/2)
-maxz = 0.7853981633974483    # +pi/4
+nz = 1             # TNZ — azimuthal resolution. 1 = 2D axisymmetric (validated).
+                   # nz>1 subdivides the fixed PHIWEDGE=π/2 wedge for a 3D run
+                   # (M14, in progress). Only nz is honored here; the extents
+                   # below (rmin..maxz) are fixed PUFFY problem constants and
+                   # are NOT read — makeGridNz hardcodes them.
+rmin = 1.85        # RMIN            (problem constant — not read)
+rmax = 500.0       # RMAX            (problem constant — not read)
+mksr0 = 0.1        # MKSR0           (problem constant — not read)
+mksh0 = 0.9        # MKSH0           (problem constant — not read)
+miny = 0.001       # MINY            (problem constant — not read)
+maxy = 0.999       # MAXY = 1-0.001  (problem constant — not read)
+minz = -0.7853981633974483   # -PHIWEDGE/2  (problem constant — not read)
+maxz = 0.7853981633974483    # +PHIWEDGE/2  (problem constant — not read)
 
 [run]
 tstart = 0.0
 tmax = 10000.0     # run duration in GM/c^3 (reduce for a quick test)
-nstep_max = 1000  # hard cap on steps
+nstep_max = 100  # hard cap on steps
 tsteplim = 0.5     # TSTEPLIM (CFL factor)
 dtout1 = 100.0     # scalar-diagnostics cadence (code time)
 dtout2 = 500.0     # primitive-dump cadence (0 disables prim dumps)
 out_dir = "dumps/puffy"
-nthreads = 10       # persistent worker team for all per-step passes (1 = serial)
+nthreads = 12       # persistent worker team for all per-step passes (1 = serial)
 
 [floors]
 rhofloor = 1e-30

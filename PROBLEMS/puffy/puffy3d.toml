@@ -1,0 +1,29 @@
+# PUFFY 3D — the PHIWEDGE=π/2 azimuthal wedge with periodic φ (nz > 1).
+# Validated bit-for-bit against C KORAL (M14; see docs/M14_3D_PLAN_2026-07-07.md).
+#
+# Run:  zig build puffy -Doptimize=ReleaseFast
+#       ./zig-out/bin/puffy PROBLEMS/puffy/puffy3d.toml
+#
+# COST: ~nz× the 2D step cost. This moderate 128×120×16 grid is meant to be
+# watchable on a workstation; the production science grid (384×360×32) is an
+# MPI/cluster job (parallelization plan P4, not yet built). Scale nx/ny/nz to
+# taste — only the resolution is read here; the extents are fixed problem
+# constants (makeGridNz hardcodes RMIN/RMAX, MINY/MAXY, ±PHIWEDGE/2).
+
+[physical]
+mass = 10.0        # MASS (solar masses)
+
+[grid]
+nx = 128           # radial
+ny = 120           # theta
+nz = 16            # azimuthal (φ) — subdivides the π/2 wedge, periodic
+
+[run]
+tstart = 0.0
+tmax = 10000.0     # GM/c³ (reduce for a quick look)
+nstep_max = 100    # hard cap on steps
+tsteplim = 0.5     # CFL factor
+dtout1 = 100.0     # scalar-diagnostics cadence (code time)
+dtout2 = 500.0     # primitive-dump cadence (0 disables prim dumps)
+out_dir = "dumps/puffy3d"
+nthreads = 12      # per-step worker team (1 = serial)

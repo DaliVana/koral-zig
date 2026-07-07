@@ -143,7 +143,7 @@ pub fn main(init: std.process.Init) !void {
     };
     defer p.deinit(allocator);
 
-    var s = try SimT.init(allocator, puffy.makeGrid(p.nx, p.ny), options(&p));
+    var s = try SimT.init(allocator, puffy.makeGridNz(p.nx, p.ny, p.nz), options(&p));
     defer s.deinit();
 
     const u = koral.Units.init(p.mass);

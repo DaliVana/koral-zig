@@ -14,6 +14,7 @@
 //! The C diff of the same pipeline is golden_puffy_test.zig (keystone).
 
 const std = @import("std");
+const build_options = @import("build_options");
 const config = @import("config.zig");
 const grid_mod = @import("grid.zig");
 const sim_mod = @import("sim.zig");
@@ -386,6 +387,93 @@ test "puffy reduced-grid init: β ≡ MAXBETA, divB = 0, bc.c contract" {
             }
         }
     }
+}
+
+// M14: the same init contract in 3D. This is the one piece the step golden
+// cannot cover — it loads C's post-init B, so it never exercises the *init*
+// calc_BfromA curl. Here the full limotorus + QUADLOOPS A_φ + 3D curl +
+// β-normalization runs on a real 32×30×4 wedge (periodic φ), and we assert the
+// A-derived field is divergence-free over the whole 3D domain and β-norm holds
+// globally. Slow-gated (a limotorus solve per cell, ×nz). B³≡0 at t=0 (poloidal
+// A_φ only), so this validates the 3D curl produces the same poloidal field at
+// every φ-slice with zero ∇·B.
+test "M14 puffy 3D reduced-grid init: β ≡ MAXBETA, divB = 0 (32×30×4)" {
+    if (!build_options.slow_tests) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var s = try SimP.init(a, puffy.makeGridNz(32, 30, 4), puffyOptions());
+    defer s.deinit();
+
+    const fac = try puffy.initAll(SimP, &s);
+    try std.testing.expect(fac > 0.0 and std.math.isFinite(fac));
+
+    const nx = s.nxi();
+    const ny = s.nyi();
+    const nz = s.nzi();
+
+    // -- max β over the full 3D domain is exactly MAXBETA (postinit.c) --------
+    var maxb: f64 = 0.0;
+    var bmax: f64 = 0.0;
+    var b3max: f64 = 0.0;
+    var b12max: f64 = 0.0;
+    {
+        var iz: i64 = 0;
+        while (iz < nz) : (iz += 1) {
+            var iy: i64 = 0;
+            while (iy < ny) : (iy += 1) {
+                var ix: i64 = 0;
+                while (ix < nx) : (ix += 1) {
+                    var pp: [SimP.nv]f64 = undefined;
+                    s.p.load(ix, iy, iz, &pp);
+                    const geom = s.cache.fillGeometry(ix, iy, iz);
+                    const ug = try relele.uconUcovFromPrims(
+                        .{ pp[LP.index(.vx)], pp[LP.index(.vy)], pp[LP.index(.vz)] },
+                        &geom,
+                    );
+                    const bb = mhd.bconBcovBsqFrom4vel(
+                        .{ pp[LP.index(.b1)], pp[LP.index(.b2)], pp[LP.index(.b3)] },
+                        ug.con,
+                        ug.cov,
+                        &geom.gg,
+                    );
+                    const pmag = bb.bsq / 2.0;
+                    var ptot = (puffy.gam - 1.0) * pp[LP.index(.uu)];
+                    const rt = try radiation.calcFfRtt(config.puffy, pp, &geom);
+                    ptot += -rt.rtt / 3.0;
+                    if (pmag / ptot > maxb) maxb = pmag / ptot;
+                    b3max = @max(b3max, @abs(pp[LP.index(.b3)]));
+                    b12max = @max(b12max, @max(@abs(pp[LP.index(.b1)]), @abs(pp[LP.index(.b2)])));
+                    for ([_]usize{ LP.index(.b1), LP.index(.b2), LP.index(.b3) }) |ib| {
+                        bmax = @max(bmax, @abs(pp[ib]) * geom.gdet);
+                    }
+                }
+            }
+        }
+    }
+    try std.testing.expect(@abs(maxb - puffy.maxbeta) <= 1e-12 * puffy.maxbeta);
+    // toroidal field is zero to machine precision relative to the poloidal
+    // field (3D curl of a purely poloidal A_φ — B³ is denormal-level noise,
+    // ~1e-40 against a ~1e-11 poloidal scale, not the exact 0 of the 2D branch)
+    try std.testing.expect(b3max <= 1e-18 * b12max);
+
+    // -- A-derived B is divergence-free over the whole 3D interior -----------
+    // (ix,iy ≥ 1 touch only domain corners of A; z wraps periodically, so the
+    //  curl identity holds at every iz)
+    var worst_div: f64 = 0.0;
+    {
+        var iz: i64 = 0;
+        while (iz < nz) : (iz += 1) {
+            var iy: i64 = 1;
+            while (iy < ny) : (iy += 1) {
+                var ix: i64 = 1;
+                while (ix < nx) : (ix += 1) {
+                    worst_div = @max(worst_div, @abs(ct.calcDivB(SimP, &s, ix, iy, iz)));
+                }
+            }
+        }
+    }
+    const dxmin = @min(s.grid.cellSize(0, 0), @min(s.grid.cellSize(0, 1), s.grid.cellSize(0, 2)));
+    std.debug.print("puffy 3D init 32×30×4: fac={e:.6}  max|divB|·dx/max|gdetB| = {e:.3}\n", .{ fac, worst_div * dxmin / bmax });
+    try std.testing.expect(worst_div * dxmin / bmax <= 1e-12);
 }
 
 // ---------------------------------------------------------------------------

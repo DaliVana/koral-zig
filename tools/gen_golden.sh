@@ -219,6 +219,24 @@ cd "$BUILD/zigpuffy/src"
 ./harness_puffy_step "$ROOT/tests/golden/step" puffy64.kstp 4
 gzip -9 -f "$ROOT/tests/golden/step/puffy64.kstp"
 
+# ---- PUFFY 3D full-pipeline step test (M14) --------------------------------
+# reduced-grid 3D PUFFY (TNX/TNY 32/30, TNZ 1->4) — the PHIWEDGE=π/2 wedge with
+# periodic φ. Same cell count as puffy64 (3840) so the golden stays committable,
+# while exercising the 3D corner fill, periodic-z ghosts, the z-flux sweep, and
+# the 3D calc_BfromA curl. Full init + 4 forced-dt RK2IMEX steps.
+prepare_variant zigpuffy3d 147
+sed -i '' 's/^#define TNX .*/#define TNX 32/' "$BUILD/zigpuffy3d/src/PROBLEMS/PUFFY/define.h"
+sed -i '' 's/^#define TNY .*/#define TNY 30/' "$BUILD/zigpuffy3d/src/PROBLEMS/PUFFY/define.h"
+sed -i '' 's/^#define TNZ .*/#define TNZ 4/' "$BUILD/zigpuffy3d/src/PROBLEMS/PUFFY/define.h"
+grep -q "^#define TNX 32" "$BUILD/zigpuffy3d/src/PROBLEMS/PUFFY/define.h"
+grep -q "^#define TNY 30" "$BUILD/zigpuffy3d/src/PROBLEMS/PUFFY/define.h"
+grep -q "^#define TNZ 4" "$BUILD/zigpuffy3d/src/PROBLEMS/PUFFY/define.h"
+compile_objs zigpuffy3d
+build_harness zigpuffy3d harness_puffy_step
+cd "$BUILD/zigpuffy3d/src"
+./harness_puffy_step "$ROOT/tests/golden/step" puffy3d.kstp 4
+gzip -9 -f "$ROOT/tests/golden/step/puffy3d.kstp"
+
 echo "== writing manifest"
 SHA="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 cat > "$ROOT/tests/golden/manifest.json" <<EOF

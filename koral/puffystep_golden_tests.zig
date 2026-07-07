@@ -148,12 +148,25 @@ test "M13 scalars: mass/mdot/lum/H vs C on the PUFFY t=0 state (384×360)" {
 
 test "M13 full pipeline: PUFFY 64×60 forced-dt RK2IMEX steps vs C" {
     if (!build_options.slow_tests) return error.SkipZigTest;
-    const a = std.testing.allocator;
+    try checkStepGolden(std.testing.allocator, "step/puffy64.kstp.gz");
+}
 
-    var k = try golden.readKstp(a, "step/puffy64.kstp.gz");
+// M14: the same certification in 3D. A reduced 32×30×4 grid (the PHIWEDGE=π/2
+// wedge with periodic φ, same cell count as puffy64) exercises the 3D corner
+// fill, periodic-z ghosts, the z-flux sweep and the 3D calc_BfromA curl. The
+// KSTP reader and the comparison below are already dimension-general (they loop
+// iz), so the only 3D-specific piece is makeGridNz. Same structural + bulk
+// gates: flags agree cell-for-cell, ≥95% of cells track C to <1e-3 field-scale.
+test "M14 full pipeline: PUFFY 32×30×4 (3D) forced-dt RK2IMEX steps vs C" {
+    if (!build_options.slow_tests) return error.SkipZigTest;
+    try checkStepGolden(std.testing.allocator, "step/puffy3d.kstp.gz");
+}
+
+fn checkStepGolden(a: std.mem.Allocator, comptime relpath: []const u8) !void {
+    var k = try golden.readKstp(a, relpath);
     defer k.deinit();
 
-    const g = puffy.makeGrid(k.nx, k.ny);
+    const g = puffy.makeGridNz(k.nx, k.ny, k.nz);
     var s = try SimP.init(a, g, puffyOptions());
     defer s.deinit();
 

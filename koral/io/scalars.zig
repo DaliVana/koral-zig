@@ -70,11 +70,17 @@ pub fn radialShellIndex(comptime SimT: type, sim: *const SimT, radius: f64) i64 
 /// MYCOORDS. NOTE: unlike calc_mdot / calc_lum (which override dz → 2π for
 /// TNZ==1), the *snapshot* branch of calc_totalmass uses the raw cell dz
 /// (= the φ-wedge width, PHIWEDGE, for an axisymmetric slice) with only a
-/// `dz *= 2π/PHIWEDGE` scaling when TNZ>1 — a C inconsistency, transcribed
-/// as-is. So for PUFFY (TNZ==1) the wedge is NOT expanded to 2π here.
+/// `dz *= 2π/PHIWEDGE` scaling when TNZ>1 (postproc.c:1767-1769) — a C
+/// inconsistency, transcribed as-is. So for PUFFY 2D (TNZ==1) the wedge is
+/// NOT expanded to 2π here; a 3D wedge run IS (so the reported mass is the
+/// full-torus mass, not the π/2 slice).
 pub fn totalMass(comptime SimT: type, sim: *const SimT) f64 {
     const L = SimT.Layout;
     const rho_i = comptime L.index(.rho);
+
+    // 2π/PHIWEDGE wedge→full-torus factor for TNZ>1 (1.0 in 2D, where the
+    // single z-cell already spans the whole wedge and C does not expand it).
+    const phifac: f64 = if (sim.nzi() > 1) 2.0 * pi / (sim.grid.maxz - sim.grid.minz) else 1.0;
 
     var mass: f64 = 0;
     var iz: i64 = 0;
@@ -86,7 +92,7 @@ pub fn totalMass(comptime SimT: type, sim: *const SimT) f64 {
                 const geom = sim.cache.fillGeometry(ix, iy, iz);
                 const dx = sim.grid.cellSize(ix, 0);
                 const dy = sim.grid.cellSize(iy, 1);
-                const dz = sim.grid.cellSize(iz, 2); // TNZ>1 PHIWEDGE scaling n/a here
+                const dz = sim.grid.cellSize(iz, 2) * phifac;
                 mass += sim.p.get(rho_i, ix, iy, iz) * dx * dy * dz * geom.gdet;
             }
         }
@@ -114,7 +120,9 @@ pub fn mdot(comptime SimT: type, sim: *const SimT, ix: i64) relele.Error!f64 {
             const ucon = try relele.convVels(vcon, .velr, .vel4, &geom.gg, &geom.GG);
             const rhouconr = pp[rho_i] * ucon[1];
             const dy = sim.grid.cellSize(iy, 1);
-            const dz = if (twod) 2.0 * pi else sim.grid.cellSize(iz, 2);
+            // C calc_mdot: dφ → 2π for TNZ==1, raw cell dφ × (2π/PHIWEDGE) for
+            // TNZ>1 (postproc.c:2786-2807) — both give the full-torus flux.
+            const dz = if (twod) 2.0 * pi else sim.grid.cellSize(iz, 2) * (2.0 * pi / (sim.grid.maxz - sim.grid.minz));
             acc += geom.gdet * rhouconr * dy * dz;
         }
     }
@@ -150,7 +158,9 @@ pub fn lum(comptime SimT: type, sim: *const SimT, ix: i64) relele.Error!Lum {
             // BL cell θ-width (C: get_cellsize_out non-precompute path — the
             // difference of OUTCOORDS θ across the y-faces at this x-center)
             const dthBL = blThetaWidth(SimT, sim, ix, iy, iz);
-            const dphBL = if (twod) 2.0 * pi else blPhiWidth(SimT, sim, ix, iy, iz);
+            // C calc_lum: dφ_BL → 2π for TNZ==1, BL cell dφ × (2π/PHIWEDGE)
+            // for TNZ>1 — the full-torus luminosity, not the π/2 wedge's.
+            const dphBL = if (twod) 2.0 * pi else blPhiWidth(SimT, sim, ix, iy, iz) * (2.0 * pi / (sim.grid.maxz - sim.grid.minz));
 
             const vcon = [4]f64{ 0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
             const ucon = try relele.convVels(vcon, .velr, .vel4, &geomBL.gg, &geomBL.GG);

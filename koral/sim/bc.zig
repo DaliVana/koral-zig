@@ -50,10 +50,11 @@ pub fn setBc(comptime SimT: type, sim: *SimT, t: f64, ifinit: bool) Error!void {
     if (comptime SimT.Cfg.has(.mhd)) {
         if (g.ny > 1 and g.nz == 1) {
             try fillCorners2d(SimT, sim);
+        } else if (g.nz > 1 and g.ny > 1) {
+            try fillCorners3d(SimT, sim);
         } else if (g.nz > 1) {
-            // 3D / r-φ corner filling arrives with the problems that
-            // need it; no M5/M6 target is 3D.
-            @panic("Sim.setBc: 3D corner filling not implemented");
+            // x-z plane (TNY==1 && TNZ>1): no target needs it (finite.c:3406).
+            @panic("Sim.setBc: x-z 2D corner filling not implemented");
         }
     }
 }
@@ -336,4 +337,162 @@ fn fillCorners2d(comptime SimT: type, sim: *SimT) Error!void {
         avgCellP(SimT, sim, nx + 1, ny + 1, s2[0], s2[1], s2[2], s2[3]);
         try p2uCell(SimT, sim, nx + 1, ny + 1, 0);
     }
+}
+
+// --- 3D corner/edge filling (finite.c:3673-4228, the regular non-SHEARINGBOX
+// branch of `if(TNZ>1 && TNY>1)`) ------------------------------------------
+//
+// Serial ⇒ mpi_isitBC_forcorners()≡1 (mpi.c:2875), so every block runs. The
+// order is load-bearing: the 12 elongated edge-tubes are filled first (along
+// z, then y, then x), then the 8 total corner cubes OVERWRITE the shared
+// corner cells last ("fills crap but overwritten below", finite.c:3867). PUFFY
+// is not SHEARINGBOX, so there are no VZ no-inflow clamps here. z-periodicity
+// is already baked into the z-face ghosts by setBcZ (run before corners), so
+// the edge/corner fills are plain copies + diagonal averages — no wrapping.
+
+/// Build a 3D cell index from three (comptime axis, value) pairs that must be a
+/// permutation of {0,1,2}. Lets one edge-tube body serve all three orientations.
+fn cell3(comptime ax: usize, av: i64, comptime bx: usize, bv: i64, comptime cx: usize, cv: i64) [3]i64 {
+    var r: [3]i64 = undefined;
+    r[ax] = av;
+    r[bx] = bv;
+    r[cx] = cv;
+    return r;
+}
+
+fn copyCell3(comptime SimT: type, sim: *SimT, dst: [3]i64, src: [3]i64) void {
+    const NV = SimT.nv;
+    var pp: [NV]f64 = undefined;
+    sim.p.load(src[0], src[1], src[2], &pp);
+    sim.p.store(dst[0], dst[1], dst[2], &pp);
+}
+
+fn avgCell3(comptime SimT: type, sim: *SimT, dst: [3]i64, a: [3]i64, b: [3]i64) void {
+    const NV = SimT.nv;
+    var pa: [NV]f64 = undefined;
+    var pb: [NV]f64 = undefined;
+    sim.p.load(a[0], a[1], a[2], &pa);
+    sim.p.load(b[0], b[1], b[2], &pb);
+    var pp: [NV]f64 = undefined;
+    for (0..NV) |iv| pp[iv] = 0.5 * (pa[iv] + pb[iv]);
+    sim.p.store(dst[0], dst[1], dst[2], &pp);
+}
+
+fn p2uCell3(comptime SimT: type, sim: *SimT, c: [3]i64) Error!void {
+    try p2uCell(SimT, sim, c[0], c[1], c[2]);
+}
+
+/// One elongated corner edge-tube: the 2D "corner" in the (pa,pb) plane, filled
+/// identically at every slice of the through-axis `pc` over its full ghost span
+/// [-NG, N+NG). Mirrors the per-corner body of finite.c's along-z/y/x blocks:
+/// two 1-deep surface strips (the NG−1 outer ghosts) copied from the domain
+/// edge, then the two diagonal ghosts averaged. `a_hi`/`b_hi` pick the low/high
+/// side on each corner axis.
+fn fillEdgeTube(
+    comptime SimT: type,
+    sim: *SimT,
+    comptime pa: usize,
+    comptime a_hi: bool,
+    comptime pb: usize,
+    comptime b_hi: bool,
+    comptime pc: usize,
+) Error!void {
+    const ng: i64 = @intCast(sim.grid.ng);
+    const dimsize = [3]i64{ sim.nxi(), sim.nyi(), sim.nzi() };
+    const na = dimsize[pa];
+    const nb = dimsize[pb];
+    const nc = dimsize[pc];
+
+    // domain-edge cell and the two inner ghosts on each corner axis
+    const a_edge: i64 = if (a_hi) na - 1 else 0;
+    const a_g1: i64 = if (a_hi) na else -1;
+    const a_g2: i64 = if (a_hi) na + 1 else -2;
+    const b_edge: i64 = if (b_hi) nb - 1 else 0;
+    const b_g1: i64 = if (b_hi) nb else -1;
+    const b_g2: i64 = if (b_hi) nb + 1 else -2;
+
+    var c: i64 = -ng;
+    while (c < nc + ng) : (c += 1) {
+        // NG−1 outer-ghost surface strips: b-strip along a, a-strip along b
+        var i: i64 = 0;
+        while (i < ng - 1) : (i += 1) {
+            const a_out: i64 = if (a_hi) na + i + 1 else -ng + i;
+            const b_out: i64 = if (b_hi) nb + i + 1 else -ng + i;
+            const db = cell3(pa, a_out, pb, b_g1, pc, c); // (a_out, b_g1) ← (a_out, b_edge)
+            copyCell3(SimT, sim, db, cell3(pa, a_out, pb, b_edge, pc, c));
+            try p2uCell3(SimT, sim, db);
+            const da = cell3(pa, a_g1, pb, b_out, pc, c); // (a_g1, b_out) ← (a_edge, b_out)
+            copyCell3(SimT, sim, da, cell3(pa, a_edge, pb, b_out, pc, c));
+            try p2uCell3(SimT, sim, da);
+        }
+        // inner diagonal (a_g1,b_g1) = ½[(a_g1,b_edge) + (a_edge,b_g1)]
+        const d1 = cell3(pa, a_g1, pb, b_g1, pc, c);
+        avgCell3(SimT, sim, d1, cell3(pa, a_g1, pb, b_edge, pc, c), cell3(pa, a_edge, pb, b_g1, pc, c));
+        try p2uCell3(SimT, sim, d1);
+        // outer diagonal (a_g2,b_g2) = ½[(a_g2,b_g1) + (a_g1,b_g2)]
+        const d2 = cell3(pa, a_g2, pb, b_g2, pc, c);
+        avgCell3(SimT, sim, d2, cell3(pa, a_g2, pb, b_g1, pc, c), cell3(pa, a_g1, pb, b_g2, pc, c));
+        try p2uCell3(SimT, sim, d2);
+    }
+}
+
+/// One of the 8 total corner cubes (finite.c:4133-4228): an NG×NG×NG block of
+/// ghosts all copied from the single nearest active domain corner cell.
+fn fillCornerCube(comptime SimT: type, sim: *SimT, x_hi: bool, y_hi: bool, z_hi: bool) Error!void {
+    const ng: i64 = @intCast(sim.grid.ng);
+    const nx = sim.nxi();
+    const ny = sim.nyi();
+    const nz = sim.nzi();
+    const src = [3]i64{
+        if (x_hi) nx - 1 else 0,
+        if (y_hi) ny - 1 else 0,
+        if (z_hi) nz - 1 else 0,
+    };
+    const x0: i64 = if (x_hi) nx else -ng;
+    const x1: i64 = if (x_hi) nx + ng else 0;
+    const y0: i64 = if (y_hi) ny else -ng;
+    const y1: i64 = if (y_hi) ny + ng else 0;
+    const z0: i64 = if (z_hi) nz else -ng;
+    const z1: i64 = if (z_hi) nz + ng else 0;
+
+    var ix = x0;
+    while (ix < x1) : (ix += 1) {
+        var iy = y0;
+        while (iy < y1) : (iy += 1) {
+            var iz = z0;
+            while (iz < z1) : (iz += 1) {
+                const dst = [3]i64{ ix, iy, iz };
+                copyCell3(SimT, sim, dst, src);
+                try p2uCell3(SimT, sim, dst);
+            }
+        }
+    }
+}
+
+/// finite.c:3673-4228 — full-3D (TNY>1 && TNZ>1) total-corner filling.
+fn fillCorners3d(comptime SimT: type, sim: *SimT) Error!void {
+    // elongated corners along z (x-y corners, all iz)
+    try fillEdgeTube(SimT, sim, 0, false, 1, false, 2);
+    try fillEdgeTube(SimT, sim, 0, false, 1, true, 2);
+    try fillEdgeTube(SimT, sim, 0, true, 1, false, 2);
+    try fillEdgeTube(SimT, sim, 0, true, 1, true, 2);
+    // elongated corners along y (x-z corners, all iy)
+    try fillEdgeTube(SimT, sim, 0, false, 2, false, 1);
+    try fillEdgeTube(SimT, sim, 0, false, 2, true, 1);
+    try fillEdgeTube(SimT, sim, 0, true, 2, false, 1);
+    try fillEdgeTube(SimT, sim, 0, true, 2, true, 1);
+    // elongated corners along x (y-z corners, all ix)
+    try fillEdgeTube(SimT, sim, 1, false, 2, false, 0);
+    try fillEdgeTube(SimT, sim, 1, false, 2, true, 0);
+    try fillEdgeTube(SimT, sim, 1, true, 2, false, 0);
+    try fillEdgeTube(SimT, sim, 1, true, 2, true, 0);
+    // total corner cubes (overwrite the shared corner cells last), C order
+    try fillCornerCube(SimT, sim, false, false, false);
+    try fillCornerCube(SimT, sim, true, false, false);
+    try fillCornerCube(SimT, sim, false, true, false);
+    try fillCornerCube(SimT, sim, true, true, false);
+    try fillCornerCube(SimT, sim, false, false, true);
+    try fillCornerCube(SimT, sim, true, false, true);
+    try fillCornerCube(SimT, sim, false, true, true);
+    try fillCornerCube(SimT, sim, true, true, true);
 }
