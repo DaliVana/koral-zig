@@ -249,6 +249,9 @@ fn fillRadStateCoreG(
 
     const kappaes = par.kappaesAtG(T, rho, trad);
 
+    // the residual/f1dErr read gas_abs/rad_abs/rad_ross only; the full state
+    // fills every channel for the golden/opacity tests.
+    const op_level: opacities.OpacLevel = if (full) .full else .residual;
     const kappa_result = switch (par.kappa) {
         .default => opacities.calcKappaFromStateG(T, c, par.channels, .{
             .rho = rho,
@@ -258,7 +261,7 @@ fn fillRadStateCoreG(
             .tradbb = tradbb,
             .ne = ne,
             .bsq = bsq,
-        }, full),
+        }, op_level),
         // PR_KAPPA grey: kappa = coeff·rho, all slots assigned by the
         // problem snippet, totEmissivity = kappaGasAbs·4πB
         // (opacities.c:80 with B = sigma_rad_over_pi·Te⁴).
@@ -485,4 +488,65 @@ pub fn calcChi(
 ) relele.Error!f64 {
     const kappa = try calcKappa(cfg, pp, geom, gamma_adiab, par);
     return kappa + calcKappaes(cfg, pp, gamma_adiab, par);
+}
+
+/// Slim calc_chi for the wavespeed τ-limiter (sim.zig) and the radviscosity
+/// mean-free-path (radvisc.zig) — finding #5. χ = κ + κ_es needs neither the
+/// radiation frame (Rij / Ê / TradBB) nor the four Trad-dependent opacity
+/// channels: κ = opac.gas_abs depends only on (ρ, Te, ne, b²) and the
+/// standalone κ_es uses Trad = Te. So this skips calcRij, the Ehat
+/// contraction, lteTfromE, sgas, the state-path kappaes, and the
+/// rad_abs / rad_ross / rad_num / gas_ross channels (a dozen transcendentals
+/// per cell), yet is bit-identical to calcChi (gated in simd_tests.zig). Keep
+/// calcChi as the C-parity golden entry point.
+///
+/// The error union mirrors calcChi's signature so the callers' `try` is a pure
+/// name swap; with VELPRIM == VELR the fill below cannot actually fail.
+pub fn calcChiSlim(
+    comptime cfg: config.Config,
+    pp: [layout.VarLayout(cfg).count]f64,
+    geom: *const Geometry,
+    gamma_adiab: f64,
+    par: *const Params,
+) relele.Error!f64 {
+    const L = layout.VarLayout(cfg);
+    const c = &par.consts;
+    const rho = pp[L.index(.rho)];
+    const uint = pp[L.index(.uu)];
+    const temps = thermo.tempsFromUrhoG(f64, c, uint, rho, gamma_adiab);
+    const ne = thermo.thermalNeG(f64, c, rho);
+
+    // ucon/ucov + b² exactly as fillRadStateCoreG derives them (kappagassyn's
+    // bmagcgs is the only radiation-independent term that needs b²).
+    const u = relele.uconUcovFromPrimsG(f64, .{
+        pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)],
+    }, &geom.gg, &geom.GG);
+
+    var bsq: f64 = 0;
+    if (comptime L.hasVar(.b1)) {
+        const bf = mhd.bconBcovBsqFrom4velG(f64, .{
+            pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)],
+        }, u.con, u.cov, &geom.gg);
+        bsq = bf.bsq;
+    }
+
+    // κ = opac.gas_abs (Trad-independent); tgas/trad/tradbb are unread on the
+    // `.chi` opacity level, passed for the StateIn shape only.
+    const kappa = switch (par.kappa) {
+        .default => opacities.calcKappaFromStateG(f64, c, par.channels, .{
+            .rho = rho,
+            .tgas = temps.tgas,
+            .te = temps.te,
+            .trad = temps.te,
+            .tradbb = temps.te,
+            .ne = ne,
+            .bsq = bsq,
+        }, .chi).kappa,
+        .grey => |coeff| coeff * rho,
+    };
+
+    // standalone κ_es with Trad = Te (calc_kappaes, opacities.c:126) — the
+    // same term calcKappaes adds, minus the second tempsFromUrho recompute.
+    const kappaes = par.kappaesAt(rho, temps.te);
+    return kappa + kappaes;
 }

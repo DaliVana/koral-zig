@@ -564,7 +564,11 @@ pub fn Solver(comptime cfg: config.Config) type {
             return if (ppp[j + sh] >= 0.0) sign * veleps else -sign * veleps;
         }
 
-        /// C: solve_implicit_lab_4dprim (rad.c:341), 4 equations.
+        /// C: solve_implicit_lab_4dprim (rad.c:341), 4 equations. Thin wrapper:
+        /// computes the rung-independent reference fill `state00` and the
+        /// bisect starting guess, then runs the Newton core. solveImplicitLab
+        /// hoists both out of the rung loop (finding #10); the direct test call
+        /// sites (implicit_tests.zig) keep this original signature.
         pub fn solve4dPrim(
             uu00: *const [NV]f64,
             pp00: *const [NV]f64,
@@ -579,21 +583,43 @@ pub fn Solver(comptime cfg: config.Config) type {
             whichframe: WhichFrame,
             pp_out: *[NV]f64,
         ) Solve4dResult {
-            const fail = Solve4dResult{ .ok = false, .iters = 0, .uu = uu00.* };
-
+            const state00 = radforce.fillRadState(cfg, pp00.*, geom, gamma_adiab, opac) catch
+                return .{ .ok = false, .iters = 0, .uu = uu00.* };
             var pp0 = pp00.*;
-            var uu = uu00.*;
-
-            const state00 = radforce.fillRadState(cfg, pp00.*, geom, gamma_adiab, opac) catch return fail;
-
             if (ip.start_with_bisect) {
                 _ = solve1dPrim(pp00, &state00, geom, dt, gamma_adiab, opac, &pp0);
             }
+            return solve4dPrimCore(uu00, &state00, &pp0, geom, dt, gamma_adiab, rad, opac, ip, whichprim, whicheq, whichframe, pp_out);
+        }
+
+        /// The Newton core of solve4dPrim. `state00` (the once-per-solve
+        /// reference fill — the full fill: residual reads state00.sgas on the
+        /// entropy rungs) and `pp0in` (the bisect-adjusted starting guess) are
+        /// rung-independent, so solveImplicitLab computes them once and hands
+        /// the same two to all six rungs (finding #10).
+        pub fn solve4dPrimCore(
+            uu00: *const [NV]f64,
+            state00: *const radforce.RadState,
+            pp0in: *const [NV]f64,
+            geom: *const Geometry,
+            dt: f64,
+            gamma_adiab: f64,
+            rad: invert_rad.RadParams,
+            opac: *const radforce.Params,
+            ip: *const ImplicitParams,
+            whichprim: WhichPrim,
+            whicheq: WhichEq,
+            whichframe: WhichFrame,
+            pp_out: *[NV]f64,
+        ) Solve4dResult {
+            const fail = Solve4dResult{ .ok = false, .iters = 0, .uu = uu00.* };
+
+            var uu = uu00.*;
 
             const sh: usize = if (whichprim == .mhd) i_uu else i_ee;
             const conv = if (whicheq == .entropy) ip.entrconv else ip.conv;
 
-            var pp = pp0;
+            var pp = pp0in.*;
             var fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
             // the per-iteration state feeds only residual(), which reads none
             // of the slim-dropped fields (Sgas / rad_num / gas_ross); the slim
@@ -626,7 +652,7 @@ pub fn Solver(comptime cfg: config.Config) type {
 
                 if (fret < -1) return fail;
 
-                const errbase = residual(&uu, &pp, &state, uu00, &state00, dt, geom, opac, whichprim, whicheq, whichframe, &f1) catch return fail;
+                const errbase = residual(&uu, &pp, &state, uu00, state00, dt, geom, opac, whichprim, whicheq, whichframe, &f1) catch return fail;
                 if (errbase < conv) break; // success (error)
 
                 // Step 1: one-sided FD Jacobian, retrying the other
@@ -683,7 +709,7 @@ pub fn Solver(comptime cfg: config.Config) type {
                     else
                         radforce.fillRadStateG(cfg, V4, ppv, &ggv, &GGv, gamma_adiab, opac);
                     var f2v: [4]V4 = undefined;
-                    _ = residualG(V4, &uuv, &ppv, &stv, uu00, &state00, dt, &ggv, &GGv, gdetv, opac, whichprim, whicheq, whichframe, &f2v);
+                    _ = residualG(V4, &uuv, &ppv, &stv, uu00, state00, dt, &ggv, &GGv, gdetv, opac, whichprim, whicheq, whichframe, &f2v);
                     for (0..4) |i| {
                         const fi: [4]f64 = f2v[i]; // lane j = perturbation j
                         for (0..4) |j| {
@@ -721,7 +747,7 @@ pub fn Solver(comptime cfg: config.Config) type {
                                 }
                             }
 
-                            _ = residual(&uu, &pp, &state, uu00, &state00, dt, geom, opac, whichprim, whicheq, whichframe, &f2) catch {
+                            _ = residual(&uu, &pp, &state, uu00, state00, dt, geom, opac, whichprim, whicheq, whichframe, &f2) catch {
                                 failed = true;
                                 break;
                             };
@@ -864,6 +890,17 @@ pub fn Solver(comptime cfg: config.Config) type {
             const ff = radiation.calcFfRtt(cfg, pp00, geom) catch return failres;
             const ehat = -ff.rtt;
 
+            // state00 and the bisect starting guess are pure functions of
+            // (pp00, geom, dt, opac) — none of the rung's whichprim/whicheq/
+            // whichframe (finding #10). Compute them once for all six rungs,
+            // and early-out if the reference fill fails: every rung would fail
+            // identically at that point, so the ladder result is unchanged.
+            const state00 = radforce.fillRadState(cfg, pp00, geom, gamma_adiab, opac) catch return failres;
+            var pp0 = pp00;
+            if (ip.start_with_bisect) {
+                _ = solve1dPrim(&pp00, &state00, geom, dt, gamma_adiab, opac, &pp0);
+            }
+
             const startwith: WhichPrim = if (ehat < ip.threshold * pp00[i_uu]) .rad else .mhd;
             const swapped: WhichPrim = if (startwith == .rad) .mhd else .rad;
 
@@ -880,7 +917,7 @@ pub fn Solver(comptime cfg: config.Config) type {
 
             for (rungs, 0..) |rung, ir| {
                 var ppw = pp.*;
-                const r4 = solve4dPrim(&uu00, &pp00, geom, dt, gamma_adiab, rad, opac, ip, rung.p, rung.e, rung.fr, &ppw);
+                const r4 = solve4dPrimCore(&uu00, &state00, &pp0, geom, dt, gamma_adiab, rad, opac, ip, rung.p, rung.e, rung.fr, &ppw);
                 if (r4.ok) {
                     pp.* = ppw;
                     uu.* = p2u_mod.p2u(cfg, ppw, geom, gamma_adiab) catch return failres;

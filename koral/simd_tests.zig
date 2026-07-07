@@ -399,3 +399,89 @@ test "slim_state RadState fills leave the full 6-rung ladder bitwise identical" 
     try expect(nok > 80);
     try expect(nrungup > 10);
 }
+
+// finding #5: the slim wavespeed/radvisc χ must equal the full C-parity
+// calcChi bit-for-bit. calcChiSlim skips the radiation frame and the four
+// Trad-dependent opacity channels, computing only κ = gas_abs + κ_es(Te).
+test "slim calcChi agrees bitwise with the full calcChi" {
+    var prng = std.Random.DefaultPrng.init(0x53494d4436);
+    const rng = prng.random();
+
+    const params = [_]radforce.Params{
+        radforce.Params.puffy(),
+        radforce.Params.grey(
+            @import("units.zig").Units.init(10.0),
+            thermo.Composition.cdefault,
+            0.34,
+            0.4,
+        ),
+    };
+    const geoms = [_]Geometry{
+        geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 }),
+        geometryAt(.ks, puffy_mp, .{ 0, 7.3, 1.1, 0.4 }),
+    };
+
+    for (0..200) |it| {
+        const p = &params[it % 2];
+        const geo = &geoms[(it / 2) % 2];
+        const c = &p.consts;
+        // toggle B on/off to exercise the bmagcgs > 0 select and the b = 0 path
+        const pp = randPp(rng, c, geo, it % 3 != 0);
+
+        const chi_full = try radforce.calcChi(cfg, pp, geo, gam, p);
+        const chi_slim = try radforce.calcChiSlim(cfg, pp, geo, gam, p);
+        try expectAggBits(f64, chi_full, chi_slim);
+    }
+}
+
+// finding #10: hoisting state00 + the bisect starting guess out of the rung
+// loop must leave every rung's result untouched. The wrapper solve4dPrim
+// recomputes both internally (the pre-#10 per-rung path); solve4dPrimCore is
+// fed the once-hoisted pair — they must agree bit-for-bit on all six rungs.
+test "solve4dPrim state00/bisect hoist is bitwise faithful across all six rungs" {
+    var prng = std.Random.DefaultPrng.init(0x53494d4437);
+    const rng = prng.random();
+    const p = radforce.Params.puffy();
+    const c = &p.consts;
+    const ip = implicit.ImplicitParams.puffy;
+
+    const geoms = [_]Geometry{
+        geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 }),
+        geometryAt(.ks, puffy_mp, .{ 0, 7.3, 1.1, 0.4 }),
+    };
+    const rungs = [_]struct { pr: implicit.WhichPrim, eq: implicit.WhichEq, fr: implicit.WhichFrame }{
+        .{ .pr = .rad, .eq = .energy, .fr = .lab },
+        .{ .pr = .rad, .eq = .energy, .fr = .ff },
+        .{ .pr = .mhd, .eq = .energy, .fr = .lab },
+        .{ .pr = .mhd, .eq = .energy, .fr = .ff },
+        .{ .pr = .rad, .eq = .entropy, .fr = .ff },
+        .{ .pr = .mhd, .eq = .entropy, .fr = .ff },
+    };
+
+    var nchecked: usize = 0;
+    for (0..200) |it| {
+        const geo = &geoms[it % 2];
+        const pp00 = randPp(rng, c, geo, it % 3 != 0);
+        const dt = std.math.pow(f64, 10.0, -10.0 + 10.0 * rng.float(f64));
+        const uu00 = p2u_mod.p2u(cfg, pp00, geo, gam) catch continue;
+
+        // hoist state00 + bisect once, exactly as solveImplicitLab now does
+        const state00 = radforce.fillRadState(cfg, pp00, geo, gam, &p) catch continue;
+        var pp0 = pp00;
+        if (ip.start_with_bisect) _ = ImplT.solve1dPrim(&pp00, &state00, geo, dt, gam, &p, &pp0);
+
+        for (rungs) |r| {
+            var ppw_wrap = pp00;
+            var ppw_core = pp00;
+            const rw = ImplT.solve4dPrim(&uu00, &pp00, geo, dt, gam, rad_params, &p, &ip, r.pr, r.eq, r.fr, &ppw_wrap);
+            const rc = ImplT.solve4dPrimCore(&uu00, &state00, &pp0, geo, dt, gam, rad_params, &p, &ip, r.pr, r.eq, r.fr, &ppw_core);
+            try std.testing.expectEqual(rw.ok, rc.ok);
+            try std.testing.expectEqual(rw.iters, rc.iters);
+            try expectAggBits([NV]f64, rw.uu, rc.uu);
+            try expectAggBits([NV]f64, ppw_wrap, ppw_core);
+            nchecked += 1;
+        }
+    }
+    std.debug.print("solve4dPrim hoist faithful: {d} (rung × case) checks\n", .{nchecked});
+    try expect(nchecked > 500);
+}

@@ -31,6 +31,68 @@ fn nowNs() f64 {
 
 const Rec = struct { geo: koral.Geometry, dt: f64, pp0: [NV]f64 };
 
+const ImplicitParams = koral.solve.implicit.ImplicitParams;
+const RadParams = koral.solve.invert_rad.RadParams;
+const Params = koral.physics.radforce.Params;
+
+/// Shared state for the threaded throughput measurement. The battery is
+/// embarrassingly parallel (each solveImplicitLab is pure — no shared mutable
+/// state, the P1 thread-safety contract), so we hand out cell·round work items
+/// via a dynamic ticket (fetchAdd) — the ~17× floor/torus cost spread means a
+/// static split would straggle, exactly as in the production tile scheduler.
+const Task = struct {
+    recs: []const Rec,
+    ip: *const ImplicitParams,
+    p: *const Params,
+    rp: RadParams,
+    total: usize, // recs.len * rounds
+    ticket: std.atomic.Value(usize) align(64) = .{ .raw = 0 },
+    sink: std.atomic.Value(usize) align(64) = .{ .raw = 0 },
+};
+
+fn benchWorker(t: *Task) void {
+    const nrec = t.recs.len;
+    var ls: usize = 0;
+    while (true) {
+        const k = t.ticket.fetchAdd(1, .monotonic);
+        if (k >= t.total) break;
+        const rec = &t.recs[k % nrec];
+        var pp = rec.pp0;
+        var uu: [NV]f64 = undefined;
+        const res = ImplT.solveImplicitLab(&uu, &pp, &rec.geo, rec.dt, gam, t.rp, t.p, t.ip);
+        ls +%= res.iters;
+    }
+    _ = t.sink.fetchAdd(ls, .monotonic);
+}
+
+/// Effective system ns/solve at `nthreads`: total wall time / total solves,
+/// dynamically load-balanced. Single spawn/join per call (amortized to nil).
+fn measureThroughput(
+    allocator: std.mem.Allocator,
+    nthreads: usize,
+    recs: []const Rec,
+    ip: *const ImplicitParams,
+    p: *const Params,
+    rp: RadParams,
+    rounds: usize,
+) !f64 {
+    const helpers = try allocator.alloc(std.Thread, nthreads - 1);
+    defer allocator.free(helpers);
+
+    var best: f64 = 1e300;
+    for (0..3) |_| { // a few passes, keep the fastest (least scheduler noise)
+        var task = Task{ .recs = recs, .ip = ip, .p = p, .rp = rp, .total = recs.len * rounds };
+        const t0 = nowNs();
+        for (helpers) |*h| h.* = try std.Thread.spawn(.{}, benchWorker, .{&task});
+        benchWorker(&task); // main participates as worker 0
+        for (helpers) |h| h.join();
+        const el = nowNs() - t0;
+        std.mem.doNotOptimizeAway(task.sink.load(.monotonic));
+        best = @min(best, el);
+    }
+    return best / @as(f64, @floatFromInt(recs.len * rounds)); // ns/solve
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
@@ -40,6 +102,7 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next(); // program name
     const path = args.next() orelse "tests/golden/rad/rad_implicit.kgld";
     const rounds: usize = if (args.next()) |a| try std.fmt.parseInt(usize, a, 10) else 30;
+    const nthreads: usize = if (args.next()) |a| try std.fmt.parseInt(usize, a, 10) else 1;
 
     const raw = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 << 24)) catch |err| {
         std.debug.print("bench_implicit: cannot read '{s}': {s}\n", .{ path, @errorName(err) });
@@ -143,4 +206,16 @@ pub fn main(init: std.process.Init) !void {
         "simd speedup on the implicit solve: {d:.3}x (avg), {d:.3}x (best) | Newton-only (no bisect): {d:.3}x (avg)\n",
         .{ avg_ns[0] / avg_ns[1], best_ns[0] / best_ns[1], avg_ns[2] / avg_ns[3] },
     );
+
+    // ---- threaded throughput (production config = SIMD) --------------------
+    // effective system ns/solve = wall / total solves, at 1 vs `nthreads`.
+    const eff1 = try measureThroughput(allocator, 1, recs, &ip_simd, &p, rp, rounds);
+    std.debug.print("\nthreaded throughput (simd, dynamic ticket): 1 thread = {d:.0} ns/solve\n", .{eff1});
+    if (nthreads > 1) {
+        const effn = try measureThroughput(allocator, nthreads, recs, &ip_simd, &p, rp, rounds);
+        std.debug.print(
+            "                                            {d} threads = {d:.0} ns/solve  ({d:.2}x scaling, {d:.1}% efficiency)\n",
+            .{ nthreads, effn, eff1 / effn, 100.0 * (eff1 / effn) / @as(f64, @floatFromInt(nthreads)) },
+        );
+    }
 }

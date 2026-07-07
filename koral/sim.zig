@@ -512,7 +512,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                             // left/right sizes
                             var tautot: [3]f64 = @splat(0);
                             if (self.opt.opac) |*op| {
-                                const chi = try radforce.calcChi(cfg, pp, &geom, self.opt.gam, op);
+                                const chi = try radforce.calcChiSlim(cfg, pp, &geom, self.opt.gam, op);
                                 const idx3 = [3]i64{ ix, iy, iz };
                                 for (0..3) |d| {
                                     const sg = @sqrt(geom.gg[d + 1][d + 1]);

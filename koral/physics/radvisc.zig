@@ -245,7 +245,7 @@ pub fn calcRadViscCoeff(
     const cfg = SimT.Cfg;
     const opac = &(sim.opt.opac orelse return 0);
 
-    const chi = try radforce.calcChi(cfg, pp.*, geom, sim.opt.gam, opac);
+    const chi = try radforce.calcChiSlim(cfg, pp.*, geom, sim.opt.gam, opac);
     var mfp = 1.0 / chi;
 
     const g = &sim.grid;
