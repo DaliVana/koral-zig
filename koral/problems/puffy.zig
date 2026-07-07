@@ -51,9 +51,27 @@ const Geometry = geometry.Geometry;
 // ---------------------------------------------------------------------------
 // problem constants (PROBLEMS/PUFFY/define.h)
 
-pub const mass: f64 = 10.0; // MASS
+/// MASS (define.h) in solar masses. A module global like C's `#define MASS`,
+/// but settable once at startup so a preset (e.g. Sagittarius A*, ~4.3e6) can
+/// retarget the torus thermo/opacity/radiation-floor unit scale. Tests and
+/// every golden leave this at 10 — only `PROBLEMS/puffy/main.zig` writes it,
+/// from the params file, before `initAll`. It feeds `consts()` and
+/// `atmConsts()` (init); the stepping opacity mass is set in parallel via
+/// `radforce.Params.puffyMass`. The torus geometry (`torusConsts`) is
+/// dimensionless in GM units and does not depend on mass.
+pub var mass: f64 = 10.0; // MASS
 pub const gam: f64 = 5.0 / 3.0; // GAMMA
-pub const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+/// Metric parameters (BHSPIN, MKSR0, MKSH0). Like `mass`, a module global set
+/// once at startup: `PROBLEMS/puffy/main.zig` may overwrite `mp.a` from the
+/// params file's `bhspin` for a spinning preset. Tests and every golden leave
+/// `a = 0` (Schwarzschild, matching C PUFFY's BHSPIN = 0), so they are
+/// bit-identical. The full torus/dynamo/metric chain is already general in `a`
+/// (limotorus `computeGd`/`lK`, `rHorizonBL`/`rIscoBL`, MKS2 Kerr–Schild); the
+/// grid extents (MKSR0/MKSH0, RMIN/RMAX) do NOT depend on spin. Caveat: RMIN =
+/// 1.85 sits inside the horizon only for a ≲ 0.5 (r_h = 1+√(1−a²)); at higher
+/// spin the inner boundary moves outside the horizon and the plain-copy XBCLO
+/// excision is no longer causally clean with this fixed grid.
+pub var mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
 pub const rmin: f64 = 1.85; // RMIN
 pub const rmax: f64 = 500.0; // RMAX
 pub const rhoatmmin: f64 = 1.0e-24; // RHOATMMIN

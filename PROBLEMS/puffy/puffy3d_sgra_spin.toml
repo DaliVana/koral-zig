@@ -1,0 +1,72 @@
+# PUFFY 3D — SAGITTARIUS A* preset, SPINNING (Kerr) variant.
+#
+# Run:  zig build puffy -Doptimize=ReleaseFast
+#       ./zig-out/bin/puffy PROBLEMS/puffy/puffy3d_sgra_spin.toml
+#
+# Same as puffy3d_sgra.toml but with BLACK-HOLE SPIN turned on. See that file's
+# header for the mass/regime caveats — they all still apply. This file documents
+# the ADDITIONAL spin caveats. Read them before trusting the output.
+#
+# ============================================================================
+# SPIN — what is (and is not) validated
+# ============================================================================
+# a = 0.9375 is the canonical EHT/GRMHD high-spin value, consistent with recent
+# Sagittarius A* spin estimates (EHT 2022 favored a ~ 0.5-0.94; the outflow
+# method gives a* = 0.90 +/- 0.06; flare / radio-X-ray analyses favor a ~
+# 0.8-0.9). At this spin:
+#     r_horizon = 1 + sqrt(1 - a^2) = 1.348 M      (was 2 M at a = 0)
+#     r_ISCO (prograde)             = 2.044 M      (was 6 M at a = 0)
+#
+# The physics IS spin-general: the Kerr metric (MKS2 = modified Kerr-Schild),
+# the whole limotorus construction (computeGd / lK / lamBL / lnf_integrand /
+# torusConsts), and the dynamo's horizon / ISCO / Omega_K all take `a` and use
+# the general expressions. The metric/torus/dynamo therefore respond correctly
+# to spin (the frame-dragging ISCO moves inward, the initial field/torus shift).
+#
+# TWO THINGS TO KNOW:
+#
+#   1. NOT ORACLE-VALIDATED.  The C KORAL PUFFY sets BHSPIN = 0, so every
+#      bit-for-bit golden in this port is at a = 0. There is NO C reference at
+#      a != 0. This spinning run is therefore an UNVALIDATED experiment: the
+#      spin-dependent code paths are exercised but not checked against C. (To
+#      validate, one would rebuild the C oracle with BHSPIN = 0.9375 and add
+#      goldens — a separate task.)
+#
+#   2. INNER BOUNDARY.  RMIN = 1.85 M is a fixed PUFFY grid constant. At a = 0
+#      that is inside the horizon (2 M), so the plain-copy inner boundary
+#      (XBCLO) is a clean, causally-disconnected excision. At a = 0.9375 the
+#      horizon shrinks to 1.348 M, so RMIN now sits OUTSIDE the horizon and the
+#      plain-copy boundary is no longer a clean excision (the driver prints a
+#      loud NOTE at startup). A short smoke run (64x60, 40 steps) stays stable
+#      with no NaNs/fixups, but long-time behavior at the inner edge is not
+#      guaranteed. For a numerically clean run with THIS grid use bhspin <= 0.5
+#      (r_h >= 1.866 > RMIN); a proper high-spin setup would move RMIN inside
+#      the horizon, which needs a grid change (RMIN is currently hardcoded).
+# ============================================================================
+
+[physical]
+mass = 4.297e6     # Sagittarius A* (GRAVITY / EHT 2022), see puffy3d_sgra.toml
+bhspin = 0.9375    # dimensionless Kerr spin a. Set to 0.5 for a numerically
+                   # clean run with the current grid; 0.0 = the validated
+                   # Schwarzschild case. Prograde torus.
+
+[grid]
+nx = 128           # radial
+ny = 120           # theta
+nz = 12            # azimuthal (φ) — subdivides the fixed π/2 wedge, periodic
+
+[run]
+tstart = 0.0
+tmax = 10000.0     # GM/c^3 (~21.2 s each → ~2.45 days; reduce for a quick look)
+nstep_max = 1000   # hard cap on steps
+tsteplim = 0.5     # CFL factor
+dtout1 = 100.0     # code-time output cadence in GM/c³ (NOT steps): scalars +
+                   # dump + .silo when t crosses a multiple. At dt~5e-3 the
+                   # first frame (t=100) is ~19k steps away, so for a short run
+                   # use nout_step below instead.
+dtout2 = 500.0     # >0 also writes a binary prim dump at each output
+nout_step = 100    # ALSO output every N steps (0 = time-based only). This is
+                   # what makes a short run produce frames: with nstep_max=1000
+                   # you get ~10 .silo frames to watch the evolution in VisIt.
+out_dir = "dumps/puffy3d_sgra_spin"
+nthreads = 12      # per-step worker team (1 = serial)

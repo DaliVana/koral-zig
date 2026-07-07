@@ -42,6 +42,12 @@ pub const Params = struct {
     tsteplim: f64 = 0.5,
     dtout1: f64 = 0.0,
     dtout2: f64 = 0.0,
+    /// Output every N steps regardless of code time (0 = disabled → the
+    /// time-based DTOUT1/DTOUT2 cadence only). A convenience the C code lacks:
+    /// for interactive VisIt watching a fixed step interval gives a
+    /// predictable file count no matter how the CFL dt evolves (DTOUT1 is in
+    /// GM/c³, so a slow run can reach nstep_max long before the first frame).
+    nout_step: usize = 0,
     out_dir: []const u8 = "dumps",
 
     // floors & ceilings (C: choices.h / define.h)

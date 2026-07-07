@@ -71,8 +71,19 @@ pub const Params = struct {
     /// The PUFFY build: MASS = 10 M☉, HFRAC = 1 with the direct
     /// MU_GAS/MU_I/MU_E = 1/2/2 overrides, all channels on, and the
     /// Klein–Nishina scattering hook (PR_KAPPAES) enabled explicitly.
+    /// This is the validated-golden entry point — every oracle comparison
+    /// holds the mass at 10, so leave it here.
     pub fn puffy() Params {
-        var p = init(units_mod.Units.init(10.0), thermo.Composition.puffy);
+        return puffyMass(10.0);
+    }
+
+    /// The PUFFY build at an arbitrary black-hole mass (solar masses) — same
+    /// composition, channels and Klein–Nishina scattering as `puffy()`; only
+    /// the CGS↔GU unit scale differs (opacities, LTE temperatures, radiation
+    /// floors). Used by the Sagittarius A* preset (MASS ≈ 4.3e6). The goldens
+    /// stay on `puffy()` at MASS = 10.
+    pub fn puffyMass(mass_msun: f64) Params {
+        var p = init(units_mod.Units.init(mass_msun), thermo.Composition.puffy);
         p.kappaes = .puffy;
         return p;
     }

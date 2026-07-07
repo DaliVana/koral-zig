@@ -1,0 +1,68 @@
+# PUFFY 3D — SAGITTARIUS A* preset (copy of puffy3d.toml, retargeted mass).
+#
+# Run:  zig build puffy -Doptimize=ReleaseFast
+#       ./zig-out/bin/puffy PROBLEMS/puffy/puffy3d_sgra.toml
+#
+# ============================================================================
+# WHAT THIS PRESET IS  (read before trusting the output as "Sgr A*")
+# ============================================================================
+# This drops the mass of Sagittarius A* — the Milky Way's supermassive black
+# hole — into the PUFFY radiation-MHD torus. Only `mass` differs from
+# puffy3d.toml; everything else (grid, torus shape, physics) is unchanged. It
+# is a numerical experiment / scale test, NOT a realistic model of Sgr A*.
+# Two caveats matter:
+#
+#   1. SPIN.  This PUFFY port is hardcoded Schwarzschild (a = 0): the dynamo
+#      uses r_horizon = 2 M, r_ISCO = 6 M, Omega_K = 1/(a+sqrt(r^3)) at a = 0,
+#      and the metric spin `puffy.mp.a` is 0. The original C PUFFY also sets
+#      BHSPIN = 0. But Sgr A* is measured to spin fast — recent constraints
+#      favor a ~ 0.5-0.94 (EHT 2022; outflow-method a* = 0.90 +/- 0.06; flare/
+#      radio-X-ray analyses a ~ 0.8-0.9). So this is necessarily a NON-spinning
+#      Sgr A*. A true Kerr run needs the a != 0 dynamo/ISCO paths (not yet
+#      validated in this port).
+#
+#   2. ACCRETION REGIME.  PUFFY is a radiation-dominated, optically thick,
+#      geometrically thick ("puffy") torus — H/R ~ 0.68, radiation-pressure
+#      supported, near/above Eddington (pgas/P ~ 1.7%). The REAL Sgr A* is a
+#      hot, tenuous, radiatively-INEFFICIENT accretion flow (RIAF/ADAF) at
+#      ~1e-8 of Eddington: optically thin and gas/magnetically supported, not
+#      radiation-supported. So this preset shows "what a radiation-supported
+#      puffy torus looks like at SMBH scale," not the actual Sgr A* flow.
+#
+# WHAT THE MASS ACTUALLY CHANGES.  The torus structure, velocities, and grid
+# are all dimensionless in GM units, so they are identical to the 10 M_sun run.
+# Mass only rescales (a) the CGS opacities / LTE temperatures / radiation floor
+# ERADATMMIN (∝ 1/MASS) — i.e. the radiation-matter coupling regime — and (b)
+# the physical time/length scale of the output:
+#     GM/c^2 = MASS * 147700 cm  = 6.347e11 cm  ~= 0.0424 AU   (grav. radius)
+#     GM/c^3 = GM/c^2 / c        = 21.17 s                     (1 code time)
+#   => tmax = 10000 GM/c^3       ~= 2.45 days simulated
+# (vs GM/c^3 = 4.9e-5 s at 10 M_sun, where 10000 code-time ~= 0.49 s.)
+# ============================================================================
+
+[physical]
+mass = 4.297e6     # Sagittarius A*: (4.297 +/- 0.012 +/- 0.040)e6 M_sun
+                   # (GRAVITY Collaboration; EHT 2022 horizon-scale imaging
+                   #  agrees at ~4.3e6). This is the ONLY field that retargets
+                   #  the physics; spin stays a = 0 (Schwarzschild, see above).
+
+[grid]
+nx = 128           # radial
+ny = 120           # theta
+nz = 12            # azimuthal (φ) — subdivides the fixed π/2 wedge, periodic
+
+[run]
+tstart = 0.0
+tmax = 10000.0     # GM/c^3 (~21.2 s each → ~2.45 days; reduce for a quick look)
+nstep_max = 10000   # hard cap on steps
+tsteplim = 0.5     # CFL factor
+dtout1 = 100.0     # code-time output cadence in GM/c³ (NOT steps): scalars +
+                   # dump + .silo when t crosses a multiple. At dt~5e-3 the
+                   # first frame (t=100) is ~19k steps away, so for a short run
+                   # use nout_step below instead.
+dtout2 = 500.0     # >0 also writes a binary prim dump at each output
+nout_step = 100    # ALSO output every N steps (0 = time-based only). This is
+                   # what makes a short run produce frames: with nstep_max=1000
+                   # you get ~10 .silo frames to watch the evolution in VisIt.
+out_dir = "dumps/puffy3d_sgra"
+nthreads = 12      # per-step worker team (1 = serial)

@@ -4,7 +4,12 @@
 //! `libsiloh5`) so the files are byte-compatible with what VisIt 3.5 reads.
 //!
 //! Field names / centering mirror `silo.c` so existing VisIt sessions and
-//! expressions carry over. The mesh nodes are the cell *boundaries* transformed
+//! expressions carry over — including PUFFY's two silo.c additions over the
+//! base: the `PRINTKAPPASTOSILO` opacity block (`kappa_gas_abs`, `kappa_rad_abs`,
+//! `kappa_gas_num`, `kappa_rad_num`, `kappa_gas_ross`, `kappa_rad_ross`,
+//! `tot_emissivity`, `kappa_es`) and the `PRINT_FIXUPS_TO_SILO` flags
+//! (`fixups_u2pmhd`, `fixups_u2prad`, `fixups_radimp`, `fixups`). The mesh nodes
+//! are the cell *boundaries* transformed
 //! to Cartesian (via the OUTCOORDS = BL spherical coordinates), and — as in
 //! PUFFY's `SILO2D_XZPLANE` — a 2D (nz==1) run is laid out in the meridional
 //! (x,z) plane with the in-plane vector component set to the physical z-part.
@@ -22,6 +27,7 @@ const coco = @import("../metric/coco.zig");
 const precompute = @import("../metric/precompute.zig");
 const relele = @import("../relele.zig");
 const radiation = @import("../physics/radiation.zig");
+const radforce = @import("../physics/radforce.zig");
 const frames = @import("../frames.zig");
 const bfield = @import("../physics/bfield.zig");
 const thermo = @import("../physics/thermo.zig");
@@ -138,7 +144,11 @@ fn writeImpl(
     // thermo constants (for temp / trad) come from the opacity params; absent
     // → those fields stay 0.
     var consts_ptr: ?*const thermo.Consts = null;
-    if (sim.opt.opac) |*op| consts_ptr = &op.consts;
+    var par_ptr: ?*const radforce.Params = null;
+    if (sim.opt.opac) |*op| {
+        consts_ptr = &op.consts;
+        par_ptr = op;
+    }
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -223,6 +233,22 @@ fn writeImpl(
     const fx = try a.alloc(f64, ncell);
     const fy = try a.alloc(f64, ncell);
     const fz = try a.alloc(f64, ncell);
+
+    // PRINTKAPPASTOSILO — the opacity channels (puffy silo.c:1116).
+    const kgasabs = try a.alloc(f64, ncell);
+    const kradabs = try a.alloc(f64, ncell);
+    const kgasnum = try a.alloc(f64, ncell);
+    const kradnum = try a.alloc(f64, ncell);
+    const kgasross = try a.alloc(f64, ncell);
+    const kradross = try a.alloc(f64, ncell);
+    const totemiss = try a.alloc(f64, ncell);
+    const kes = try a.alloc(f64, ncell);
+
+    // PRINT_FIXUPS_TO_SILO — per-cell fixup flags (puffy silo.c:581).
+    const fixups_mhd = try a.alloc(f64, ncell);
+    const fixups_rad = try a.alloc(f64, ncell);
+    const fixups_imp = try a.alloc(f64, ncell);
+    const fixups_all = try a.alloc(f64, ncell);
 
     var iz: i64 = 0;
     while (iz < nz) : (iz += 1) {
@@ -328,7 +354,46 @@ fn writeImpl(
                         fy[zi] = rij[2][0];
                         fz[zi] = rij[3][0];
                     }
+
+                    // PRINTKAPPASTOSILO: opacity channels from calc_kappa's
+                    // filled opac struct + the standalone calc_kappaes
+                    // (Trad = Te). Zero when no opacity model is wired.
+                    if (par_ptr) |par| {
+                        const st = try radforce.fillRadState(cfg, pp, &geomBL, gam, par);
+                        kgasabs[zi] = st.opac.gas_abs;
+                        kradabs[zi] = st.opac.rad_abs;
+                        kgasnum[zi] = st.opac.gas_num;
+                        kradnum[zi] = st.opac.rad_num;
+                        kgasross[zi] = st.opac.gas_ross;
+                        kradross[zi] = st.opac.rad_ross;
+                        totemiss[zi] = st.opac.tot_emissivity;
+                        kes[zi] = radforce.calcKappaes(cfg, pp, gam, par);
+                    } else {
+                        kgasabs[zi] = 0;
+                        kradabs[zi] = 0;
+                        kgasnum[zi] = 0;
+                        kradnum[zi] = 0;
+                        kgasross[zi] = 0;
+                        kradross[zi] = 0;
+                        totemiss[zi] = 0;
+                        kes[zi] = 0;
+                    }
                 }
+
+                // PRINT_FIXUPS_TO_SILO: the three fixup flags + a count of how
+                // many fired at this cell. (C's `fixups++` increments the
+                // *pointer* — a bug; the intent is the per-cell count.)
+                const fmhd = sim.getFlag(.hd_fixup, ix, iy, iz);
+                const frad = sim.getFlag(.rad_fixup, ix, iy, iz);
+                const fimp = sim.getFlag(.radimp_fixup, ix, iy, iz);
+                fixups_mhd[zi] = @floatFromInt(fmhd);
+                fixups_rad[zi] = @floatFromInt(frad);
+                fixups_imp[zi] = @floatFromInt(fimp);
+                var nfix: f64 = 0;
+                if (fmhd != 0) nfix += 1;
+                if (frad != 0) nfix += 1;
+                if (fimp != 0) nfix += 1;
+                fixups_all[zi] = nfix;
             }
         }
     }
@@ -405,7 +470,23 @@ fn writeImpl(
         try putScalar(file, "ehat", ehat, &zdims, ndim, optlist);
         try putScalar(file, "erad", erad, &zdims, ndim, optlist);
         try putScalar(file, "trad", trad, &zdims, ndim, optlist);
+
+        // PRINTKAPPASTOSILO
+        try putScalar(file, "kappa_gas_abs", kgasabs, &zdims, ndim, optlist);
+        try putScalar(file, "kappa_rad_abs", kradabs, &zdims, ndim, optlist);
+        try putScalar(file, "kappa_gas_num", kgasnum, &zdims, ndim, optlist);
+        try putScalar(file, "kappa_rad_num", kradnum, &zdims, ndim, optlist);
+        try putScalar(file, "kappa_gas_ross", kgasross, &zdims, ndim, optlist);
+        try putScalar(file, "kappa_rad_ross", kradross, &zdims, ndim, optlist);
+        try putScalar(file, "tot_emissivity", totemiss, &zdims, ndim, optlist);
+        try putScalar(file, "kappa_es", kes, &zdims, ndim, optlist);
     }
+
+    // PRINT_FIXUPS_TO_SILO (independent of RADIATION in puffy silo.c)
+    try putScalar(file, "fixups_u2pmhd", fixups_mhd, &zdims, ndim, optlist);
+    try putScalar(file, "fixups_u2prad", fixups_rad, &zdims, ndim, optlist);
+    try putScalar(file, "fixups_radimp", fixups_imp, &zdims, ndim, optlist);
+    try putScalar(file, "fixups", fixups_all, &zdims, ndim, optlist);
 
     const putVec = struct {
         fn f(fl: *DBfile, name: [*:0]const u8, n0: [*:0]const u8, n1: [*:0]const u8, n2: [*:0]const u8, c0: []const f64, c1: []const f64, c2: []const f64, d: *const [3]c_int, nd: c_int, ol: *DBoptlist) !void {

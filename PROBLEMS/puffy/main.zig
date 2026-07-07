@@ -1,5 +1,7 @@
-//! PUFFY — radiative MHD limotorus around a 10 M☉ Schwarzschild BH
-//! (port of koral_lite/PROBLEMS/PUFFY).
+//! PUFFY — radiative MHD limotorus around a Schwarzschild BH (a = 0)
+//! (port of koral_lite/PROBLEMS/PUFFY). MASS defaults to 10 M☉ but is set
+//! from the params file, so presets can retarget the scale (e.g. the
+//! Sagittarius A* preset at ~4.3e6 M☉ — see PROBLEMS/puffy/puffy3d_sgra.toml).
 //!
 //! M13: the full driver. Runs the ko.c init sequence (limotorus + calc_BfromA
 //! + β-normalization), then the RK2IMEX time loop (radiation implicit source,
@@ -23,9 +25,9 @@ const silo = koral.io.silo;
 
 const SimT = koral.Sim(cfg);
 
-/// PUFFY diagnostic radii (postproc.c calc_scalars): mass flux through the
-/// horizon, luminosity at the outer shell, scale height at r = 15 M.
-const r_horizon: f64 = 2.0; // rhorizonBL(a=0) = 1 + √(1−a²)
+/// PUFFY diagnostic radii (postproc.c calc_scalars): luminosity at the outer
+/// shell and scale height at r = 15 M. The mass-flux radius is the event
+/// horizon, computed per-run from the spin via `rHorizonBL(a)` (→ 2 at a = 0).
 const r_lum: f64 = 5000.0; // > RMAX → the outer radial shell
 const r_scale: f64 = 15.0;
 
@@ -43,7 +45,7 @@ fn options(p: *const koral.Params) SimT.Options {
         .tsteplim = p.tsteplim,
         .floors = koral.solve.invert.FloorParams.puffy,
         .rad = koral.solve.invert_rad.RadParams.puffy,
-        .opac = koral.physics.radforce.Params.puffy(),
+        .opac = koral.physics.radforce.Params.puffyMass(p.mass),
         .implicit = koral.solve.implicit.ImplicitParams.puffy,
         .correct_polaraxis = true,
         .nccorrectpolar = 2,
@@ -91,6 +93,7 @@ fn collectDiag(s: *const SimT) Diag {
 
 /// Compute the scalar row for the current state.
 fn scalarRow(s: *SimT, dt: f64) !dump.ScalarRow {
+    const r_horizon = koral.metric.core.rHorizonBL(s.opt.mp.a);
     const ix_h = scalars.radialShellIndex(SimT, s, r_horizon);
     const ix_l = scalars.radialShellIndex(SimT, s, r_lum);
     const mass = scalars.totalMass(SimT, s);
@@ -227,14 +230,35 @@ pub fn main(init: std.process.Init) !void {
     };
     defer p.deinit(allocator);
 
+    // MASS and BHSPIN are the physical scales the params file may retarget
+    // (e.g. the Sagittarius A* presets: ~4.3e6 M☉, and a ≈ 0.5–0.9). Set them
+    // before options()/initAll so the whole chain agrees: MASS drives the
+    // torus thermo/opacity/radiation-floor unit scale (consts()/atmConsts()
+    // and — via options() → radforce.puffyMass(p.mass) — the stepping opacity);
+    // BHSPIN (mp.a) drives the metric, the limotorus construction, and the
+    // dynamo's horizon/ISCO/Ωₖ. options() copies puffy.mp into the sim, so mp.a
+    // must be set first. The grid extents (RMIN/RMAX, MKSR0/MKSH0) are fixed
+    // PUFFY problem constants — independent of both mass and spin.
+    puffy.mass = p.mass;
+    puffy.mp.a = p.bhspin;
+
     var s = try SimT.init(allocator, puffy.makeGridNz(p.nx, p.ny, p.nz), options(&p));
     defer s.deinit();
 
     const u = koral.Units.init(p.mass);
+    const r_hor = koral.metric.core.rHorizonBL(p.bhspin);
     std.debug.print(
-        "puffy: NV={d} grid {d}×{d}×{d} (+{d} ghosts) | M={d} M☉ (GM/c³={e:.4}s) | threads={d} | build={s}\n",
-        .{ L.count, s.grid.nx, s.grid.ny, s.grid.nz, s.grid.ng, p.mass, u.gmc3(), p.nthreads, @tagName(builtin.mode) },
+        "puffy: NV={d} grid {d}×{d}×{d} (+{d} ghosts) | M={d} M☉ (GM/c³={e:.4}s) a={d} (r_h={d:.4}) | threads={d} | build={s}\n",
+        .{ L.count, s.grid.nx, s.grid.ny, s.grid.nz, s.grid.ng, p.mass, u.gmc3(), p.bhspin, r_hor, p.nthreads, @tagName(builtin.mode) },
     );
+    if (p.bhspin != 0.0 and puffy.rmin > r_hor) {
+        std.debug.print(
+            "puffy: *** NOTE: RMIN={d} is OUTSIDE the horizon r_h={d:.4} at a={d}; the " ++
+                "plain-copy inner boundary is no longer a clean excision. This spin is " ++
+                "unvalidated (no C oracle at a≠0) — treat as an experiment. ***\n",
+            .{ puffy.rmin, r_hor, p.bhspin },
+        );
+    }
     // A production GRRMHD run in Debug pays every bounds-check/assert and no
     // inlining — a many-fold slowdown that can silently cost days. Zig 0.16's
     // preferred_optimize_mode defaults to Debug too and would break the
@@ -289,7 +313,12 @@ pub fn main(init: std.process.Init) !void {
             hb.last_ns = step_end;
         }
 
-        if (s.t >= next_out or s.nstep >= p.nstep_max) {
+        // Output when the code-time cadence is due (C: DTOUT1), or every
+        // nout_step steps (a step-based convenience for interactive watching),
+        // or on the final step. Only the time gate advances next_out.
+        const time_due = s.t >= next_out;
+        const step_due = p.nout_step > 0 and s.nstep % p.nout_step == 0;
+        if (time_due or step_due or s.nstep >= p.nstep_max) {
             out_idx += 1;
             const row = try scalarRow(&s, dt);
             try dump.appendScalarLine(&log, allocator, row);
@@ -308,7 +337,7 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("puffy: NaN detected — aborting\n", .{});
                 return;
             }
-            next_out += p.dtout1;
+            if (time_due) next_out += p.dtout1;
         }
     }
     std.debug.print("puffy: done (t={d}, {d} steps)\n", .{ s.t, s.nstep });
