@@ -99,6 +99,15 @@ pub const ImplicitParams = struct {
     /// the scalar reference path.
     simd_jacobian: bool = true,
 
+    /// Zig-only (code review 2026-07-06, hot-path finding #4): fill the
+    /// per-iteration RadState via the slim path — skip the entropy Sgas and
+    /// the number-averaged / gas-Rosseland opacity channels that the residual
+    /// never reads (~8 of ~22 transcendentals per evaluation). The reference
+    /// state00 stays full. Every value the Newton iteration consumes is
+    /// bit-identical to the full fill (gated in simd_tests.zig: on == off over
+    /// the full ladder), so goldens are unaffected; flip off to A/B.
+    slim_state: bool = true,
+
     pub const cdefault = ImplicitParams{};
 
     /// PROBLEMS/PUFFY/define.h:26-61.
@@ -325,7 +334,10 @@ pub fn Solver(comptime cfg: config.Config) type {
             const ehat = st.ehat;
             const dtau = sp(T, dt) / st.ucon[0];
 
-            const gi_pair = radforce.calcGiFromStateG(T, st, .{
+            // Slim Gi: the residual consumes only giff[0] (below) and the
+            // lab-frame vector — both boost-independent, so the lab→ff boost
+            // is skipped unconditionally (bit-identical; radforce_tests.zig).
+            const gi_pair = radforce.calcGiFromStateSlimG(T, st, .{
                 pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)],
             }, gg, GG, opac);
             const giff = gi_pair.ff;
@@ -414,8 +426,9 @@ pub fn Solver(comptime cfg: config.Config) type {
             var pp = pp0.*;
             pp[i_uu] = ugas;
             pp[i_ee] = ehat / ratio;
-            const st = radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac) catch return std.math.nan(f64);
-            const gi = radforce.calcGiFromState(&st, .{
+            // slim path: the bisect reads only gi.ff[0] (bit-identical to full)
+            const st = radforce.fillRadStateSlim(cfg, pp, geom, gamma_adiab, opac) catch return std.math.nan(f64);
+            const gi = radforce.calcGiFromStateSlim(&st, .{
                 pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)],
             }, geom, opac) catch return std.math.nan(f64);
 
@@ -582,7 +595,13 @@ pub fn Solver(comptime cfg: config.Config) type {
 
             var pp = pp0;
             var fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
-            var state = radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac) catch return fail;
+            // the per-iteration state feeds only residual(), which reads none
+            // of the slim-dropped fields (Sgas / rad_num / gas_ross); the slim
+            // fill is result-identical (ip.slim_state on == off, simd_tests).
+            var state = (if (ip.slim_state)
+                radforce.fillRadStateSlim(cfg, pp, geom, gamma_adiab, opac)
+            else
+                radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac)) catch return fail;
 
             var f1: [4]f64 = undefined;
             var f2: [4]f64 = undefined;
@@ -659,7 +678,10 @@ pub fn Solver(comptime cfg: config.Config) type {
                         ppv[iv] = .{ lane_pp[0][iv], lane_pp[1][iv], lane_pp[2][iv], lane_pp[3][iv] };
                         uuv[iv] = .{ lane_uu[0][iv], lane_uu[1][iv], lane_uu[2][iv], lane_uu[3][iv] };
                     }
-                    const stv = radforce.fillRadStateG(cfg, V4, ppv, &ggv, &GGv, gamma_adiab, opac);
+                    const stv = if (ip.slim_state)
+                        radforce.fillRadStateSlimG(cfg, V4, ppv, &ggv, &GGv, gamma_adiab, opac)
+                    else
+                        radforce.fillRadStateG(cfg, V4, ppv, &ggv, &GGv, gamma_adiab, opac);
                     var f2v: [4]V4 = undefined;
                     _ = residualG(V4, &uuv, &ppv, &stv, uu00, &state00, dt, &ggv, &GGv, gdetv, opac, whichprim, whicheq, whichframe, &f2v);
                     for (0..4) |i| {
@@ -680,7 +702,10 @@ pub fn Solver(comptime cfg: config.Config) type {
                             pp[j + sh] = ppp[j + sh] + del;
 
                             fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
-                            state = radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac) catch blk: {
+                            state = (if (ip.slim_state)
+                                radforce.fillRadStateSlim(cfg, pp, geom, gamma_adiab, opac)
+                            else
+                                radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac)) catch blk: {
                                 fret = -2;
                                 break :blk state;
                             };
@@ -746,7 +771,10 @@ pub fn Solver(comptime cfg: config.Config) type {
                     for (0..4) |k| pp[k + sh] = xxx[k];
 
                     fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
-                    state = radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac) catch blk: {
+                    state = (if (ip.slim_state)
+                        radforce.fillRadStateSlim(cfg, pp, geom, gamma_adiab, opac)
+                    else
+                        radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac)) catch blk: {
                         fret = -2;
                         break :blk state;
                     };

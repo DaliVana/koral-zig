@@ -9,6 +9,7 @@
 //! optional std.Thread.Pool over the per-cell inversions.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const koral = @import("koral");
 
 /// Comptime physics/algorithm configuration (PROBLEMS/PUFFY/define.h):
@@ -147,9 +148,21 @@ pub fn main(init: std.process.Init) !void {
 
     const u = koral.Units.init(p.mass);
     std.debug.print(
-        "puffy: NV={d} grid {d}×{d}×{d} (+{d} ghosts) | M={d} M☉ (GM/c³={e:.4}s) | threads={d}\n",
-        .{ L.count, s.grid.nx, s.grid.ny, s.grid.nz, s.grid.ng, p.mass, u.gmc3(), p.nthreads },
+        "puffy: NV={d} grid {d}×{d}×{d} (+{d} ghosts) | M={d} M☉ (GM/c³={e:.4}s) | threads={d} | build={s}\n",
+        .{ L.count, s.grid.nx, s.grid.ny, s.grid.nz, s.grid.ng, p.mass, u.gmc3(), p.nthreads, @tagName(builtin.mode) },
     );
+    // A production GRRMHD run in Debug pays every bounds-check/assert and no
+    // inlining — a many-fold slowdown that can silently cost days. Zig 0.16's
+    // preferred_optimize_mode defaults to Debug too and would break the
+    // documented `-Doptimize=ReleaseFast` invocation, so we don't touch the
+    // build default; we make an accidental Debug run loud instead.
+    if (builtin.mode == .Debug) {
+        std.debug.print(
+            "puffy: *** WARNING: Debug build — expect a many-fold slowdown. " ++
+                "Rebuild with `-Doptimize=ReleaseFast` for production runs. ***\n",
+            .{},
+        );
+    }
 
     // ---- initialization (ko.c:140-263 + the solve preamble dt guess) ----
     const fac = try puffy.initAll(SimT, &s);

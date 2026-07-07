@@ -295,3 +295,107 @@ test "SIMD: the full 6-rung ladder is bitwise equal with the batched Jacobian" {
     try expect(nok > 80);
     try expect(nrungup > 10);
 }
+
+// ---- code review 2026-07-06, hot-path finding #4: dead-work slimming ----
+
+test "slim RadState/Gi agree bitwise with the full path on every consumed field" {
+    var prng = std.Random.DefaultPrng.init(0x53494d4434);
+    const rng = prng.random();
+
+    const params = [_]radforce.Params{
+        radforce.Params.puffy(),
+        radforce.Params.grey(
+            @import("units.zig").Units.init(10.0),
+            thermo.Composition.cdefault,
+            0.34,
+            0.4,
+        ),
+    };
+    const geoms = [_]Geometry{
+        geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 }),
+        geometryAt(.ks, puffy_mp, .{ 0, 7.3, 1.1, 0.4 }),
+    };
+
+    for (0..200) |it| {
+        const p = &params[it % 2];
+        const geo = &geoms[(it / 2) % 2];
+        const c = &p.consts;
+        const pp = randPp(rng, c, geo, it % 3 != 0);
+
+        const st_full = try radforce.fillRadState(cfg, pp, geo, gam, p);
+        const st_slim = try radforce.fillRadStateSlim(cfg, pp, geo, gam, p);
+
+        // every field the residual / f1dErr consumes must be bit-identical
+        inline for (.{ "rho", "uint", "tgas", "te", "ti", "ne", "bsq", "ehat", "tradbb", "trad", "kappaes", "kappa" }) |f| {
+            try expectAggBits(f64, @field(st_full, f), @field(st_slim, f));
+        }
+        try expectAggBits([4]f64, st_full.ucon, st_slim.ucon);
+        try expectAggBits([4]f64, st_full.ucov, st_slim.ucov);
+        try expectAggBits([4][4]f64, st_full.rij, st_slim.rij);
+        try expectAggBits(f64, st_full.opac.gas_abs, st_slim.opac.gas_abs);
+        try expectAggBits(f64, st_full.opac.rad_abs, st_slim.opac.rad_abs);
+        try expectAggBits(f64, st_full.opac.rad_ross, st_slim.opac.rad_ross);
+
+        // on the default (PUFFY) opacity path the dropped work is zeroed —
+        // confirms the slim path really skipped it (the grey branch fills
+        // all slots unconditionally, so only check .default)
+        if (it % 2 == 0) {
+            try expectAggBits(f64, 0.0, st_slim.sgas);
+            try expectAggBits(f64, 0.0, st_slim.opac.gas_ross);
+            try expectAggBits(f64, 0.0, st_slim.opac.tot_emissivity);
+        }
+
+        // Gi from the SAME full state: the boost-skipping slim path must
+        // reproduce ff[0] and all of lab bit-for-bit — the only components
+        // the residual and f1dErr read.
+        const vprim = [3]f64{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
+        const gi_full = try radforce.calcGiFromState(&st_full, vprim, geo, p);
+        const gi_slim = try radforce.calcGiFromStateSlim(&st_full, vprim, geo, p);
+        try expectAggBits(f64, gi_full.ff[0], gi_slim.ff[0]);
+        try expectAggBits([4]f64, gi_full.lab, gi_slim.lab);
+    }
+}
+
+test "slim_state RadState fills leave the full 6-rung ladder bitwise identical" {
+    var prng = std.Random.DefaultPrng.init(0x53494d4435);
+    const rng = prng.random();
+    const p = radforce.Params.puffy();
+    const c = &p.consts;
+
+    const ip_on = implicit.ImplicitParams.puffy; // slim_state = true (default)
+    var ip_off = implicit.ImplicitParams.puffy;
+    ip_off.slim_state = false;
+
+    const geoms = [_]Geometry{
+        geometryAt(.mink, puffy_mp, .{ 0, 0, 0, 0 }),
+        geometryAt(.ks, puffy_mp, .{ 0, 7.3, 1.1, 0.4 }),
+    };
+
+    var nok: usize = 0;
+    var nrungup: usize = 0;
+    for (0..300) |it| {
+        const geo = &geoms[it % 2];
+        const pp00 = randPp(rng, c, geo, it % 3 != 0);
+        const dt = std.math.pow(f64, 10.0, -10.0 + 10.0 * rng.float(f64));
+
+        var pp_on = pp00;
+        var pp_off = pp00;
+        var uu_on: [NV]f64 = undefined;
+        var uu_off: [NV]f64 = undefined;
+        const r_on = ImplT.solveImplicitLab(&uu_on, &pp_on, geo, dt, gam, rad_params, &p, &ip_on);
+        const r_off = ImplT.solveImplicitLab(&uu_off, &pp_off, geo, dt, gam, rad_params, &p, &ip_off);
+
+        try std.testing.expectEqual(r_off.ok, r_on.ok);
+        try std.testing.expectEqual(r_off.rung, r_on.rung);
+        try std.testing.expectEqual(r_off.iters, r_on.iters);
+        try expectAggBits([NV]f64, pp_off, pp_on);
+        if (r_on.ok) {
+            try expectAggBits([NV]f64, uu_off, uu_on);
+            nok += 1;
+            if (r_on.rung > 0) nrungup += 1;
+        }
+    }
+    std.debug.print("slim_state ladder identity: {d}/300 ok, {d} via rung > 0\n", .{ nok, nrungup });
+    try expect(nok > 80);
+    try expect(nrungup > 10);
+}

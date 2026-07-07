@@ -148,7 +148,35 @@ pub fn fillRadState(
     return fillRadStateG(cfg, f64, pp, &geom.gg, &geom.GG, gamma_adiab, par);
 }
 
-/// fillRadState over lane type T.
+/// Slim scalar fillRadState — the solver hot path (see fillRadStateSlimG).
+pub fn fillRadStateSlim(
+    comptime cfg: config.Config,
+    pp: [layout.VarLayout(cfg).count]f64,
+    geom: *const Geometry,
+    gamma_adiab: f64,
+    par: *const Params,
+) relele.Error!RadState {
+    return fillRadStateSlimG(cfg, f64, pp, &geom.gg, &geom.GG, gamma_adiab, par);
+}
+
+/// Slim fillRadState over lane type T: the implicit-solver path. Skips the
+/// entropy `sgas` (only the once-per-solve reference state's Sgas is read —
+/// implicit.zig:377) and the number-averaged / gas-Rosseland opacity channels
+/// (radforce.zig:264), all of which the residual and f1dErr never consume.
+/// Every consumed field is bit-identical to fillRadStateG (simd_tests.zig).
+pub fn fillRadStateSlimG(
+    comptime cfg: config.Config,
+    comptime T: type,
+    pp: [layout.VarLayout(cfg).count]T,
+    gg: *const [4][5]T,
+    GG: *const [4][5]T,
+    gamma_adiab: f64,
+    par: *const Params,
+) RadStateOf(T) {
+    return fillRadStateCoreG(cfg, T, pp, gg, GG, gamma_adiab, par, false);
+}
+
+/// fillRadState over lane type T (the full struct_of_state — every field).
 pub fn fillRadStateG(
     comptime cfg: config.Config,
     comptime T: type,
@@ -158,6 +186,22 @@ pub fn fillRadStateG(
     gamma_adiab: f64,
     par: *const Params,
 ) RadStateOf(T) {
+    return fillRadStateCoreG(cfg, T, pp, gg, GG, gamma_adiab, par, true);
+}
+
+/// The shared core. `full` (comptime): when false, `sgas` and the dead
+/// opacity channels are skipped for the solver hot path; when true, every
+/// field is populated for the golden/opacity/state tests.
+fn fillRadStateCoreG(
+    comptime cfg: config.Config,
+    comptime T: type,
+    pp: [layout.VarLayout(cfg).count]T,
+    gg: *const [4][5]T,
+    GG: *const [4][5]T,
+    gamma_adiab: f64,
+    par: *const Params,
+    comptime full: bool,
+) RadStateOf(T) {
     const sp = simd.splat;
     const L = layout.VarLayout(cfg);
     const c = &par.consts;
@@ -165,7 +209,10 @@ pub fn fillRadStateG(
     const rho = pp[L.index(.rho)];
     const uint = pp[L.index(.uu)];
     const temps = thermo.tempsFromUrhoG(T, c, uint, rho, gamma_adiab);
-    const sgas = sp(T, c.kb_over_mugas_mp) * hydro.sFromUG(T, rho, uint, gamma_adiab);
+    const sgas = if (comptime full)
+        sp(T, c.kb_over_mugas_mp) * hydro.sFromUG(T, rho, uint, gamma_adiab)
+    else
+        sp(T, 0);
     const ne = thermo.thermalNeG(T, c, rho);
 
     const u = relele.uconUcovFromPrimsG(
@@ -211,7 +258,7 @@ pub fn fillRadStateG(
             .tradbb = tradbb,
             .ne = ne,
             .bsq = bsq,
-        }),
+        }, full),
         // PR_KAPPA grey: kappa = coeff·rho, all slots assigned by the
         // problem snippet, totEmissivity = kappaGasAbs·4πB
         // (opacities.c:80 with B = sigma_rad_over_pi·Te⁴).
@@ -293,7 +340,33 @@ pub fn calcGiFromState(
     return calcGiFromStateG(f64, st, vprim, &geom.gg, &geom.GG, par);
 }
 
-/// calcGiFromState over lane type T.
+/// Slim scalar calcGiFromState — the solver hot path (see calcGiFromStateSlimG).
+pub fn calcGiFromStateSlim(
+    st: *const RadState,
+    vprim: [3]f64,
+    geom: *const Geometry,
+    par: *const Params,
+) relele.Error!Gi {
+    return calcGiFromStateSlimG(f64, st, vprim, &geom.gg, &geom.GG, par);
+}
+
+/// Slim calcGiFromState over lane type T: the implicit-residual path. Skips
+/// the lab→ff Lorentz boost — the residual and f1dErr read only `gi.ff[0]`
+/// (implicit.zig:366/424), which the direct fluid-frame expression below
+/// overwrites regardless, and `gi.lab` (boost-independent). Bit-identical to
+/// calcGiFromStateG on `ff[0]` and all of `lab` (simd_tests.zig).
+pub fn calcGiFromStateSlimG(
+    comptime T: type,
+    st: *const RadStateOf(T),
+    vprim: [3]T,
+    gg: *const [4][5]T,
+    GG: *const [4][5]T,
+    par: *const Params,
+) GiOf(T) {
+    return calcGiFromStateCoreG(T, st, vprim, gg, GG, par, false);
+}
+
+/// calcGiFromState over lane type T (both frames fully populated).
 pub fn calcGiFromStateG(
     comptime T: type,
     st: *const RadStateOf(T),
@@ -301,6 +374,20 @@ pub fn calcGiFromStateG(
     gg: *const [4][5]T,
     GG: *const [4][5]T,
     par: *const Params,
+) GiOf(T) {
+    return calcGiFromStateCoreG(T, st, vprim, gg, GG, par, true);
+}
+
+/// The shared core. `full` (comptime): when false, `gi.ff[1..3]` — read only
+/// by the golden/opacity tests — are left zero and the boost is skipped.
+fn calcGiFromStateCoreG(
+    comptime T: type,
+    st: *const RadStateOf(T),
+    vprim: [3]T,
+    gg: *const [4][5]T,
+    GG: *const [4][5]T,
+    par: *const Params,
+    comptime full: bool,
 ) GiOf(T) {
     const sp = simd.splat;
     const c = &par.consts;
@@ -323,7 +410,17 @@ pub fn calcGiFromStateG(
     }
 
     // boost to the fluid frame, then rewrite the time component directly
-    var gi_ff = frames.boost2Lab2FfG(T, gi_lab, vprim, gg, GG);
+    var gi_ff: [4]T = undefined;
+    if (comptime full) {
+        gi_ff = frames.boost2Lab2FfG(T, gi_lab, vprim, gg, GG);
+    } else {
+        // ff[1..3] are consumed only by tests; the residual reads ff[0] only,
+        // which the direct expression below supplies bit-identically.
+        gi_ff = @splat(sp(T, 0));
+        _ = &vprim;
+        _ = &gg;
+        _ = &GG;
+    }
     gi_ff[0] = -k_gas_abs * sp(T, c.fourpi) * b + k_rad_abs * st.ehat;
 
     if (par.channels.comptonization) {

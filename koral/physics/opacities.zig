@@ -71,14 +71,23 @@ pub const StateIn = StateInOf(f64);
 /// with all six opacity fields (tot_emissivity is filled by the caller,
 /// calc_kappa_from_state — see calcKappaFromState).
 pub fn calcOpacitiesFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) Opac {
-    return calcOpacitiesFromStateG(f64, c, ch, s);
+    return calcOpacitiesFromStateG(f64, c, ch, s, true);
 }
 
 /// calcOpacitiesFromState over lane type T. Scalar constants and the
 /// all-scalar parens are broadcast whole (same f64 product as the scalar
 /// code); the B = 0 Rosseland guard becomes a select with pow(0, −0.463)
 /// computed-and-discarded on the guarded lanes.
-pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Channels, s: StateInOf(T)) OpacOf(T) {
+///
+/// `full` (comptime): when false, the number-averaged (`rad_num`) and gas
+/// Rosseland (`gas_ross`) channels — plus `gas_ffross` — are skipped. The
+/// implicit residual and the wavespeed χ never read them, and their inputs
+/// carry two `cbrt` + two `pow` + one `exp` per call (radforce.zig:264 hot
+/// path). Every *consumed* channel (gas_abs/rad_abs/rad_ross) keeps its exact
+/// expression, so the slim result is bit-identical to the full one on those
+/// fields (gated in simd_tests.zig). `full == true` reproduces every
+/// field byte-for-byte for the golden/opacity tests.
+pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Channels, s: StateInOf(T), comptime full: bool) OpacOf(T) {
     const sp = simd.splat;
     const rho = s.rho;
     const te = s.te;
@@ -121,7 +130,7 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
 
         const scale_pla_ros_ff = sp(T, 14.12) / (sp(T, 432.7) - sp(T, 106.8) * zeta_root5_inv_3 +
             sp(T, 43.17) * zeta_root5_inv_4 + sp(T, 57.88) * zeta_inv);
-        kappagasffross = kappagasff * sp(T, 0.0330);
+        if (comptime full) kappagasffross = kappagasff * sp(T, 0.0330); // gas_ross only
 
         // no GRAY_BREMSS
         kapparadff = kappagasff * simd.log1p(T, sp(T, 1.6) * zeta) * sp(T, c.one_over_log_2p6) * zeta_inv_3;
@@ -132,7 +141,6 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
         const emis_synchro = sp(T, 3.61e-34) * (nethcgs / rhocgs) * te * te * bmagcgs * bmagcgs;
         const nu_mbsyn = sp(T, 1.19e-13) * te * te;
         const zbr = sp(T, c.k_boltz_cgs) * trad / sp(T, c.h_cgs) / nu_mbsyn;
-        const zbg = sp(T, c.k_boltz_cgs) * te / sp(T, c.h_cgs) / nu_mbsyn;
 
         const zeta_a_denom_rad =
             sp(T, 1.79) * simd.cbrt(T, zbr * zbr * zbr * zbr * zbr * bmagcgs * bmagcgs * bmagcgs * bmagcgs) +
@@ -144,13 +152,16 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
         kapparadsyn = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_rad) * rho;
         kappagassyn = sp(T, c.kappacgs2gu) * (emis_synchro / bbenergy) * rho;
 
-        // number-of-photons averaged opacity
-        const zeta_a_denom_num =
-            (sp(T, 0.025) * simd.cbrt(T, zbr * zbr * zbr * zbr * bmagcgs * bmagcgs) +
-                sp(T, 0.169) * simd.cbrt(T, zbr * zbr * zbr * zbr * zbr * bmagcgs) +
-                sp(T, 0.287) * zbr * zbr);
-        const ia_by_b_num = bmagcgs / zeta_a_denom_num;
-        kapparadnumsyn = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_num) * rho;
+        // number-of-photons averaged opacity (rad_num) — dead on the
+        // implicit-residual / χ path (radforce.zig:264); skipped when !full.
+        if (comptime full) {
+            const zeta_a_denom_num =
+                (sp(T, 0.025) * simd.cbrt(T, zbr * zbr * zbr * zbr * bmagcgs * bmagcgs) +
+                    sp(T, 0.169) * simd.cbrt(T, zbr * zbr * zbr * zbr * zbr * bmagcgs) +
+                    sp(T, 0.287) * zbr * zbr);
+            const ia_by_b_num = bmagcgs / zeta_a_denom_num;
+            kapparadnumsyn = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_num) * rho;
+        }
 
         // Rosseland; Bmb guards B = 0
         const bmb: T = simd.select(T, bmagcgs > sp(T, 0.0), simd.pow(T, bmagcgs, -0.463), sp(T, 0.0));
@@ -158,9 +169,14 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
             (simd.pow(T, zbr, 1.69) * simd.exp(T, sp(T, 1.6) * simd.pow(T, zbr, 0.463) * bmb));
         kapparadsynross = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_ross_rad) * rho;
 
-        const ia_by_b_ross_gas = sp(T, 0.13) * simd.pow(T, bmagcgs, 0.69) /
-            (simd.pow(T, zbg, 1.69) * simd.exp(T, sp(T, 1.6) * simd.pow(T, zbg, 0.463) * bmb));
-        kappagassynross = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_ross_gas) * rho;
+        // gas Rosseland (gas_ross) — dead on the same path; zbg feeds only
+        // this channel, so it lives here too.
+        if (comptime full) {
+            const zbg = sp(T, c.k_boltz_cgs) * te / sp(T, c.h_cgs) / nu_mbsyn;
+            const ia_by_b_ross_gas = sp(T, 0.13) * simd.pow(T, bmagcgs, 0.69) /
+                (simd.pow(T, zbg, 1.69) * simd.exp(T, sp(T, 1.6) * simd.pow(T, zbg, 0.463) * bmb));
+            kappagassynross = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_ross_gas) * rho;
+        }
 
         // suppress synchrotron at nonrelativistic temperatures
         // (no USE_SYNCHROTRON_BRIDGE_FUNCTIONS)
@@ -168,9 +184,11 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
         const terelfactor = (terel * terel) / (sp(T, 1.0) + terel * terel);
         kapparadsyn *= terelfactor;
         kappagassyn *= terelfactor;
-        kapparadnumsyn *= terelfactor;
         kapparadsynross *= terelfactor;
-        kappagassynross *= terelfactor;
+        if (comptime full) {
+            kapparadnumsyn *= terelfactor;
+            kappagassynross *= terelfactor;
+        }
     }
 
     // sums (opacities.c:661-666); be/bf channels are off
@@ -193,17 +211,21 @@ pub const KappaResult = KappaResultOf(f64);
 /// C: calc_kappa_from_state (opacities.c:37) — the default (no PR_KAPPA)
 /// path plus the totEmissivity bookkeeping. Returns kappa = kappaGasAbs.
 pub fn calcKappaFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) KappaResult {
-    return calcKappaFromStateG(f64, c, ch, s);
+    return calcKappaFromStateG(f64, c, ch, s, true);
 }
 
-/// calcKappaFromState over lane type T.
-pub fn calcKappaFromStateG(comptime T: type, c: *const thermo.Consts, ch: Channels, s: StateInOf(T)) KappaResultOf(T) {
+/// calcKappaFromState over lane type T. `full` (comptime) forwards to
+/// calcOpacitiesFromStateG and additionally gates `tot_emissivity`, which no
+/// implicit-residual / χ consumer reads.
+pub fn calcKappaFromStateG(comptime T: type, c: *const thermo.Consts, ch: Channels, s: StateInOf(T), comptime full: bool) KappaResultOf(T) {
     const sp = simd.splat;
-    const b = sp(T, c.sigma_rad_over_pi) * s.te * s.te * s.te * s.te;
-    var opac = calcOpacitiesFromStateG(T, c, ch, s);
-    // kappaGasAbs >= 0 always holds here, so totEmissivity uses it and no
-    // field rewriting happens (opacities.c:80-99)
-    opac.tot_emissivity = opac.gas_abs * sp(T, c.fourpi) * b;
+    var opac = calcOpacitiesFromStateG(T, c, ch, s, full);
+    if (comptime full) {
+        const b = sp(T, c.sigma_rad_over_pi) * s.te * s.te * s.te * s.te;
+        // kappaGasAbs >= 0 always holds here, so totEmissivity uses it and no
+        // field rewriting happens (opacities.c:80-99)
+        opac.tot_emissivity = opac.gas_abs * sp(T, c.fourpi) * b;
+    }
     return .{ .kappa = opac.gas_abs, .opac = opac };
 }
 
