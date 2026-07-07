@@ -29,6 +29,12 @@ const r_horizon: f64 = 2.0; // rhorizonBL(a=0) = 1 + √(1−a²)
 const r_lum: f64 = 5000.0; // > RMAX → the outer radial shell
 const r_scale: f64 = 15.0;
 
+/// Wall-clock throttle for the per-step heartbeat (C: fprintf when
+/// end_time−fprintf_time > 1 s, problem.c:979). Decouples the console cadence
+/// from the step cadence — ~1 line/s on a fast run, one per step when a single
+/// step already exceeds the interval.
+const heartbeat_interval_ns: u64 = 1_000_000_000;
+
 fn options(p: *const koral.Params) SimT.Options {
     return .{
         .coords = .mks2,
@@ -145,6 +151,67 @@ fn writeSiloDump(io: std.Io, out_dir: []const u8, allocator: std.mem.Allocator, 
     };
 }
 
+/// Rolling snapshot of the run-cumulative implicit counters so the heartbeat
+/// can report per-interval deltas, plus the wall clock of the last print.
+const Heartbeat = struct {
+    last_ns: u64,
+    prev_fail: u64 = 0,
+    prev_iters: u64 = 0,
+    prev_solves: u64 = 0,
+};
+
+/// Cells currently flagged for a HD / radiation u2p fixup — a snapshot of the
+/// last inversion (C accumulates these per step into the fail# fields).
+fn countFixupFlags(s: *const SimT) struct { hd: u64, rad: u64 } {
+    var hd: u64 = 0;
+    var rad: u64 = 0;
+    var iz: i64 = 0;
+    while (iz < s.nzi()) : (iz += 1) {
+        var iy: i64 = 0;
+        while (iy < s.nyi()) : (iy += 1) {
+            var ix: i64 = 0;
+            while (ix < s.nxi()) : (ix += 1) {
+                if (s.getFlag(.hd_fixup, ix, iy, iz) != 0) hd += 1;
+                if (comptime L.hasVar(.ee)) {
+                    if (s.getFlag(.rad_fixup, ix, iy, iz) != 0) rad += 1;
+                }
+            }
+        }
+    }
+    return .{ .hd = hd, .rad = rad };
+}
+
+/// C-style per-step progress line (problem.c:982), throttled by the caller.
+///   * znps — domain zones per wall-second (throughput)
+///   * tgpd — simulated GM/c³ per wall-day (projected reach at this speed)
+///   * fail# — this interval's {radimp failures, HD fixups, rad fixups}
+///   * imp# — implicit solves this interval and their mean Newton iterations
+/// No `mpi=` field (shared-memory only — no MPI communication to attribute).
+fn printHeartbeat(s: *const SimT, dt: f64, step_wall_ns: u64, hb: *Heartbeat) void {
+    const ncells: f64 = @floatFromInt(s.grid.nx * s.grid.ny * s.grid.nz);
+    const wall_s = @as(f64, @floatFromInt(@max(step_wall_ns, 1))) / 1.0e9;
+    const znps = ncells / wall_s;
+    const tgpd = dt / wall_s * 86400.0;
+
+    const d_fail = s.n_radimp_failures - hb.prev_fail;
+    const d_iters = s.n_radimp_iters - hb.prev_iters;
+    const d_solves = s.n_radimp_solves - hb.prev_solves;
+    const avg_it: f64 = if (d_solves > 0)
+        @as(f64, @floatFromInt(d_iters)) / @as(f64, @floatFromInt(d_solves))
+    else
+        0;
+    const fx = countFixupFlags(s);
+
+    std.debug.print(
+        "st #{d:>6} t={e:.5} dt={e:.2} znps={d:.0} tgpd={e:.2} fail# {d} {d} {d} imp# {d} it {d:.1}\n",
+        .{ s.nstep, s.t, dt, znps, tgpd, d_fail, fx.hd, fx.rad, d_solves, avg_it },
+    );
+
+    hb.prev_fail = s.n_radimp_failures;
+    hb.prev_iters = s.n_radimp_iters;
+    hb.prev_solves = s.n_radimp_solves;
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
@@ -204,13 +271,23 @@ pub fn main(init: std.process.Init) !void {
 
     // ---- RK2IMEX time loop -------------------------------------------------
     s.timers.reset(); // drop init-time bc/u2p/wavespeed samples
+    var hb = Heartbeat{ .last_ns = koral.sim.nowNs() };
     while (s.t < p.tmax and s.nstep < p.nstep_max) {
         var dt = 1.0 / s.tstepdenmax; // CFL dt from the previous step's speeds
         if (s.t + dt > p.tmax) dt = p.tmax - s.t;
+
+        const step_t0 = koral.sim.nowNs();
         s.step(dt) catch |err| {
             std.debug.print("puffy: step {d} failed at t={d}: {s}\n", .{ s.nstep, s.t, @errorName(err) });
             return err;
         };
+        const step_end = koral.sim.nowNs();
+
+        // C-style throttled per-step heartbeat (~1 Hz wall clock).
+        if (step_end - hb.last_ns > heartbeat_interval_ns) {
+            printHeartbeat(&s, dt, step_end - step_t0, &hb);
+            hb.last_ns = step_end;
+        }
 
         if (s.t >= next_out or s.nstep >= p.nstep_max) {
             out_idx += 1;

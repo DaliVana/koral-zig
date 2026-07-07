@@ -97,6 +97,9 @@ pub const ChunkResult = struct {
     err: ?Error = null,
     n_fail: u64 = 0,
     n_iters: u64 = 0,
+    /// successful implicit solves (so iters/solves gives an average iteration
+    /// count for the heartbeat; C tracks GLOBALINTSLOT_NIMP* per category).
+    n_solves: u64 = 0,
     /// running max/min of the CFL denominator (wavespeed pass only);
     /// neutral at ∓inf so non-participating passes merge as no-ops.
     tsd_max: f64 = -inf,
@@ -106,6 +109,7 @@ pub const ChunkResult = struct {
         if (self.err == null) self.err = other.err;
         self.n_fail += other.n_fail;
         self.n_iters += other.n_iters;
+        self.n_solves += other.n_solves;
         if (other.tsd_max > self.tsd_max) self.tsd_max = other.tsd_max;
         if (other.tsd_min < self.tsd_min) self.tsd_min = other.tsd_min;
     }

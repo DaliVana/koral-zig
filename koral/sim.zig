@@ -72,6 +72,9 @@ pub const BcFace = bc.BcFace;
 pub const FaceStore = storage.FaceStore;
 pub const Flag = storage.Flag;
 pub const PassTimers = timers_mod.PassTimers;
+/// Monotonic wall clock in ns (sim/timers.zig) — re-exported so the run
+/// driver can time steps / throttle the heartbeat with the same clock.
+pub const nowNs = timers_mod.nowNs;
 const n_flags = storage.n_flags;
 const Scal = storage.Scal;
 const n_scal = storage.n_scal;
@@ -220,9 +223,11 @@ pub fn Sim(comptime cfg: config.Config) type {
         min_dy: f64 = 0,
         min_dz: f64 = 0,
         nstep: u64 = 0,
-        /// implicit-solver diagnostics (C: global_int_slot counters)
+        /// implicit-solver diagnostics (C: global_int_slot counters), all
+        /// run-cumulative — the driver deltas them for the per-step heartbeat.
         n_radimp_failures: u64 = 0,
         n_radimp_iters: u64 = 0,
+        n_radimp_solves: u64 = 0,
         /// P0 per-pass wall-clock instrumentation (sim/timers.zig) — always
         /// accumulating; the driver prints/resets it at its output cadence.
         timers: timers_mod.PassTimers = .{},
@@ -241,6 +246,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.nstep = 0;
             self.n_radimp_failures = 0;
             self.n_radimp_iters = 0;
+            self.n_radimp_solves = 0;
             self.timers = .{};
             self.team = if (opt.nthreads > 1) try threading.Team.init(allocator, opt.nthreads) else null;
 
@@ -1330,6 +1336,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             const res = threading.parallelRange(DtCtx, &ctx, self.team, 0, self.nyi(), implicitRowsWorker);
             self.n_radimp_failures += res.n_fail;
             self.n_radimp_iters += res.n_iters;
+            self.n_radimp_solves += res.n_solves;
             if (res.err) |e| return e;
 
             try self.cellFixup(.radimp_fixup);
@@ -1371,6 +1378,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                             self.p.store(ix, iy, iz, &pp);
                             self.setFlag(.radimp_fixup, ix, iy, iz, 0);
                             res.n_iters += rr.iters;
+                            res.n_solves += 1;
                         } else {
                             // C: unchanged u/p, flag for fixups
                             self.setFlag(.radimp_fixup, ix, iy, iz, -1);
