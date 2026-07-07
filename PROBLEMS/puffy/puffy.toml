@@ -21,12 +21,12 @@ maxz = 0.7853981633974483    # +pi/4
 [run]
 tstart = 0.0
 tmax = 10000.0     # run duration in GM/c^3 (reduce for a quick test)
-nstep_max = 100000000  # hard cap on steps
+nstep_max = 1000  # hard cap on steps
 tsteplim = 0.5     # TSTEPLIM (CFL factor)
 dtout1 = 100.0     # scalar-diagnostics cadence (code time)
 dtout2 = 500.0     # primitive-dump cadence (0 disables prim dumps)
 out_dir = "dumps/puffy"
-nthreads = 10       # worker threads for the per-cell inversions (1 = serial)
+nthreads = 10       # persistent worker team for all per-step passes (1 = serial)
 
 [floors]
 rhofloor = 1e-30

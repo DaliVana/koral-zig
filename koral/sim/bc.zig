@@ -5,8 +5,15 @@
 //! finite.c:2805 (set_bc) / finite.c:3203 (2D corner filling). `sim.zig`
 //! exposes a thin `Sim.setBc` method that delegates here, and re-exports
 //! `BcKind`/`BcFace` so problems and tests keep referencing `sim.BcFace`.
+//!
+//! P1: the three ghost-face fills run band-parallel (x faces over iy rows,
+//! y/z faces over ix columns) — each ghost cell is written exactly once and
+//! reads only domain cells (or the user BC), so banding is bit-identical to
+//! serial. The corner fill stays serial: it is ~4·(2·NG−1) cells and reads
+//! the just-filled face surfaces (a natural barrier).
 
 const p2u_mod = @import("../p2u.zig");
+const threading = @import("threading.zig");
 
 const Error = @import("../relele.zig").Error || error{OutOfMemory};
 
@@ -21,54 +28,23 @@ pub const BcFace = enum { xlo, xhi, ylo, yhi, zlo, zhi };
 /// (finite.c:3203-3403; serial, so mpi_isitBC ≡ 1).
 pub fn setBc(comptime SimT: type, sim: *SimT, t: f64, ifinit: bool) Error!void {
     const g = &sim.grid;
-    const nx = sim.nxi();
-    const ny = sim.nyi();
-    const nz = sim.nzi();
-    const ngx: i64 = @intCast(g.ngx);
-    const ngy: i64 = @intCast(g.ngy);
-    const ngz: i64 = @intCast(g.ngz);
+    const Ctx = BcCtx(SimT);
+    var ctx = Ctx{ .sim = sim, .t = t, .ifinit = ifinit };
 
-    // x boundaries (ghost columns, domain rows)
+    // x boundaries (ghost columns, domain rows) — banded over iy
     if (g.ngx > 0) {
-        var iz: i64 = 0;
-        while (iz < nz) : (iz += 1) {
-            var iy: i64 = 0;
-            while (iy < ny) : (iy += 1) {
-                var i: i64 = 1;
-                while (i <= ngx) : (i += 1) {
-                    try setBcCell(SimT, sim, -i, iy, iz, t, ifinit, .xlo);
-                    try setBcCell(SimT, sim, nx - 1 + i, iy, iz, t, ifinit, .xhi);
-                }
-            }
-        }
+        const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nyi(), xFacesWorker(SimT));
+        if (res.err) |e| return e;
     }
-    // y boundaries
+    // y boundaries — banded over ix
     if (g.ngy > 0) {
-        var iz: i64 = 0;
-        while (iz < nz) : (iz += 1) {
-            var ix: i64 = 0;
-            while (ix < nx) : (ix += 1) {
-                var i: i64 = 1;
-                while (i <= ngy) : (i += 1) {
-                    try setBcCell(SimT, sim, ix, -i, iz, t, ifinit, .ylo);
-                    try setBcCell(SimT, sim, ix, ny - 1 + i, iz, t, ifinit, .yhi);
-                }
-            }
-        }
+        const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nxi(), yFacesWorker(SimT));
+        if (res.err) |e| return e;
     }
-    // z boundaries
+    // z boundaries — banded over ix
     if (g.ngz > 0) {
-        var iy: i64 = 0;
-        while (iy < ny) : (iy += 1) {
-            var ix: i64 = 0;
-            while (ix < nx) : (ix += 1) {
-                var i: i64 = 1;
-                while (i <= ngz) : (i += 1) {
-                    try setBcCell(SimT, sim, ix, iy, -i, t, ifinit, .zlo);
-                    try setBcCell(SimT, sim, ix, iy, nz - 1 + i, t, ifinit, .zhi);
-                }
-            }
-        }
+        const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nxi(), zFacesWorker(SimT));
+        if (res.err) |e| return e;
     }
 
     if (comptime SimT.Cfg.has(.mhd)) {
@@ -78,6 +54,94 @@ pub fn setBc(comptime SimT: type, sim: *SimT, t: f64, ifinit: bool) Error!void {
             // 3D / r-φ corner filling arrives with the problems that
             // need it; no M5/M6 target is 3D.
             @panic("Sim.setBc: 3D corner filling not implemented");
+        }
+    }
+}
+
+fn BcCtx(comptime SimT: type) type {
+    return struct { sim: *SimT, t: f64, ifinit: bool };
+}
+
+fn xFacesWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+    return struct {
+        fn w(c: *BcCtx(SimT), iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            xFacesBand(SimT, c, iy0, iy1) catch |e| {
+                res.err = e;
+            };
+        }
+    }.w;
+}
+
+fn xFacesBand(comptime SimT: type, c: *BcCtx(SimT), iy0: i64, iy1: i64) Error!void {
+    const sim = c.sim;
+    const nx = sim.nxi();
+    const nz = sim.nzi();
+    const ngx: i64 = @intCast(sim.grid.ngx);
+    var iz: i64 = 0;
+    while (iz < nz) : (iz += 1) {
+        var iy: i64 = iy0;
+        while (iy < iy1) : (iy += 1) {
+            var i: i64 = 1;
+            while (i <= ngx) : (i += 1) {
+                try setBcCell(SimT, sim, -i, iy, iz, c.t, c.ifinit, .xlo);
+                try setBcCell(SimT, sim, nx - 1 + i, iy, iz, c.t, c.ifinit, .xhi);
+            }
+        }
+    }
+}
+
+fn yFacesWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+    return struct {
+        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
+            yFacesBand(SimT, c, ix0, ix1) catch |e| {
+                res.err = e;
+            };
+        }
+    }.w;
+}
+
+fn yFacesBand(comptime SimT: type, c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!void {
+    const sim = c.sim;
+    const ny = sim.nyi();
+    const nz = sim.nzi();
+    const ngy: i64 = @intCast(sim.grid.ngy);
+    var iz: i64 = 0;
+    while (iz < nz) : (iz += 1) {
+        var ix: i64 = ix0;
+        while (ix < ix1) : (ix += 1) {
+            var i: i64 = 1;
+            while (i <= ngy) : (i += 1) {
+                try setBcCell(SimT, sim, ix, -i, iz, c.t, c.ifinit, .ylo);
+                try setBcCell(SimT, sim, ix, ny - 1 + i, iz, c.t, c.ifinit, .yhi);
+            }
+        }
+    }
+}
+
+fn zFacesWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+    return struct {
+        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
+            zFacesBand(SimT, c, ix0, ix1) catch |e| {
+                res.err = e;
+            };
+        }
+    }.w;
+}
+
+fn zFacesBand(comptime SimT: type, c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!void {
+    const sim = c.sim;
+    const ny = sim.nyi();
+    const nz = sim.nzi();
+    const ngz: i64 = @intCast(sim.grid.ngz);
+    var iy: i64 = 0;
+    while (iy < ny) : (iy += 1) {
+        var ix: i64 = ix0;
+        while (ix < ix1) : (ix += 1) {
+            var i: i64 = 1;
+            while (i <= ngz) : (i += 1) {
+                try setBcCell(SimT, sim, ix, iy, -i, c.t, c.ifinit, .zlo);
+                try setBcCell(SimT, sim, ix, iy, nz - 1 + i, c.t, c.ifinit, .zhi);
+            }
         }
     }
 }

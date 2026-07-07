@@ -148,8 +148,9 @@ pub fn Sim(comptime cfg: config.Config) type {
             bc_y: BcKind = .copy,
             bc_z: BcKind = .copy,
             specific_bc: ?SpecificBc = null,
-            /// Worker threads for the per-cell inversions (u2p / implicit).
-            /// 1 ≡ the serial path (bit-identical; the golden tests run here).
+            /// Worker threads for the per-step passes (P1: all of them run
+            /// on the persistent team). 1 ≡ the serial path (bit-identical;
+            /// the golden tests run here).
             nthreads: usize = 1,
         };
 
@@ -157,6 +158,9 @@ pub fn Sim(comptime cfg: config.Config) type {
         grid: Grid,
         cache: precompute.MetricCache,
         opt: Options,
+        /// P1: the persistent worker team all per-step passes dispatch on
+        /// (sim/threading.zig); null ≡ nthreads<=1 ≡ the serial path.
+        team: ?*threading.Team,
 
         // state
         p: FieldT,
@@ -219,10 +223,6 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// implicit-solver diagnostics (C: global_int_slot counters)
         n_radimp_failures: u64 = 0,
         n_radimp_iters: u64 = 0,
-        /// transient: the dt passed to the current op_implicit parallel pass
-        /// (the per-cell inversions are independent, so this is set once per
-        /// pass and read by every worker row).
-        impl_dt: f64 = 0,
         /// P0 per-pass wall-clock instrumentation (sim/timers.zig) — always
         /// accumulating; the driver prints/resets it at its output cadence.
         timers: timers_mod.PassTimers = .{},
@@ -241,8 +241,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.nstep = 0;
             self.n_radimp_failures = 0;
             self.n_radimp_iters = 0;
-            self.impl_dt = 0;
             self.timers = .{};
+            self.team = if (opt.nthreads > 1) try threading.Team.init(allocator, opt.nthreads) else null;
 
             self.cache = try precompute.MetricCache.init(allocator, g, .{
                 .coords = opt.coords,
@@ -251,9 +251,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             });
 
             inline for (.{
-                "p",           "u",    "ut0",   "ut1",     "ut2", "dut1", "dut2",
-                "drt1",        "drt2", "uforget", "ptm1",
-                "ppostimplicit", "u_bak", "p_bak",
+                "p",    "u",    "ut0",     "ut1",  "ut2",           "dut1",  "dut2",
+                "drt1", "drt2", "uforget", "ptm1", "ppostimplicit", "u_bak", "p_bak",
             }) |name| {
                 @field(self, name) = try FieldT.init(allocator, g);
             }
@@ -307,10 +306,10 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         pub fn deinit(self: *Self) void {
             const allocator = self.allocator;
+            if (self.team) |tm| tm.deinit();
             inline for (.{
-                "p",           "u",    "ut0",   "ut1",     "ut2", "dut1", "dut2",
-                "drt1",        "drt2", "uforget", "ptm1",
-                "ppostimplicit", "u_bak", "p_bak",
+                "p",    "u",    "ut0",     "ut1",  "ut2",           "dut1",  "dut2",
+                "drt1", "drt2", "uforget", "ptm1", "ppostimplicit", "u_bak", "p_bak",
             }) |name| {
                 @field(self, name).deinit();
             }
@@ -462,22 +461,39 @@ pub fn Sim(comptime cfg: config.Config) type {
             return bc.setBc(Self, self, t, ifinit);
         }
 
-
         // ---- wavespeeds & timestep -------------------------------------------
 
         /// C: calc_wavespeeds (finite.c:356) over domain + 1 ghost layer.
+        /// Band-parallel over iy; the CFL-denominator max/min reduce runs as
+        /// per-worker partials merged after the region (max/min are
+        /// order-insensitive, so this is bit-identical to the serial scan).
         pub fn calcWavespeeds(self: *Self) Error!void {
             self.timers.begin(.wavespeeds);
             defer self.timers.end();
+            const ly: i64 = if (self.grid.ny > 1) 1 else 0;
+            const res = threading.parallelRange(Self, self, self.team, -ly, self.nyi() + ly, wavespeedRowsWorker);
+            if (res.err) |e| return e;
+            if (res.tsd_max > self.tstepdenmax) self.tstepdenmax = res.tsd_max;
+            if (res.tsd_min < self.tstepdenmin) self.tstepdenmin = res.tsd_min;
+        }
+
+        fn wavespeedRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            self.wavespeedRows(iy0, iy1, res) catch |e| {
+                res.err = e;
+            };
+        }
+
+        /// The per-cell wavespeed body for iy ∈ [iy0, iy1) (all iz, all ix
+        /// incl. the ±1 ghost layer).
+        fn wavespeedRows(self: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) Error!void {
             const active_dims = [3]bool{ self.grid.nx > 1, self.grid.ny > 1, self.grid.nz > 1 };
             const lx: i64 = if (active_dims[0]) 1 else 0;
-            const ly: i64 = if (active_dims[1]) 1 else 0;
             const lz: i64 = if (active_dims[2]) 1 else 0;
 
             var iz: i64 = -lz;
             while (iz < self.nzi() + lz) : (iz += 1) {
-                var iy: i64 = -ly;
-                while (iy < self.nyi() + ly) : (iy += 1) {
+                var iy: i64 = iy0;
+                while (iy < iy1) : (iy += 1) {
                     var ix: i64 = -lx;
                     while (ix < self.nxi() + lx) : (ix += 1) {
                         if (comptime !wide) {
@@ -520,7 +536,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                                 if (rad0[2 * d + 1] < 0.0) rad0[2 * d + 1] = 0.0;
                             }
                         }
-                        self.saveWavespeeds(ix, iy, iz, aaa, rad0, radl);
+                        self.saveWavespeeds(ix, iy, iz, aaa, rad0, radl, res);
                     }
                 }
             }
@@ -529,8 +545,9 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// C: save_wavespeeds (finite.c:394) — store per-cell speeds and,
         /// for domain cells, the CFL denominator (feeding the next dt).
         /// rad0 (unlimited by τ) only enters the timestep; radl (τ-limited)
-        /// is what the flux combination reads.
-        fn saveWavespeeds(self: *Self, ix: i64, iy: i64, iz: i64, aaa: [6]f64, rad0: [6]f64, radl: [6]f64) void {
+        /// is what the flux combination reads. The dt max/min go into the
+        /// worker's ChunkResult partials (merged after the region).
+        fn saveWavespeeds(self: *Self, ix: i64, iy: i64, iz: i64, aaa: [6]f64, rad0: [6]f64, radl: [6]f64, res: *threading.ChunkResult) void {
             for (0..3) |d| {
                 self.scSet(ahd_l[d], ix, iy, iz, aaa[2 * d]);
                 self.scSet(ahd_r[d], ix, iy, iz, aaa[2 * d + 1]);
@@ -576,8 +593,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             }
             tsd /= self.opt.tsteplim;
             self.scSet(.tstepden, ix, iy, iz, tsd);
-            if (tsd > self.tstepdenmax) self.tstepdenmax = tsd;
-            if (tsd < self.tstepdenmin) self.tstepdenmin = tsd;
+            if (tsd > res.tsd_max) res.tsd_max = tsd;
+            if (tsd < res.tsd_min) res.tsd_min = tsd;
         }
 
         /// C: save_timesteps (finite.c:490), no SHORTERTIMESTEP.
@@ -597,9 +614,11 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         // ---- u2p over the grid ------------------------------------------------
 
-        // ---- optional row-parallel dispatch --------------------------------
-        // The generic row-splitting mechanism (parallelRows + ChunkResult)
-        // lives in sim/threading.zig; the sim-specific worker bodies stay here.
+        // ---- band-parallel dispatch ----------------------------------------
+        // The persistent team + dynamic-tile mechanism (parallelRange +
+        // ChunkResult) lives in sim/threading.zig; the sim-specific worker
+        // bodies stay here. Convention: `xxxRowsWorker` adapts `xxxRows`
+        // (the banded loop body) to the dispatch signature.
 
         fn u2pRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
             self.u2pRows(iy0, iy1) catch |e| {
@@ -608,13 +627,12 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
 
         /// C: calc_u2p (finite.c:546) — per-cell inversion + floors, then
-        /// fixup averaging and a boundary refresh. The inversion sweep is
-        /// row-parallel; the neighbour-averaging fixup and BC refresh stay
-        /// serial (they read across rows).
+        /// fixup averaging and a boundary refresh.
         pub fn calcU2p(self: *Self) Error!void {
             self.timers.begin(.u2p);
             defer self.timers.end();
-            try threading.parallelRows(Self, self, u2pRowsWorker);
+            const res = threading.parallelRange(Self, self, self.team, 0, self.nyi(), u2pRowsWorker);
+            if (res.err) |e| return e;
 
             try self.cellFixup(.hd_fixup);
             if (comptime L.hasVar(.ee)) {
@@ -703,9 +721,30 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.timers.begin(.fixup);
             defer self.timers.end();
 
-            @memcpy(self.u_bak.data, self.u.data);
-            @memcpy(self.p_bak.data, self.p.data);
+            threading.parallelCopy(self.team, self.u_bak.data, self.u.data);
+            threading.parallelCopy(self.team, self.p_bak.data, self.p.data);
 
+            // the averaging loop is parallel-safe as-is: flags are frozen
+            // during the pass, reads touch only non-flagged neighbours of
+            // the (frozen) p, writes only the flagged cells' _bak slots
+            const res = threading.parallelRange(Self, self, self.team, 0, self.nyi(), fixupRowsWorker(which));
+            if (res.err) |e| return e;
+
+            threading.parallelCopy(self.team, self.u.data, self.u_bak.data);
+            threading.parallelCopy(self.team, self.p.data, self.p_bak.data);
+        }
+
+        fn fixupRowsWorker(comptime which: Flag) fn (*Self, i64, i64, *threading.ChunkResult) void {
+            return struct {
+                fn w(s: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+                    s.fixupRows(which, iy0, iy1) catch |e| {
+                        res.err = e;
+                    };
+                }
+            }.w;
+        }
+
+        fn fixupRows(self: *Self, comptime which: Flag, iy0: i64, iy1: i64) Error!void {
             const b1_bound: usize = comptime if (L.hasVar(.b1)) L.index(.b1) else L.count;
             const nx = self.nxi();
             const ny = self.nyi();
@@ -713,8 +752,8 @@ pub fn Sim(comptime cfg: config.Config) type {
 
             var iz: i64 = 0;
             while (iz < nz) : (iz += 1) {
-                var iy: i64 = 0;
-                while (iy < ny) : (iy += 1) {
+                var iy: i64 = iy0;
+                while (iy < iy1) : (iy += 1) {
                     var ix: i64 = 0;
                     while (ix < nx) : (ix += 1) {
                         // C: "do not correct if overwritten later on"
@@ -768,9 +807,6 @@ pub fn Sim(comptime cfg: config.Config) type {
                     }
                 }
             }
-
-            @memcpy(self.u.data, self.u_bak.data);
-            @memcpy(self.p.data, self.p_bak.data);
         }
 
         // ---- source terms -----------------------------------------------------
@@ -851,22 +887,49 @@ pub fn Sim(comptime cfg: config.Config) type {
             return out;
         }
 
-        fn sweep(self: *Self, dim: usize) Error!void {
+        /// The two cross directions of a sweep/face pass in dimension `dim`.
+        /// Band-parallelism runs over cross[0] — the largest transverse axis
+        /// in 2D (y for the x-sweep, x for the y-sweep).
+        fn crossDims(comptime dim: usize) [2]usize {
+            return switch (dim) {
+                0 => .{ 1, 2 },
+                1 => .{ 0, 2 },
+                2 => .{ 0, 1 },
+                else => unreachable,
+            };
+        }
+
+        fn sweep(self: *Self, comptime dim: usize) Error!void {
             const n = self.nDim(dim);
             if (n <= 1) return;
             self.timers.begin(.sweep);
             defer self.timers.end();
-            const cross = switch (dim) {
-                0 => [2]usize{ 1, 2 },
-                1 => [2]usize{ 0, 2 },
-                2 => [2]usize{ 0, 1 },
-                else => unreachable,
-            };
+            const cross = comptime crossDims(dim);
+            const res = threading.parallelRange(Self, self, self.team, self.crossLo(cross[0]), self.crossHi(cross[0]), sweepBandWorker(dim));
+            if (res.err) |e| return e;
+        }
 
-            var c1 = self.crossLo(cross[1]);
-            while (c1 < self.crossHi(cross[1])) : (c1 += 1) {
-                var c0 = self.crossLo(cross[0]);
-                while (c0 < self.crossHi(cross[0])) : (c0 += 1) {
+        fn sweepBandWorker(comptime dim: usize) fn (*Self, i64, i64, *threading.ChunkResult) void {
+            return struct {
+                fn w(s: *Self, c0_lo: i64, c0_hi: i64, res: *threading.ChunkResult) void {
+                    s.sweepBand(dim, c0_lo, c0_hi) catch |e| {
+                        res.err = e;
+                    };
+                }
+            }.w;
+        }
+
+        /// One direction of the interpolation sweep for cross[0] ∈
+        /// [c0_lo, c0_hi): every (c0, c1) line's faces are written only by
+        /// its own band, so the banding is bit-identical to serial.
+        fn sweepBand(self: *Self, comptime dim: usize, c0_lo: i64, c0_hi: i64) Error!void {
+            const n = self.nDim(dim);
+            const cross = comptime crossDims(dim);
+
+            var c0 = c0_lo;
+            while (c0 < c0_hi) : (c0 += 1) {
+                var c1 = self.crossLo(cross[1]);
+                while (c1 < self.crossHi(cross[1])) : (c1 += 1) {
                     var i: i64 = -1;
                     while (i < n + 1) : (i += 1) {
                         var cell = [3]i64{ 0, 0, 0 };
@@ -951,25 +1014,39 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// C: f_calc_fluxes_at_faces (finite.c:1461) — for every face,
         /// combine the one-sided fluxes with LAXF or HLL using the saved
         /// cell wavespeeds. Hydro and radiation rows use separate speeds.
+        /// Band-parallel over cross[0] per dimension, like the sweep.
         fn fluxesAtFaces(self: *Self) Error!void {
             self.timers.begin(.fluxes);
             defer self.timers.end();
-            for (0..3) |d| self.flb[d].zero();
+            for (0..3) |d| threading.parallelZero(self.team, self.flb[d].data);
 
-            for (0..3) |dim| {
-                const n = self.nDim(dim);
-                if (n <= 1) continue;
-                const cross = switch (dim) {
-                    0 => [2]usize{ 1, 2 },
-                    1 => [2]usize{ 0, 2 },
-                    2 => [2]usize{ 0, 1 },
-                    else => unreachable,
-                };
+            inline for (0..3) |dim| {
+                if (self.nDim(dim) > 1) {
+                    const cross = comptime crossDims(dim);
+                    const res = threading.parallelRange(Self, self, self.team, self.crossLo(cross[0]), self.crossHi(cross[0]), fluxesBandWorker(dim));
+                    if (res.err) |e| return e;
+                }
+            }
+        }
 
-                var c1 = self.crossLo(cross[1]);
-                while (c1 < self.crossHi(cross[1])) : (c1 += 1) {
-                    var c0 = self.crossLo(cross[0]);
-                    while (c0 < self.crossHi(cross[0])) : (c0 += 1) {
+        fn fluxesBandWorker(comptime dim: usize) fn (*Self, i64, i64, *threading.ChunkResult) void {
+            return struct {
+                fn w(s: *Self, c0_lo: i64, c0_hi: i64, res: *threading.ChunkResult) void {
+                    s.fluxesBand(dim, c0_lo, c0_hi) catch |e| {
+                        res.err = e;
+                    };
+                }
+            }.w;
+        }
+
+        fn fluxesBand(self: *Self, comptime dim: usize, c0_lo: i64, c0_hi: i64) Error!void {
+            const n = self.nDim(dim);
+            const cross = comptime crossDims(dim);
+            {
+                var c0 = c0_lo;
+                while (c0 < c0_hi) : (c0 += 1) {
+                    var c1 = self.crossLo(cross[1]);
+                    while (c1 < self.crossHi(cross[1])) : (c1 += 1) {
                         var i: i64 = 0;
                         while (i <= n) : (i += 1) {
                             var cf = [3]i64{ 0, 0, 0 };
@@ -1044,7 +1121,7 @@ pub fn Sim(comptime cfg: config.Config) type {
 
             try self.calcWavespeeds();
 
-            for (0..3) |dim| try self.sweep(dim);
+            inline for (0..3) |dim| try self.sweep(dim);
 
             try self.fluxesAtFaces();
 
@@ -1058,33 +1135,9 @@ pub fn Sim(comptime cfg: config.Config) type {
             {
                 self.timers.begin(.update);
                 defer self.timers.end();
-                var iz: i64 = 0;
-                while (iz < self.nzi()) : (iz += 1) {
-                    var iy: i64 = 0;
-                    while (iy < self.nyi()) : (iy += 1) {
-                        var ix: i64 = 0;
-                        while (ix < self.nxi()) : (ix += 1) {
-                            const ms = try self.metricSource(ix, iy, iz);
-                            const dx = self.grid.cellSize(ix, 0);
-                            const dy = self.grid.cellSize(iy, 1);
-                            const dz = self.grid.cellSize(iz, 2);
-                            const dt = dtin;
-
-                            for (0..NV) |iv| {
-                                const flxl = self.flb[0].get(iv, ix, iy, iz);
-                                const flxr = self.flb[0].get(iv, ix + 1, iy, iz);
-                                const flyl = self.flb[1].get(iv, ix, iy, iz);
-                                const flyr = self.flb[1].get(iv, ix, iy + 1, iz);
-                                const flzl = self.flb[2].get(iv, ix, iy, iz);
-                                const flzr = self.flb[2].get(iv, ix, iy, iz + 1);
-
-                                const du = -(flxr - flxl) * dt / dx - (flyr - flyl) * dt / dy - (flzr - flzl) * dt / dz;
-                                const val = self.u.get(iv, ix, iy, iz) + du + ms[iv] * dt;
-                                self.u.set(iv, ix, iy, iz, val);
-                            }
-                        }
-                    }
-                }
+                var ctx = DtCtx{ .sim = self, .dt = dtin };
+                const res = threading.parallelRange(DtCtx, &ctx, self.team, 0, self.nyi(), updateRowsWorker);
+                if (res.err) |e| return e;
             }
 
             // (EXPLICIT_LAB_RAD_SOURCE not used — PUFFY couples implicitly)
@@ -1093,28 +1146,84 @@ pub fn Sim(comptime cfg: config.Config) type {
             // (MIXENTROPIESPROPERLY off)
         }
 
+        fn updateRowsWorker(ctx: *DtCtx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            ctx.sim.updateRows(ctx.dt, iy0, iy1) catch |e| {
+                res.err = e;
+            };
+        }
+
+        /// The conserved update (flux divergence + metric source) for
+        /// iy ∈ [iy0, iy1) — writes only its own cells' u.
+        fn updateRows(self: *Self, dtin: f64, iy0: i64, iy1: i64) Error!void {
+            var iz: i64 = 0;
+            while (iz < self.nzi()) : (iz += 1) {
+                var iy: i64 = iy0;
+                while (iy < iy1) : (iy += 1) {
+                    var ix: i64 = 0;
+                    while (ix < self.nxi()) : (ix += 1) {
+                        const ms = try self.metricSource(ix, iy, iz);
+                        const dx = self.grid.cellSize(ix, 0);
+                        const dy = self.grid.cellSize(iy, 1);
+                        const dz = self.grid.cellSize(iz, 2);
+                        const dt = dtin;
+
+                        for (0..NV) |iv| {
+                            const flxl = self.flb[0].get(iv, ix, iy, iz);
+                            const flxr = self.flb[0].get(iv, ix + 1, iy, iz);
+                            const flyl = self.flb[1].get(iv, ix, iy, iz);
+                            const flyr = self.flb[1].get(iv, ix, iy + 1, iz);
+                            const flzl = self.flb[2].get(iv, ix, iy, iz);
+                            const flzr = self.flb[2].get(iv, ix, iy, iz + 1);
+
+                            const du = -(flxr - flxl) * dt / dx - (flyr - flyl) * dt / dy - (flzr - flzl) * dt / dz;
+                            const val = self.u.get(iv, ix, iy, iz) + du + ms[iv] * dt;
+                            self.u.set(iv, ix, iy, iz, val);
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- stage arithmetic (exact C expression shapes) ------------------------
 
         fn copyFull(self: *Self, dst: *FieldT, src: *const FieldT) void {
             self.timers.begin(.stage);
             defer self.timers.end();
-            @memcpy(dst.data, src.data);
+            threading.parallelCopy(self.team, dst.data, src.data);
         }
 
+        /// Worker context for the two stage-arithmetic shapes: deriv uses
+        /// (dst, a, b, f1, f2); combine additionally uses c.
+        const StageCtx = struct {
+            sim: *Self,
+            dst: *FieldT,
+            a_f: *const FieldT,
+            b_f: *const FieldT,
+            c_f: *const FieldT = undefined,
+            f1: f64,
+            f2: f64,
+        };
+
         /// dst = (1/Δ)·a + (−1/Δ)·b over the domain (problem.c:181/230/…).
+        /// Band-parallel over iy — pure per-cell assignments.
         fn stageDeriv(self: *Self, dst: *FieldT, a_f: *const FieldT, b_f: *const FieldT, delta: f64) void {
             self.timers.begin(.stage);
             defer self.timers.end();
-            const f1 = 1.0 / delta;
-            const f2 = -1.0 / delta;
+            var ctx = StageCtx{ .sim = self, .dst = dst, .a_f = a_f, .b_f = b_f, .f1 = 1.0 / delta, .f2 = -1.0 / delta };
+            _ = threading.parallelRange(StageCtx, &ctx, self.team, 0, self.nyi(), stageDerivWorker);
+        }
+
+        fn stageDerivWorker(ctx: *StageCtx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            _ = res;
+            const self = ctx.sim;
             var iz: i64 = 0;
             while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = 0;
-                while (iy < self.nyi()) : (iy += 1) {
+                var iy: i64 = iy0;
+                while (iy < iy1) : (iy += 1) {
                     var ix: i64 = 0;
                     while (ix < self.nxi()) : (ix += 1) {
                         for (0..NV) |iv| {
-                            dst.set(iv, ix, iy, iz, f1 * a_f.get(iv, ix, iy, iz) + f2 * b_f.get(iv, ix, iy, iz));
+                            ctx.dst.set(iv, ix, iy, iz, ctx.f1 * ctx.a_f.get(iv, ix, iy, iz) + ctx.f2 * ctx.b_f.get(iv, ix, iy, iz));
                         }
                     }
                 }
@@ -1125,15 +1234,22 @@ pub fn Sim(comptime cfg: config.Config) type {
         fn stageCombine(self: *Self, dst: *FieldT, a_f: *const FieldT, f1: f64, b_f: *const FieldT, f2: f64, c_f: *const FieldT) void {
             self.timers.begin(.stage);
             defer self.timers.end();
+            var ctx = StageCtx{ .sim = self, .dst = dst, .a_f = a_f, .b_f = b_f, .c_f = c_f, .f1 = f1, .f2 = f2 };
+            _ = threading.parallelRange(StageCtx, &ctx, self.team, 0, self.nyi(), stageCombineWorker);
+        }
+
+        fn stageCombineWorker(ctx: *StageCtx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            _ = res;
+            const self = ctx.sim;
             var iz: i64 = 0;
             while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = 0;
-                while (iy < self.nyi()) : (iy += 1) {
+                var iy: i64 = iy0;
+                while (iy < iy1) : (iy += 1) {
                     var ix: i64 = 0;
                     while (ix < self.nxi()) : (ix += 1) {
                         for (0..NV) |iv| {
-                            dst.set(iv, ix, iy, iz, a_f.get(iv, ix, iy, iz) +
-                                f1 * b_f.get(iv, ix, iy, iz) + f2 * c_f.get(iv, ix, iy, iz));
+                            ctx.dst.set(iv, ix, iy, iz, ctx.a_f.get(iv, ix, iy, iz) +
+                                ctx.f1 * ctx.b_f.get(iv, ix, iy, iz) + ctx.f2 * ctx.c_f.get(iv, ix, iy, iz));
                         }
                     }
                 }
@@ -1155,14 +1271,25 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
 
         /// C: update_entropy (u2p.c:2257) — recompute S(ρ,u) and refresh the
-        /// MHD conserveds.
+        /// MHD conserveds. Band-parallel over iy (cell-local).
         pub fn updateEntropy(self: *Self) Error!void {
             self.timers.begin(.entropy);
             defer self.timers.end();
+            const res = threading.parallelRange(Self, self, self.team, 0, self.nyi(), entropyRowsWorker);
+            if (res.err) |e| return e;
+        }
+
+        fn entropyRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            self.entropyRows(iy0, iy1) catch |e| {
+                res.err = e;
+            };
+        }
+
+        fn entropyRows(self: *Self, iy0: i64, iy1: i64) Error!void {
             var iz: i64 = 0;
             while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = 0;
-                while (iy < self.nyi()) : (iy += 1) {
+                var iy: i64 = iy0;
+                while (iy < iy1) : (iy += 1) {
                     var ix: i64 = 0;
                     while (ix < self.nxi()) : (ix += 1) {
                         var pp: [NV]f64 = undefined;
@@ -1191,16 +1318,24 @@ pub fn Sim(comptime cfg: config.Config) type {
 
             self.timers.begin(.implicit);
             defer self.timers.end();
-            self.impl_dt = dtin; // read by every worker row (single pass)
-            try threading.parallelRows(Self, self, implicitRowsWorker);
+            var ctx = DtCtx{ .sim = self, .dt = dtin };
+            const res = threading.parallelRange(DtCtx, &ctx, self.team, 0, self.nyi(), implicitRowsWorker);
+            self.n_radimp_failures += res.n_fail;
+            self.n_radimp_iters += res.n_iters;
+            if (res.err) |e| return e;
 
             try self.cellFixup(.radimp_fixup);
         }
 
-        fn implicitRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+        /// Worker context for the passes parameterized by the sub-step dt
+        /// (op_implicit, the conserved update).
+        const DtCtx = struct { sim: *Self, dt: f64 };
+
+        fn implicitRowsWorker(ctx: *DtCtx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
             // errors here would be relele failures inside the solver, but
             // solve_implicit_lab returns a status (never throws), so this
             // worker cannot error — it only tallies counters into `res`.
+            const self = ctx.sim;
             const opac = &(self.opt.opac.?);
             const ImplT = implicit.Solver(cfg);
 
@@ -1221,7 +1356,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                         self.p.load(ix, iy, iz, &pp);
 
                         const geom = self.cache.fillGeometry(ix, iy, iz);
-                        const rr = ImplT.solveImplicitLab(&uu, &pp, &geom, self.impl_dt, self.opt.gam, self.opt.rad, opac, &self.opt.implicit);
+                        const rr = ImplT.solveImplicitLab(&uu, &pp, &geom, ctx.dt, self.opt.gam, self.opt.rad, opac, &self.opt.implicit);
 
                         if (rr.ok) {
                             self.u.store(ix, iy, iz, &uu);
@@ -1254,17 +1389,29 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// θ-components scaled by |θ−θ_axis|/|θ_src−θ_axis| (internal x2),
         /// then p2u at the target geometry rewrites all conserveds. B is
         /// untouched: PUFFY does not define CORRECTMAGNFIELD. C only acts
-        /// on spherical-like MYCOORDS.
+        /// on spherical-like MYCOORDS. Band-parallel over ix columns (each
+        /// column reads its own row-nc source and writes its own polar rows).
         fn correctPolaraxis(self: *Self) Error!void {
             if (comptime cfg.coords == .mink) return;
+            const res = threading.parallelRange(Self, self, self.team, 0, self.nxi(), polarColsWorker);
+            if (res.err) |e| return e;
+        }
+
+        fn polarColsWorker(self: *Self, ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
+            self.polarCols(ix0, ix1) catch |e| {
+                res.err = e;
+            };
+        }
+
+        fn polarCols(self: *Self, ix0: i64, ix1: i64) Error!void {
             const g = &self.grid;
             const nc = self.opt.nccorrectpolar;
             const ny = self.nyi();
 
             var iz: i64 = 0;
             while (iz < self.nzi()) : (iz += 1) {
-                var ix: i64 = 0;
-                while (ix < self.nxi()) : (ix += 1) {
+                var ix: i64 = ix0;
+                while (ix < ix1) : (ix += 1) {
                     // upper axis
                     {
                         const thaxis = g.yl(0);

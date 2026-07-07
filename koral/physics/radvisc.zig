@@ -32,6 +32,7 @@ const p2u_mod = @import("../p2u.zig");
 const coco = @import("../metric/coco.zig");
 const metric = @import("../metric/metric.zig");
 const misc = @import("../math/misc.zig");
+const threading = @import("../sim/threading.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 const small: f64 = 1.0e-80; // C: SMALL
@@ -329,23 +330,42 @@ pub fn calcRijVisc(
 
 /// C: calc_Rij_visc_total (rad.c:4628) — populate sim.rijvisc (R^i_j) over the
 /// domain plus a one-cell ghost ring, skipping corners (if_outsidegc). Called
-/// once per step (problem.c:127) with the step's global_dt.
-pub fn calcRijViscTotal(comptime SimT: type, sim: *SimT, global_dt: f64) relele.Error!void {
-    @memset(sim.rijvisc.data, 0);
+/// once per step (problem.c:127) with the step's global_dt. P1: band-parallel
+/// over iy rows (each cell writes only its own rijvisc block; the ±1-stencil
+/// reads of p are frozen during the pass).
+pub fn calcRijViscTotal(comptime SimT: type, sim: *SimT, global_dt: f64) (relele.Error || error{OutOfMemory})!void {
+    threading.parallelZero(sim.team, sim.rijvisc.data);
 
+    const ny = sim.nyi();
+    const ylim: i64 = if (ny > 1) 1 else 0;
+
+    const Ctx = struct { sim: *SimT, dt: f64 };
+    var ctx = Ctx{ .sim = sim, .dt = global_dt };
+    const W = struct {
+        fn w(c: *Ctx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            rijViscRows(SimT, c.sim, c.dt, iy0, iy1) catch |e| {
+                res.err = e;
+            };
+        }
+    };
+    const res = threading.parallelRange(Ctx, &ctx, sim.team, -ylim, ny + ylim, W.w);
+    if (res.err) |e| return e;
+}
+
+/// The per-cell R^i_j body for iy ∈ [iy0, iy1) (all iz, ix incl. the ring).
+fn rijViscRows(comptime SimT: type, sim: *SimT, global_dt: f64, iy0: i64, iy1: i64) relele.Error!void {
     const nx = sim.nxi();
     const ny = sim.nyi();
     const nz = sim.nzi();
     const lim: i64 = 1;
 
     const xlim: i64 = if (nx > 1) lim else 0;
-    const ylim: i64 = if (ny > 1) lim else 0;
     const zlim: i64 = if (nz > 1) lim else 0;
 
     var iz: i64 = -zlim;
     while (iz < nz + zlim) : (iz += 1) {
-        var iy: i64 = -ylim;
-        while (iy < ny + ylim) : (iy += 1) {
+        var iy: i64 = iy0;
+        while (iy < iy1) : (iy += 1) {
             var ix: i64 = -xlim;
             while (ix < nx + xlim) : (ix += 1) {
                 if (ifOutsideGc(nx, ny, nz, ix, iy, iz)) continue; // avoid corners

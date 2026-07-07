@@ -1,54 +1,367 @@
-//! Row-parallel dispatch for the per-cell inversions (u2p / implicit).
-//! `parallelRows` splits the iy-rows across OS threads; the sim-specific
-//! worker bodies stay in sim.zig and tally into `ChunkResult`. Rows are
-//! disjoint and each per-cell inversion only touches its own cell (geometry
-//! reads are `*const`), so the parallel result is bit-identical to the serial
-//! one — the golden tests run at nthreads=1 and a determinism test pins it.
+//! P1 of the parallelization plan (docs/PARALLELIZATION_PLAN_2026-07-06.md
+//! §3.2): a persistent worker team with dynamic tiling, behind a small
+//! band-parallel dispatch API used by every per-cell/per-face pass.
+//!
+//! Design (and why the result stays bit-identical to serial):
+//!  * `Team` spawns nthreads−1 helper OS threads once (at Sim.init) and
+//!    parks them on a futex'd region counter between regions — no per-pass
+//!    spawn/join. The main thread participates in every region and then
+//!    waits (futex again) for the helpers' completion count. (Zig 0.16
+//!    moved Mutex/Condition behind the std.Io event-loop interface, so the
+//!    park/wake goes straight to the OS futex: linux futex / darwin ulock,
+//!    the same calls std.Io.Threaded makes internally.)
+//!  * A region is (task, ctx, [lo,hi), tile): workers grab contiguous
+//!    tiles of the index range through an atomic ticket counter, so cheap
+//!    tiles fly and expensive tiles straggle-balance (the implicit solver's
+//!    ~17× torus/floor cell-cost spread is the motivating case).
+//!  * Every pass body writes only cells/columns/faces of its own band and
+//!    reads only state that is frozen during the region (geometry cache,
+//!    the pre-pass fields), so *which* worker runs a tile cannot change any
+//!    written value.
+//!  * The only cross-band results are the `ChunkResult` reductions: integer
+//!    sums (implicit counters) and f64 max/min (the CFL denominator) — all
+//!    order-insensitive, merged once per region in a fixed order. Each
+//!    worker accumulates into a stack-local ChunkResult across its tiles
+//!    and publishes once at region end (no false sharing on hot counters).
+//!  * Errors: a worker records the first error it hits in its ChunkResult;
+//!    the merged result carries one of them (they are all OutOfMemory-class
+//!    aborts). Thread-spawn failure at Team.init just means fewer helpers.
+//!
+//! The golden tests all run at nthreads=1 (team == null ⇒ the worker runs
+//! inline over the whole range); the threading tests pin nthreads>1 to be
+//! bit-identical to that serial path.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Error = @import("../relele.zig").Error || error{OutOfMemory};
 
-/// Per-worker scratch: the first error a chunk hit, plus its slice of the
-/// implicit-solver counters (summed after the join — integer add is
-/// order-independent, so the result is identical to serial).
-pub const ChunkResult = struct { err: ?Error = null, n_fail: u64 = 0, n_iters: u64 = 0 };
+/// Minimal cross-platform futex on a u32 word (std's own moved behind
+/// std.Io in 0.16). `wait` returns when *ptr != expect, on a wake, or
+/// spuriously — callers always re-check their condition in a loop.
+const futex = struct {
+    fn wait(ptr: *const std.atomic.Value(u32), expect: u32) void {
+        switch (builtin.os.tag) {
+            .linux => {
+                _ = std.os.linux.futex_4arg(&ptr.raw, .{ .cmd = .WAIT, .private = true }, expect, null);
+            },
+            .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => {
+                _ = std.c.__ulock_wait(
+                    .{ .op = .COMPARE_AND_WAIT, .NO_ERRNO = true },
+                    &ptr.raw,
+                    expect,
+                    0, // no timeout
+                );
+            },
+            // portability stopgap: busy-poll with a scheduler yield
+            else => std.Thread.yield() catch {},
+        }
+    }
 
-/// Run `worker` over the iy-rows, split across opt.nthreads OS threads when >1.
-pub fn parallelRows(
-    comptime SimT: type,
-    sim: *SimT,
-    comptime worker: fn (sim: *SimT, iy0: i64, iy1: i64, res: *ChunkResult) void,
-) Error!void {
-    const ny = sim.nyi();
-    const nt = @max(@as(usize, 1), sim.opt.nthreads);
-    if (nt <= 1 or ny <= 1) {
-        var res = ChunkResult{};
-        worker(sim, 0, ny, &res);
-        sim.n_radimp_failures += res.n_fail;
-        sim.n_radimp_iters += res.n_iters;
-        if (res.err) |e| return e;
-        return;
+    fn wake(ptr: *const std.atomic.Value(u32), n_waiters: u32) void {
+        switch (builtin.os.tag) {
+            .linux => {
+                _ = std.os.linux.futex_3arg(
+                    &ptr.raw,
+                    .{ .cmd = .WAKE, .private = true },
+                    @min(n_waiters, std.math.maxInt(i32)),
+                );
+            },
+            .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => {
+                while (true) {
+                    const status = std.c.__ulock_wake(
+                        .{ .op = .COMPARE_AND_WAIT, .NO_ERRNO = true, .WAKE_ALL = n_waiters > 1 },
+                        &ptr.raw,
+                        0,
+                    );
+                    if (status >= 0) return;
+                    switch (@as(std.c.E, @enumFromInt(-status))) {
+                        .INTR, .CANCELED => continue,
+                        else => return, // NOENT: nobody waiting
+                    }
+                }
+            },
+            else => {},
+        }
     }
-    const maxt = 64;
-    const n_workers: usize = @intCast(@min(@as(i64, @intCast(@min(nt, maxt))), ny));
-    var results = [_]ChunkResult{.{}} ** maxt;
-    var threads = [_]?std.Thread{null} ** maxt;
-    var i: usize = 0;
-    while (i < n_workers) : (i += 1) {
-        const iy0 = @divTrunc(ny * @as(i64, @intCast(i)), @as(i64, @intCast(n_workers)));
-        const iy1 = @divTrunc(ny * @as(i64, @intCast(i + 1)), @as(i64, @intCast(n_workers)));
-        threads[i] = std.Thread.spawn(.{}, worker, .{ sim, iy0, iy1, &results[i] }) catch null;
-        // spawn failure → run this chunk inline (still correct)
-        if (threads[i] == null) worker(sim, iy0, iy1, &results[i]);
-    }
-    for (0..n_workers) |k| if (threads[k]) |t| t.join();
+};
 
-    var e: ?Error = null;
-    for (results[0..n_workers]) |r| {
-        sim.n_radimp_failures += r.n_fail;
-        sim.n_radimp_iters += r.n_iters;
-        if (r.err) |ee| e = ee;
+const inf = std.math.inf(f64);
+
+/// Per-worker scratch merged after each region. Passes use what they need:
+/// the implicit solver its counters, the wavespeed pass its CFL-denominator
+/// partials; everything else only the error slot. All merges are
+/// order-insensitive, so the merged result is independent of the tile
+/// schedule (and identical to serial).
+pub const ChunkResult = struct {
+    err: ?Error = null,
+    n_fail: u64 = 0,
+    n_iters: u64 = 0,
+    /// running max/min of the CFL denominator (wavespeed pass only);
+    /// neutral at ∓inf so non-participating passes merge as no-ops.
+    tsd_max: f64 = -inf,
+    tsd_min: f64 = inf,
+
+    pub fn merge(self: *ChunkResult, other: *const ChunkResult) void {
+        if (self.err == null) self.err = other.err;
+        self.n_fail += other.n_fail;
+        self.n_iters += other.n_iters;
+        if (other.tsd_max > self.tsd_max) self.tsd_max = other.tsd_max;
+        if (other.tsd_min < self.tsd_min) self.tsd_min = other.tsd_min;
     }
-    if (e) |ee| return ee;
+};
+
+/// Aim for this many tiles per worker per region — enough granularity for
+/// the ticket counter to absorb per-tile cost imbalance, few enough that
+/// ticket traffic stays negligible (§3.2 "dynamic tiling").
+const tiles_per_worker = 8;
+
+/// The persistent worker team. One per Sim (created when nthreads > 1),
+/// shared by all passes; only the main thread publishes regions.
+pub const Team = struct {
+    const Task = *const fn (ctx: *anyopaque, lo: i64, hi: i64, res: *ChunkResult) void;
+
+    allocator: std.mem.Allocator,
+    helpers: []std.Thread,
+    /// one publish slot per helper, written once at that helper's region end
+    results: []ChunkResult,
+
+    // region state — plain fields published by the release-increment of
+    // `gen` and read by helpers after their acquire-load of it
+    task: Task = undefined,
+    ctx: *anyopaque = undefined,
+    hi: i64 = 0,
+    tile: i64 = 1,
+    shutdown: bool = false,
+    /// the dynamic-tile ticket counter
+    ticket: std.atomic.Value(i64) = .init(0),
+    /// region generation; helpers park on this futex word between regions
+    gen: std.atomic.Value(u32) = .init(0),
+    /// helpers still inside the current region; main parks on this word
+    n_running: std.atomic.Value(u32) = .init(0),
+
+    /// Spawn `nthreads − 1` helpers (the main thread is worker 0). If some
+    /// spawns fail the team just runs narrower — never an error.
+    pub fn init(allocator: std.mem.Allocator, nthreads: usize) !*Team {
+        const n_helpers = @max(nthreads, 1) - 1;
+        const team = try allocator.create(Team);
+        errdefer allocator.destroy(team);
+        const results = try allocator.alloc(ChunkResult, n_helpers);
+        errdefer allocator.free(results);
+        const helpers = try allocator.alloc(std.Thread, n_helpers);
+
+        team.* = .{ .allocator = allocator, .helpers = helpers[0..0], .results = results };
+        for (0..n_helpers) |i| {
+            const t = std.Thread.spawn(.{}, helperMain, .{ team, i }) catch break;
+            helpers[i] = t;
+            team.helpers = helpers[0 .. i + 1];
+        }
+        return team;
+    }
+
+    pub fn deinit(team: *Team) void {
+        team.shutdown = true;
+        _ = team.gen.fetchAdd(1, .release);
+        futex.wake(&team.gen, std.math.maxInt(u32));
+        for (team.helpers) |t| t.join();
+        const allocator = team.allocator;
+        allocator.free(team.helpers.ptr[0..team.results.len]);
+        allocator.free(team.results);
+        allocator.destroy(team);
+    }
+
+    /// Run one region: publish, participate, wait, merge. Main-thread only,
+    /// non-reentrant (no pass launches a region from inside another).
+    pub fn run(team: *Team, ctx: *anyopaque, task: Task, lo: i64, hi: i64) ChunkResult {
+        const n = hi - lo;
+        const n_workers: i64 = @intCast(team.helpers.len + 1);
+        const tile = @max(1, @divTrunc(n, tiles_per_worker * n_workers));
+
+        team.task = task;
+        team.ctx = ctx;
+        team.hi = hi;
+        team.tile = tile;
+        team.ticket.store(lo, .monotonic);
+        team.n_running.store(@intCast(team.helpers.len), .monotonic);
+        _ = team.gen.fetchAdd(1, .release); // publishes everything above
+        futex.wake(&team.gen, std.math.maxInt(u32));
+
+        var merged = ChunkResult{};
+        runTiles(team, task, ctx, hi, tile, &merged);
+
+        // wait until every helper has published its result
+        while (true) {
+            const r = team.n_running.load(.acquire);
+            if (r == 0) break;
+            futex.wait(&team.n_running, r);
+        }
+
+        // fixed merge order: main first, then helpers 0..n — and every
+        // reduction is order-insensitive anyway
+        for (team.results) |*r| merged.merge(r);
+        return merged;
+    }
+
+    fn helperMain(team: *Team, wid: usize) void {
+        var seen: u32 = 0;
+        while (true) {
+            // park until a new region (or shutdown) bumps the generation
+            while (true) {
+                const g = team.gen.load(.acquire);
+                if (g != seen) {
+                    seen = g;
+                    break;
+                }
+                futex.wait(&team.gen, g);
+            }
+            if (team.shutdown) return;
+
+            var local = ChunkResult{};
+            runTiles(team, team.task, team.ctx, team.hi, team.tile, &local);
+            team.results[wid] = local;
+
+            // last helper out wakes the waiting main thread
+            if (team.n_running.fetchSub(1, .release) == 1) {
+                futex.wake(&team.n_running, 1);
+            }
+        }
+    }
+
+    /// The dynamic-tile loop: grab [t_lo, t_lo+tile) slices until the range
+    /// is exhausted. `local` lives on this worker's stack across all its
+    /// tiles (accumulate locally, publish once).
+    fn runTiles(team: *Team, task: Task, ctx: *anyopaque, hi: i64, tile: i64, local: *ChunkResult) void {
+        while (true) {
+            const t_lo = team.ticket.fetchAdd(tile, .monotonic);
+            if (t_lo >= hi) return;
+            task(ctx, t_lo, @min(t_lo + tile, hi), local);
+        }
+    }
+};
+
+/// Run `worker` over [lo, hi): inline when `team` is null (the serial /
+/// nthreads=1 path — the golden-tested reference), else as one team region
+/// with dynamic tiles. Returns the merged ChunkResult; the caller checks
+/// `.err` and consumes whatever reductions the pass produces.
+pub fn parallelRange(
+    comptime CtxT: type,
+    ctx: *CtxT,
+    team: ?*Team,
+    lo: i64,
+    hi: i64,
+    comptime worker: fn (ctx: *CtxT, b_lo: i64, b_hi: i64, res: *ChunkResult) void,
+) ChunkResult {
+    if (hi <= lo) return .{};
+    if (team) |t| {
+        const Tramp = struct {
+            fn task(raw: *anyopaque, b_lo: i64, b_hi: i64, res: *ChunkResult) void {
+                worker(@ptrCast(@alignCast(raw)), b_lo, b_hi, res);
+            }
+        };
+        return t.run(@ptrCast(ctx), Tramp.task, lo, hi);
+    }
+    var res = ChunkResult{};
+    worker(ctx, lo, hi, &res);
+    return res;
+}
+
+const CopyCtx = struct { dst: []f64, src: []const f64 };
+
+fn copyWorker(c: *CopyCtx, lo: i64, hi: i64, res: *ChunkResult) void {
+    _ = res;
+    const a: usize = @intCast(lo);
+    const b: usize = @intCast(hi);
+    @memcpy(c.dst[a..b], c.src[a..b]);
+}
+
+/// dst = src, split across the team (full-field stage copies).
+pub fn parallelCopy(team: ?*Team, dst: []f64, src: []const f64) void {
+    std.debug.assert(dst.len == src.len);
+    var ctx = CopyCtx{ .dst = dst, .src = src };
+    _ = parallelRange(CopyCtx, &ctx, team, 0, @intCast(dst.len), copyWorker);
+}
+
+const ZeroCtx = struct { dst: []f64 };
+
+fn zeroWorker(c: *ZeroCtx, lo: i64, hi: i64, res: *ChunkResult) void {
+    _ = res;
+    @memset(c.dst[@intCast(lo)..@intCast(hi)], 0);
+}
+
+/// @memset(dst, 0), split across the team.
+pub fn parallelZero(team: ?*Team, dst: []f64) void {
+    var ctx = ZeroCtx{ .dst = dst };
+    _ = parallelRange(ZeroCtx, &ctx, team, 0, @intCast(dst.len), zeroWorker);
+}
+
+// ---- unit tests ----------------------------------------------------------
+
+test "Team: dynamic tiles cover the range exactly once" {
+    const allocator = std.testing.allocator;
+    const team = try Team.init(allocator, 4);
+    defer team.deinit();
+
+    var hits = [_]std.atomic.Value(u32){.init(0)} ** 103;
+    const Ctx = struct { hits: []std.atomic.Value(u32) };
+    var ctx = Ctx{ .hits = &hits };
+    const W = struct {
+        fn w(c: *Ctx, lo: i64, hi: i64, res: *ChunkResult) void {
+            var i = lo;
+            while (i < hi) : (i += 1) {
+                _ = c.hits[@intCast(i)].fetchAdd(1, .monotonic);
+                res.n_iters += 1;
+            }
+        }
+    };
+    // several regions in a row (reuse of the parked team)
+    for (0..5) |_| {
+        for (&hits) |*h| h.store(0, .monotonic);
+        const res = parallelRange(Ctx, &ctx, team, 0, 103, W.w);
+        try std.testing.expectEqual(@as(u64, 103), res.n_iters);
+        for (&hits) |*h| try std.testing.expectEqual(@as(u32, 1), h.load(.monotonic));
+    }
+}
+
+test "Team: reductions merge like serial" {
+    const allocator = std.testing.allocator;
+    const team = try Team.init(allocator, 3);
+    defer team.deinit();
+
+    const Ctx = struct {};
+    var ctx = Ctx{};
+    const W = struct {
+        fn w(c: *Ctx, lo: i64, hi: i64, res: *ChunkResult) void {
+            _ = c;
+            var i = lo;
+            while (i < hi) : (i += 1) {
+                res.n_fail += 1;
+                const v: f64 = @floatFromInt(@mod(i * 37, 101));
+                if (v > res.tsd_max) res.tsd_max = v;
+                if (v < res.tsd_min) res.tsd_min = v;
+            }
+        }
+    };
+    const par = parallelRange(Ctx, &ctx, team, 0, 500, W.w);
+    const ser = parallelRange(Ctx, &ctx, null, 0, 500, W.w);
+    try std.testing.expectEqual(ser.n_fail, par.n_fail);
+    try std.testing.expectEqual(ser.tsd_max, par.tsd_max);
+    try std.testing.expectEqual(ser.tsd_min, par.tsd_min);
+}
+
+test "parallelCopy and parallelZero" {
+    const allocator = std.testing.allocator;
+    const team = try Team.init(allocator, 4);
+    defer team.deinit();
+
+    const n = 10_007;
+    const src = try allocator.alloc(f64, n);
+    defer allocator.free(src);
+    const dst = try allocator.alloc(f64, n);
+    defer allocator.free(dst);
+    for (src, 0..) |*v, i| v.* = @floatFromInt(i);
+
+    parallelCopy(team, dst, src);
+    for (dst, src) |d, s| try std.testing.expectEqual(s, d);
+    parallelZero(team, dst);
+    for (dst) |d| try std.testing.expectEqual(@as(f64, 0), d);
 }

@@ -6,7 +6,7 @@
 
 ## 0. Executive summary
 
-1. **The biggest lever is multicore, not SIMD.** Only 2 of ~15 per-step passes are threaded today (`u2p`, `implicit`, via per-pass spawn/join over `iy` rows). Threading everything behind a persistent worker team with dynamic tiling is the single largest win and is prerequisite to 64-core scaling. SIMD multiplies per-core throughput ~2× (NEON) to ~8× (AVX-512) *only on the kernels it reaches*; cores multiply everything.
+1. **The biggest lever is multicore, not SIMD.** *(P1 DONE 2026-07-07 — §7.4.)* At the time of writing only 2 of ~15 per-step passes were threaded (`u2p`, `implicit`, via per-pass spawn/join). Threading everything behind a persistent worker team with dynamic tiling was the single largest win and the prerequisite to 64-core scaling — **now delivered: the whole PUFFY step runs 7.6× faster on 10 cores (8.2× on 12), up from 1.77×.** SIMD multiplies per-core throughput ~2× (NEON) to ~8× (AVX-512) *only on the kernels it reaches*; cores multiply everything.
 2. **One SIMD opportunity stands out because it needs no data-layout change:** the implicit solver's finite-difference Jacobian evaluates 4 independent perturbed residuals per Newton iteration — vectorize those as 4 lanes *within one cell*. The implicit solver is the runtime hog, and this sidesteps the cross-cell divergence problem entirely.
 3. **Cross-cell (vertical) SIMD needs the AoSoA flip** the architecture doc (§6, §8.4) already planned. It pays most on AVX-512/SVE cluster CPUs (W=8), least on the Mac (NEON W=2). Do it after multicore, and only for the explicit-path kernels.
 4. **MPI: follow C's protocol, not C's deployment.** C runs PUFFY as *flat MPI, 960 ranks of 12×12 cells* — at NG=3 that is >125% ghost-to-interior overhead and 3.7 KB latency-bound messages. The Zig plan is hybrid: 1 rank per NUMA domain × threads inside, tiles hundreds of cells wide, C's exchange *placement* mirrored exactly for diffability.
@@ -18,7 +18,7 @@ Recommended order: **instrument → thread everything → memory diet → SIMD �
 
 ## 1. Where the time goes — one RK2IMEX step today
 
-`step()` (`sim.zig:1667`) per-pass inventory. "Threaded" = runs under `parallelRows` (`sim.zig:937`), which spawns and joins up to `min(nthreads, 64, ny)` OS threads *per invocation*. **Measured wall-clock per pass now in §7.2** (P0 done) — headline: implicit 45%, dynamo 28% of the serial step.
+`step()` (`sim.zig:1667`) per-pass inventory, as of 2026-07-06. "Threaded" = ran under the old `parallelRows`, which spawned and joined up to `min(nthreads, 64, ny)` OS threads *per invocation*. **Measured wall-clock per pass in §7.2** (P0) — headline: implicit 45%, dynamo 28% of the serial step. *(Historical: P1 has since put every pass below on the persistent team — see §7.4.)*
 
 | # | Pass | Where | Calls/step | Threaded | Character |
 |---|------|-------|-----------|----------|-----------|
@@ -180,7 +180,7 @@ Post halo `Isend/Irecv`, sweep interior tiles, `Waitall`, sweep the boundary she
 | Phase | Work | Payoff | Risk |
 |-------|------|--------|------|
 | **P0** | Per-pass wall-clock instrumentation (cheap timers around each §1 pass, printed with the scalar cadence) — **DONE 2026-07-06**, see §7.2 | Replaces the assumptions in this doc with measurements; sizes P1–P4 → **headline: the dynamo is the #2 serial cost (28%) and the #1 cost once inversions are threaded (50%)** | none |
-| **P1** | Persistent worker team; thread all §1 passes; dynamic tiles; per-tile reductions; false-sharing fixes; NUMA first-touch + pinning | The big one: unlocks 64-core nodes; expect ~order-of-magnitude on today's serial share | Barrier bugs → caught by the existing bitwise threading test, extended to every pass |
+| **P1** | Persistent worker team; thread all §1 passes; dynamic tiles; per-tile reductions; false-sharing fixes; NUMA first-touch + pinning — **DONE 2026-07-07** (§7.3 first increment, §7.4 the rest): every §1 pass on the futex-parked team with atomic-ticket dynamic tiles; whole step **7.6× at 10 threads, 8.2× at 12** (was 1.77×). NUMA first-touch/pinning deferred to P4 (meaningless on the unified-memory Mac; no affinity API on Darwin) | The big one: unlocks 64-core nodes; expect ~order-of-magnitude on today's serial share → **delivered ~7.6× of the ~10× ideal on 10 cores** | Barrier bugs → caught by the bitwise threading gates, now covering every pass incl. a full PUFFY step |
 | **P2** | Memory diet: dead fields + dead Jacobian arrays out; fuse/swap stage arithmetic; axisymmetric metric-cache indexing (3D-critical) | Raises the bandwidth ceiling P1 will hit; −50%+ step traffic | Low; golden-checked deletions |
 | **P3a** | `comptime T`-generic residual chain + implicit FD-Jacobian lane vectorization (§2.3 #1) — **DONE 2026-07-06**, see §7.1 | ~2–3× on the dominant solver, on any CPU, no layout change → **measured 1.16× solve-level on NEON** (see §7.1 for why) | Moderate: needs the opacity/RadState chain generic over T |
 | **P3b** | AoSoA batch view + `@Vector` explicit-path kernels (§2.4) | Near-width on flux/recon/wavespeeds — 8× lanes on AVX-512 cluster CPUs, 2× on Mac | Highest-touch SIMD item; keep AoS fallback comptime-selectable |
@@ -311,6 +311,129 @@ t≈0 state where cost varies mostly with θ-row, but u2p's lower efficiency
 already shows the per-pass spawn/join + band-imbalance overheads (u2p's
 pass is only 18 ms — spawn/join is a fixed ~ms-scale tax). Both numbers
 should rise with the persistent team + dynamic tiles.
+
+### 7.3 First P1 increment — dynamo threaded (2026-07-07)
+
+The §7.2 headline acted on immediately: `parallelRows` generalized to a
+banded `parallelRange(lo, hi)` (any loop index — iy rows or ix columns;
+identical band math, so the existing u2p/implicit dispatch is
+bit-unchanged), and the dynamo's three per-cell passes now run on it:
+
+- the ΔA_φ + DAMPBETA ring loop (iy bands over domain+1-ring; dt reaches
+  the workers via a transient `sim.dyn_dt`, the `impl_dt` pattern);
+- the superpose+p2u loop (iy bands over the domain);
+- `calcScaleHeight` (ix bands — each worker owns whole columns, so every
+  radius's θ-sum keeps its serial accumulation order).
+
+The cheap curl stencil between ΔA_φ and superpose stays serial — it is
+the natural barrier (reads finished neighbour-row ΔA_φ). Every band
+writes only its own cells/columns, so the result is bit-identical to
+serial at any thread count: pinned by a new default-suite gate
+(`applyDynamo` ×2 on the 48×44 PUFFY torus with injected B³, nthreads
+1 vs 4, full p/u/ΔA_φ/scale-height arrays compared to the bit), the M12
+dynamo C-golden re-passing with identical deviations, and the production
+runs below printing identical scalars and final t at 1 vs 10 threads.
+
+Same P0 measurement, after the change:
+
+| | serial ms/step | 10-thread ms/step | speedup |
+|---|---|---|---|
+| applyDynamo | 721.2 (28.5%) | **103.2** (12.5%) | **7.0×** |
+| **whole step** | **2527** | **823** | **3.07×** (was 1.77×) |
+
+Serial is unchanged within run noise — the banding indirection is free.
+The 10-thread profile is now: **sweep 24.1%, implicit 18.7%, dynamo
+12.5%, bc 8.8%, wavespeeds 8.3%, fluxes 8.3%, radvisc 6.2%** — ~540
+ms/step of still-serial §1 passes dominate the step. Next P1 increments
+in measured order: sweep, then wavespeeds/fluxes/radvisc/update — worth
+roughly another 2× on this machine before the persistent-team + dynamic-
+tile work (which then reclaims the spawn/join tax and the imbalance gap)
+even starts.
+
+### 7.4 P1 complete — persistent team, dynamic tiles, every pass threaded (2026-07-07)
+
+**Implementation** (`koral/sim/threading.zig`, rewritten). The §3.2 design,
+with one deviation forced by Zig 0.16: `std.Thread.Mutex`/`Condition` moved
+behind the `std.Io` event-loop interface, so the team parks directly on the
+OS futex (`std.os.linux.futex_*` / darwin `__ulock_*` — the same calls
+`std.Io.Threaded` makes internally; ~40 lines, other platforms fall back to
+a yield poll).
+
+- **Persistent team.** `Sim.init` spawns `nthreads−1` helpers once; they park
+  on a futex'd region-generation counter. A region is `(task, ctx, [lo,hi),
+  tile)`; publishing is one release-increment + wake, completion one
+  countdown word the main thread parks on. No per-pass spawn/join anywhere.
+- **Dynamic tiles.** Workers (main thread included) pull contiguous tiles of
+  the banded index through an atomic ticket; tile = range/(8·workers). The
+  implicit pass's ~17× torus/floor cell-cost spread straggle-balances
+  naturally — measured below as u2p going 5.6×→7.8× and implicit 7.4×→8.0×
+  at the same thread count.
+- **Reductions.** `ChunkResult` carries the implicit counters *and* the CFL
+  `tstepden` max/min (lifted out of `save_wavespeeds`, closing the §1
+  hazard); every worker accumulates on its own stack across its tiles and
+  publishes once at region end (no false sharing on hot counters — the
+  §1 `ChunkResult` hazard), merged in fixed order. All reductions are
+  order-insensitive, so any tile schedule reproduces the serial bits.
+- **Coverage.** Every §1 pass now dispatches through the ctx-generic
+  `parallelRange` (small stack context structs replace the transient
+  `impl_dt`/`dyn_dt` fields): implicit + u2p (migrated), sweep and
+  fluxesAtFaces (banded over cross[0] per dimension, comptime-dim workers),
+  wavespeeds (with the reduce), flux-CT (two regions — the pass-1→2 EMF
+  barrier is the region boundary), conserved update + metric source,
+  radvisc `calcRijViscTotal`, the three dynamo passes, `setBc`'s three face
+  fills (x over iy, y/z over ix; the 2D corner fill stays serial after
+  them), cell_fixup (parallel averaging + `parallelCopy` snapshots),
+  polar-axis correction (ix columns), update_entropy, and the stage
+  arithmetic (`parallelCopy` full-field copies, banded deriv/combine).
+  Still serial: the corner fill, the dynamo curl, `saveTimesteps`,
+  `copy_entropycount` — each ≪1%.
+- **Bit-identity gates.** The MINK-box step gate (nthreads 1 ≡ 4) now also
+  pins the dt reduction; a new **full-PUFFY step gate** (48×44 torus,
+  startup + CFL step, radviscosity + dynamo + polar correction + specific
+  MKS2 BCs) compares p/u/rijvisc/scaleth/flags/counters/dt-reduce to the
+  bit. Full suite: 190 passed / 7 skipped; the `-Dslow-tests` golden battery
+  (keystone, radtubes, M12/M13 goldens incl. the puffy64 step: flags 100%)
+  passes unchanged — all goldens run at nthreads=1, whose pass bodies are
+  bit-identical to the pre-P1 code.
+
+**Measurement** (same battery as §7.2: PUFFY 384×360, ReleaseFast, Apple
+M-series 12-core, 20 steps from t=0, identical scalars and final t at every
+thread count):
+
+| Pass | serial ms/step | 10T ms/step | speedup |
+|---|---|---|---|
+| opImplicit | 1145.0 | 142.9 | 8.0× |
+| applyDynamo | 721.7 | 92.5 | 7.8× |
+| sweep | 191.5 | 25.6 | 7.5× |
+| calcU2p | 143.6 | 18.5 | 7.8× |
+| setBc | 72.3 | 9.9 | 7.3× |
+| calcWavespeeds | 68.0 | 8.7 | 7.9× |
+| fluxesAtFaces | 65.3 | 11.8 | 5.5× |
+| radvisc | 50.4 | 6.5 | 7.7× |
+| stage arithmetic | 31.8 | 5.0 | 6.4× |
+| conserved update | 31.1 | 4.0 | 7.8× |
+| updateEntropy | 8.3 | 1.1 | 7.7× |
+| cellFixup | 7.8 | 4.4 | 1.8× |
+| fluxCt | 5.1 | 0.8 | 6.2× |
+| **whole step** | **2543** | **332.9** | **7.64×** |
+
+12 threads (E-cores in the pool): **308.8 ms/step = 8.24×** — the ticket
+scheduler absorbs the slower cores, +8% over 10T, as §5 predicted. Serial
+is 2543 vs 2527/2561 in the two earlier runs — unchanged within noise.
+
+**Reading.** The step went 2561 → 1449 (inversions threaded, pre-P0) → 823
+(dynamo increment) → **333 ms/step**, and the §7.2 post-P1 projection
+(~360 ms) was slightly beaten because dynamic tiles lifted the inversion
+passes past their static-band ceiling. Compute-heavy passes cluster at
+7.3–8.0× on 10 threads; the outliers are bandwidth-bound (`cellFixup` is
+memcpy-dominated at 1.8×, stage 6.4×, fluxes 5.5× — the §3.3 bandwidth wall
+showing first). The 10T profile is implicit 42.9% > dynamo 27.8% > sweep
+7.7% > u2p 5.5% — i.e. the step is again dominated by the two per-cell
+physics passes, which is exactly where P2 (dynamo BL-geometry reuse, memory
+diet) and the P3 follow-ons (vector libm behind `-Dfast`) should land next.
+NUMA first-touch + pinning deferred to the P4 cluster work: no thread
+affinity API on Darwin and no NUMA on unified memory, so it cannot be
+validated here.
 
 ---
 

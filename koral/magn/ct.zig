@@ -24,15 +24,41 @@
 const std = @import("std");
 const relele = @import("../relele.zig");
 const p2u_mod = @import("../p2u.zig");
+const threading = @import("../sim/threading.zig");
 
 fn flPin(n: i64, i: i64) i64 {
     return if (n == 1) 0 else i;
 }
 
 /// C: flux_ct (magn.c:240). Requires GDETIN == 1 (ours always is).
+/// P1: both passes run band-parallel over iy corner rows — pass 1 writes
+/// only its own corners' EMFs, pass 2 only its own faces' flb rows; the
+/// region boundary between them is the required RAW barrier (pass 2 reads
+/// pass 1's EMFs at iy and iy+1).
 pub fn fluxCt(comptime SimT: type, sim: *SimT) void {
     const L = SimT.Layout;
     if (comptime !L.hasVar(.b1)) return;
+
+    const ny = sim.nyi();
+    _ = threading.parallelRange(SimT, sim, sim.team, 0, ny + 1, emfBandWorker(SimT));
+
+    // adjust_fluxcttoth_emfs: CORRECT_POLARAXIS only (M11)
+
+    _ = threading.parallelRange(SimT, sim, sim.team, 0, ny + 1, rebuildBandWorker(SimT));
+}
+
+fn emfBandWorker(comptime SimT: type) fn (*SimT, i64, i64, *threading.ChunkResult) void {
+    return struct {
+        fn w(sim: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            _ = res;
+            emfBand(SimT, sim, iy0, iy1);
+        }
+    }.w;
+}
+
+/// flux_ct pass 1 for corner rows iy ∈ [iy0, iy1).
+fn emfBand(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) void {
+    const L = SimT.Layout;
     const b1 = comptime L.index(.b1);
     const b2 = comptime L.index(.b2);
     const b3 = comptime L.index(.b3);
@@ -49,8 +75,8 @@ pub fn fluxCt(comptime SimT: type, sim: *SimT) void {
     // EMFs on all domain corners (loop_4: 0..N inclusive per dimension)
     var iz: i64 = 0;
     while (iz <= nz) : (iz += 1) {
-        var iy: i64 = 0;
-        while (iy <= ny) : (iy += 1) {
+        var iy: i64 = iy0;
+        while (iy < iy1) : (iy += 1) {
             var ix: i64 = 0;
             while (ix <= nx) : (ix += 1) {
                 // EMF1
@@ -101,14 +127,33 @@ pub fn fluxCt(comptime SimT: type, sim: *SimT) void {
             }
         }
     }
+}
 
-    // adjust_fluxcttoth_emfs: CORRECT_POLARAXIS only (M11)
+fn rebuildBandWorker(comptime SimT: type) fn (*SimT, i64, i64, *threading.ChunkResult) void {
+    return struct {
+        fn w(sim: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            _ = res;
+            rebuildBand(SimT, sim, iy0, iy1);
+        }
+    }.w;
+}
 
-    // rebuild the B rows of the face fluxes from the corner EMFs
-    iz = 0;
+/// flux_ct pass 2 — rebuild the B rows of the face fluxes from the corner
+/// EMFs, for corner rows iy ∈ [iy0, iy1).
+fn rebuildBand(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) void {
+    const L = SimT.Layout;
+    const b1 = comptime L.index(.b1);
+    const b2 = comptime L.index(.b2);
+    const b3 = comptime L.index(.b3);
+
+    const nx = sim.nxi();
+    const ny = sim.nyi();
+    const nz = sim.nzi();
+
+    var iz: i64 = 0;
     while (iz <= nz) : (iz += 1) {
-        var iy: i64 = 0;
-        while (iy <= ny) : (iy += 1) {
+        var iy: i64 = iy0;
+        while (iy < iy1) : (iy += 1) {
             var ix: i64 = 0;
             while (ix <= nx) : (ix += 1) {
                 if (nx > 1 and iy < ny and iz < nz) {

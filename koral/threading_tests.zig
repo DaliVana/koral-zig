@@ -1,14 +1,22 @@
-//! M13 threading determinism gate.
+//! Threading determinism gates (M13 + P1).
 //!
-//! The per-cell inversions (calc_u2p, op_implicit) are dispatched row-parallel
-//! when opt.nthreads > 1. Because each row is disjoint and every cell's
-//! inversion touches only its own state (geometry reads are `*const`), the
-//! parallel result must be BIT-IDENTICAL to the serial one — anything else
-//! would be a data race. This runs the full radiation step (both parallel
-//! loops) on a small 2D Minkowski grid at nthreads = 1 and 4 from the same
-//! deterministic initial state and asserts exact equality of every conserved
-//! and primitive after several steps. (The golden step tests all run at
-//! nthreads = 1, so this is what certifies the threaded path.)
+//! Every per-step pass is dispatched band-parallel on the persistent team
+//! when opt.nthreads > 1 (P1 of the parallelization plan). Because every
+//! band writes only its own cells/columns/faces, reads only region-frozen
+//! state (geometry reads are `*const`), and the only cross-band reductions
+//! are order-insensitive (max/min, integer sums), the parallel result must
+//! be BIT-IDENTICAL to the serial one — anything else is a data race. Two
+//! gates certify this from the same deterministic initial states:
+//!
+//!  * a 2D Minkowski radiation-MHD box (the original M13 gate — implicit,
+//!    u2p, sweep/fluxes/fluxct, wavespeed dt-reduce, stage arithmetic, copy
+//!    BCs, fixups) after several steps at nthreads 1 vs 4;
+//!  * a full PUFFY 48×44 torus step ×2 — adds radviscosity, the dynamo
+//!    (scale-height columns + ΔA_φ + superpose), polar-axis correction and
+//!    the specific MKS2 boundary conditions.
+//!
+//! (The golden step tests all run at nthreads = 1, so these are what
+//! certify the threaded path.)
 
 const std = @import("std");
 const config = @import("config.zig");
@@ -21,6 +29,7 @@ const implicit = @import("solve/implicit.zig");
 const invert = @import("solve/invert.zig");
 const invert_rad = @import("solve/invert_rad.zig");
 const p2u_mod = @import("p2u.zig");
+const puffy = @import("problems/puffy.zig");
 
 const Grid = grid_mod.Grid;
 
@@ -114,4 +123,68 @@ test "M13 threading: nthreads=4 is bit-identical to nthreads=1 (2D radiation)" {
     // counters (summed across threads) must also agree exactly
     try std.testing.expectEqual(s1.n_radimp_failures, s4.n_radimp_failures);
     try std.testing.expectEqual(s1.n_radimp_iters, s4.n_radimp_iters);
+    // and the CFL dt reduction (per-worker max/min partials, merged)
+    try std.testing.expectEqual(s1.tstepdenmax, s4.tstepdenmax);
+    try std.testing.expectEqual(s1.tstepdenmin, s4.tstepdenmin);
+}
+
+// ---- the P1 whole-step gate on the real problem ---------------------------
+
+const SimP = sim_mod.Sim(config.puffy);
+
+/// The production PUFFY option set (PROBLEMS/puffy/main.zig) at test scale —
+/// every threaded pass is active: radviscosity, dynamo, polar correction,
+/// specific MKS2 BCs.
+fn puffyOpts(nthreads: usize) SimP.Options {
+    return .{
+        .coords = .mks2,
+        .mp = puffy.mp,
+        .gam = puffy.gam,
+        .floors = invert.FloorParams.puffy,
+        .rad = invert_rad.RadParams.puffy,
+        .opac = radforce.Params.puffy(),
+        .implicit = implicit.ImplicitParams.puffy,
+        .correct_polaraxis = true,
+        .nccorrectpolar = 2,
+        .radviscosity = true,
+        .dynamo = true,
+        .bc_x = .specific,
+        .bc_y = .specific,
+        .specific_bc = &puffy.Bc(SimP).calc,
+        .nthreads = nthreads,
+    };
+}
+
+test "P1 threading: full PUFFY step nthreads=4 is bit-identical to nthreads=1" {
+    const a = std.testing.allocator;
+
+    var s1 = try SimP.init(a, puffy.makeGrid(48, 44), puffyOpts(1));
+    defer s1.deinit();
+    var s4 = try SimP.init(a, puffy.makeGrid(48, 44), puffyOpts(4));
+    defer s4.deinit();
+
+    _ = try puffy.initAll(SimP, &s1);
+    _ = try puffy.initAll(SimP, &s4);
+    s1.initTimestepGuess();
+    s4.initTimestepGuess();
+
+    // the production sequence: the tiny guess-dt startup step, then a
+    // CFL-sized step (forced identically on both sims)
+    for (0..2) |_| {
+        const dt = 1.0 / s1.tstepdenmax;
+        try s1.step(dt);
+        try s4.step(dt);
+    }
+
+    // full arrays incl. ghosts, every flag, the reductions — to the bit
+    for (s1.p.data, s4.p.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.u.data, s4.u.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.rijvisc.data, s4.rijvisc.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.scaleth, s4.scaleth) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.flags, s4.flags) |f1, f4| try std.testing.expectEqual(f1, f4);
+    try std.testing.expectEqual(s1.n_radimp_failures, s4.n_radimp_failures);
+    try std.testing.expectEqual(s1.n_radimp_iters, s4.n_radimp_iters);
+    try std.testing.expectEqual(s1.tstepdenmax, s4.tstepdenmax);
+    try std.testing.expectEqual(s1.tstepdenmin, s4.tstepdenmin);
+    try std.testing.expectEqual(s1.t, s4.t);
 }

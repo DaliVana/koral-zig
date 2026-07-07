@@ -192,7 +192,7 @@ From `koral/params.zig` (defaults shown):
 | Field | Default | Meaning |
 |---|---|---|
 | `deterministic` | `false` | Reserved determinism flag. |
-| `nthreads` | `1` | Worker threads for the per-cell inversions; `1` is the bit-identical serial path (§8). |
+| `nthreads` | `1` | Persistent worker team for all per-step passes; `1` is the bit-identical serial path (§8). |
 
 > **Note.** The `Params` floors are the *runtime* record. The PUFFY driver
 > additionally selects tuned **comptime** floor presets
@@ -230,7 +230,7 @@ tsteplim = 0.5     # TSTEPLIM (CFL factor)
 dtout1 = 100.0     # scalar-diagnostics cadence (code time)
 dtout2 = 500.0     # primitive-dump cadence (0 disables prim dumps)
 out_dir = "dumps/puffy"
-nthreads = 1       # worker threads for the per-cell inversions (1 = serial)
+nthreads = 1       # persistent worker team for all per-step passes (1 = serial)
 
 [floors]
 rhofloor = 1e-30
@@ -830,21 +830,32 @@ only 2D (`ny>1, nz==1`) corner filling exists.
 ### Enable & tune threading
 
 Set `nthreads` in the params file (or directly on `Sim.Options`). `nthreads > 1`
-activates `parallelRows` over the per-cell inversion passes (`u2p`, implicit
-source):
+makes `Sim.init` spawn a **persistent worker team** (`koral/sim/threading.zig`,
+P1 of the parallelization plan) that every per-step pass dispatches on —
+inversions (`u2p`, implicit), the sweep/flux/wavespeed face passes, flux-CT,
+the conserved update, radiative viscosity, the dynamo, boundary fills, fixups,
+polar correction, and the stage arithmetic:
 
 ```toml
 [exec]
 nthreads = 8
 ```
 
-`parallelRows` (`koral/sim.zig`) splits the `iy` dimension across up to
-`min(nthreads, 64, ny)` `std.Thread`s, sums integer counters after join, and — since
-rows are disjoint and the per-cell work is local — is **bit-identical to serial**
-(the golden tests run at `nthreads = 1`). Cross-row operations (fixup, `setBc`) are
-deliberately kept *outside* the parallel region. Spawn failure falls back to
-inline. Any new independent per-cell pass can reuse `parallelRows` with a worker
-matching `fn(*Self, i64, i64, *ChunkResult) void`.
+Workers park on a futex'd region counter between passes (no per-pass
+spawn/join) and pull contiguous **dynamic tiles** of the banded index range
+through an atomic ticket counter, so per-cell cost imbalance (the implicit
+solver's ~17× torus/floor spread) straggle-balances naturally. Every band
+writes only its own cells/columns/faces and the only cross-band reductions are
+order-insensitive (integer sums, f64 max/min for the CFL dt), so the result is
+**bit-identical to serial** at any thread count and any tile schedule (the
+golden tests run at `nthreads = 1`; `threading_tests.zig` pins 1 ≡ 4 on both a
+MINK radiation box and a full PUFFY torus step). Serial remainders — the 2D
+ghost-corner fill, the flux-CT region boundary, the dynamo's curl — are the
+natural barriers between regions. Spawn failure at init just means fewer
+helpers. Any new independent per-cell pass dispatches with
+`threading.parallelRange(CtxT, ctx, sim.team, lo, hi, worker)` and a worker
+matching `fn(*CtxT, i64, i64, *ChunkResult) void`; pass extra per-region
+parameters (like the sub-step `dt`) through a small stack context struct.
 
 ### Add a new diagnostic scalar
 

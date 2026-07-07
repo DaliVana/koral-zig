@@ -25,6 +25,10 @@
 //!    gix==0, mpi.c:3225) — a C quirk transcribed verbatim; the innermost
 //!    column's faczH collapses to 0 there anyway.
 //!  * pow(1-zH², 1) == 1-zH² (libm special case) → written as a plain sub.
+//!  * P1: the three per-cell passes (scale-height columns, ΔA_φ ring,
+//!    superpose+p2u) run band-parallel via sim/threading.zig — every band
+//!    writes only its own cells/columns, so the result is bit-identical to
+//!    serial at any nthreads (pinned by the dynamo threading test).
 
 const std = @import("std");
 const config = @import("../config.zig");
@@ -39,6 +43,7 @@ const misc = @import("../math/misc.zig");
 const precompute = @import("../metric/precompute.zig");
 const p2u_mod = @import("../p2u.zig");
 const ct = @import("ct.zig");
+const threading = @import("../sim/threading.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 const pi = std.math.pi;
@@ -71,19 +76,32 @@ pub fn dampBphi(alphabeta: f64, facradius: f64, faczh: f64, dt_over_pk: f64, bet
 
 /// C: calc_avgs_throughout / CALCHRONTHEGO (mpi.c:3168) — density-weighted RMS
 /// angular scale height at each radius, sqrt(Σρ√g(π/2−θ)² / Σρ√g) over the
-/// θ(,φ) column. Fills sim.scaleth[0..nx). Serial (TOI=0): gix==0 stays the
-/// raw (unnormalized) sum, matching C's `if(gix>0 && gix<TNX)` guard.
+/// θ(,φ) column. Fills sim.scaleth[0..nx). Single rank (TOI=0): gix==0 stays
+/// the raw (unnormalized) sum, matching C's `if(gix>0 && gix<TNX)` guard.
+/// Band-parallel over ix: each worker owns whole columns, so every column's
+/// θ-sum accumulates in serial order — bit-identical at any nthreads.
 pub fn calcScaleHeight(comptime SimT: type, sim: *SimT) void {
+    const W = struct {
+        fn cols(s: *SimT, ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
+            _ = res;
+            scaleHeightCols(SimT, s, ix0, ix1);
+        }
+    };
+    // the column worker is infallible — no result to check
+    _ = threading.parallelRange(SimT, sim, sim.team, 0, sim.nxi(), W.cols);
+}
+
+/// The per-column scale-height body for ix ∈ [ix0, ix1).
+fn scaleHeightCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
     const cfg = SimT.Cfg;
     const L = SimT.Layout;
     const rho_i = comptime L.index(.rho);
 
-    const nx = sim.nxi();
     const ny = sim.nyi();
     const nz = sim.nzi();
 
-    var ix: i64 = 0;
-    while (ix < nx) : (ix += 1) {
+    var ix: i64 = ix0;
+    while (ix < ix1) : (ix += 1) {
         var sigma: f64 = 0;
         var scaleth: f64 = 0;
         var iy: i64 = 0;
@@ -135,33 +153,70 @@ fn fieldAngle(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64, 
 /// C: mimic_dynamo (magn.c:1003) — build ΔA_φ into the dynamo scratch, apply
 /// the DAMPBETA azimuthal damping to p[B3], curl ΔA_φ, and superimpose the
 /// resulting poloidal B on the domain (+ p2u). `dt` is the sub-step dt.
-pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) relele.Error!void {
-    const cfg = SimT.Cfg;
+/// The two per-cell passes (ΔA_φ and superpose+p2u) are row-parallel — every
+/// cell writes only its own ΔA_φ / B³ / B+u slots, so the result is
+/// bit-identical to serial; the cheap curl stencil between them stays serial
+/// (it reads the finished ΔA_φ of neighbour rows — a natural barrier).
+pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) Error!void {
     const L = SimT.Layout;
     if (comptime !L.hasVar(.b1)) return;
+
+    const ny = sim.nyi();
+    const ylim: i64 = if (ny > 1) 1 else 0;
+
+    threading.parallelZero(sim.team, sim.dyn_a.data);
+
+    const Ctx = struct { sim: *SimT, dt: f64 };
+    var ctx = Ctx{ .sim = sim, .dt = dt };
+    const W = struct {
+        fn deltaA(c: *Ctx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            deltaARows(SimT, c.sim, c.dt, iy0, iy1) catch |e| {
+                res.err = e;
+            };
+        }
+        fn superpose(s: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            superposeRows(SimT, s, iy0, iy1) catch |e| {
+                res.err = e;
+            };
+        }
+    };
+
+    // ---- ΔA_φ over the domain + one ring including corners (Nloop_6) ----
+    {
+        const res = threading.parallelRange(Ctx, &ctx, sim.team, -ylim, ny + ylim, W.deltaA);
+        if (res.err) |e| return e;
+    }
+
+    // ---- curl ΔA_φ → B^i (vecpot 3..5), superimpose on the domain ----
+    ct.curlFromA(SimT, sim, &sim.dyn_a, 0);
+
+    {
+        const res = threading.parallelRange(SimT, sim, sim.team, 0, ny, W.superpose);
+        if (res.err) |e| return e;
+    }
+}
+
+/// The ΔA_φ + DAMPBETA body for iy ∈ [iy0, iy1) (all iz, ix incl. the ring).
+fn deltaARows(comptime SimT: type, sim: *SimT, dt: f64, iy0: i64, iy1: i64) relele.Error!void {
+    const cfg = SimT.Cfg;
+    const L = SimT.Layout;
     const dp = &sim.opt.dynamo_params;
 
-    const b1 = comptime L.index(.b1);
     const b3 = comptime L.index(.b3);
     const uu_i = comptime L.index(.uu);
 
     const nx = sim.nxi();
-    const ny = sim.nyi();
     const nz = sim.nzi();
     const rhor = metric.rHorizonBL(sim.opt.mp.a);
     const risco = metric.rIscoBL(sim.opt.mp.a);
 
-    @memset(sim.dyn_a.data, 0);
-
-    // ---- ΔA_φ over the domain + one ring including corners (Nloop_6) ----
     const xlim: i64 = if (nx > 1) 1 else 0;
-    const ylim: i64 = if (ny > 1) 1 else 0;
     const zlim: i64 = if (nz > 1) 1 else 0;
 
     var iz: i64 = -zlim;
     while (iz < nz + zlim) : (iz += 1) {
-        var iy: i64 = -ylim;
-        while (iy < ny + ylim) : (iy += 1) {
+        var iy: i64 = iy0;
+        while (iy < iy1) : (iy += 1) {
             var ix: i64 = -xlim;
             while (ix < nx + xlim) : (ix += 1) {
                 const geom = sim.cache.fillGeometry(ix, iy, iz);
@@ -232,14 +287,22 @@ pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) relele.Error!void {
             }
         }
     }
+}
 
-    // ---- curl ΔA_φ → B^i (vecpot 3..5), superimpose on the domain ----
-    ct.curlFromA(SimT, sim, &sim.dyn_a, 0);
+/// The superpose body for iy ∈ [iy0, iy1): add the curled ΔA_φ field
+/// (vecpot 3..5) to the domain B and refresh the magnetic conserveds.
+fn superposeRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) relele.Error!void {
+    const cfg = SimT.Cfg;
+    const L = SimT.Layout;
+    const b1 = comptime L.index(.b1);
+
+    const nx = sim.nxi();
+    const nz = sim.nzi();
 
     var jz: i64 = 0;
     while (jz < nz) : (jz += 1) {
-        var jy: i64 = 0;
-        while (jy < ny) : (jy += 1) {
+        var jy: i64 = iy0;
+        while (jy < iy1) : (jy += 1) {
             var jx: i64 = 0;
             while (jx < nx) : (jx += 1) {
                 var pp: [SimT.nv]f64 = undefined;

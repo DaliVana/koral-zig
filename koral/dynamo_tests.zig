@@ -35,7 +35,7 @@ const pi = std.math.pi;
 /// and drives the ΔA_φ sign-flip); the C harness uses the same factor.
 const inject_factor: f64 = 10.0;
 
-fn dynamoOptions() SimP.Options {
+fn dynamoOptions(nthreads: usize) SimP.Options {
     return .{
         .coords = .mks2,
         .mp = puffy.mp,
@@ -49,7 +49,29 @@ fn dynamoOptions() SimP.Options {
         .bc_x = .specific,
         .bc_y = .specific,
         .specific_bc = &puffy.Bc(SimP).calc,
+        .nthreads = nthreads,
     };
+}
+
+/// inject B³ = inject_factor·B² into the domain (u kept consistent) so the
+/// dynamo has a toroidal field to act on — shared by the sign-flip and
+/// threading tests; deterministic, so both sims get identical states.
+fn injectB3(s: *SimP) !void {
+    const b2 = LP.index(.b2);
+    const b3 = LP.index(.b3);
+    var iy: i64 = 0;
+    while (iy < s.nyi()) : (iy += 1) {
+        var ix: i64 = 0;
+        while (ix < s.nxi()) : (ix += 1) {
+            var pp: [SimP.nv]f64 = undefined;
+            s.p.load(ix, iy, 0, &pp);
+            pp[b3] = inject_factor * pp[b2];
+            const geom = s.cache.fillGeometry(ix, iy, 0);
+            const uu = try p2u_mod.p2u(config.puffy, pp, &geom, s.opt.gam);
+            s.p.store(ix, iy, 0, &pp);
+            s.u.store(ix, iy, 0, &uu);
+        }
+    }
 }
 
 fn thetaBL(s: *const SimP, ix: i64, iy: i64) f64 {
@@ -95,11 +117,10 @@ test "M12 dynamo: DAMPBETA saturation + monotonicity + no-overshoot (formula)" {
 
 test "M12 dynamo: ΔA_φ equatorial sign flip + |B³| non-increasing + divB" {
     const a = std.testing.allocator;
-    var s = try SimP.init(a, puffy.makeGrid(48, 44), dynamoOptions());
+    var s = try SimP.init(a, puffy.makeGrid(48, 44), dynamoOptions(1));
     defer s.deinit();
     _ = try puffy.initAll(SimP, &s);
 
-    const b2 = LP.index(.b2);
     const b3 = LP.index(.b3);
     const nx = s.nxi();
     const ny = s.nyi();
@@ -107,19 +128,13 @@ test "M12 dynamo: ΔA_φ equatorial sign flip + |B³| non-increasing + divB" {
     // inject B³ = factor·B², keep u consistent
     var b3_before = try a.alloc(f64, @intCast(nx * ny));
     defer a.free(b3_before);
+    try injectB3(&s);
     {
         var iy: i64 = 0;
         while (iy < ny) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
-                var pp: [SimP.nv]f64 = undefined;
-                s.p.load(ix, iy, 0, &pp);
-                pp[b3] = inject_factor * pp[b2];
-                b3_before[@intCast(iy * nx + ix)] = pp[b3];
-                const geom = s.cache.fillGeometry(ix, iy, 0);
-                const uu = try p2u_mod.p2u(config.puffy, pp, &geom, s.opt.gam);
-                s.p.store(ix, iy, 0, &pp);
-                s.u.store(ix, iy, 0, &uu);
+                b3_before[@intCast(iy * nx + ix)] = s.p.get(b3, ix, iy, 0);
             }
         }
     }
@@ -187,7 +202,7 @@ test "M12 dynamo: ΔA_φ equatorial sign flip + |B³| non-increasing + divB" {
 
 test "M12 dynamo: calcScaleHeight = density-weighted RMS |π/2−θ|" {
     const a = std.testing.allocator;
-    var s = try SimP.init(a, puffy.makeGrid(32, 40), dynamoOptions());
+    var s = try SimP.init(a, puffy.makeGrid(32, 40), dynamoOptions(1));
     defer s.deinit();
     _ = try puffy.initAll(SimP, &s);
 
@@ -209,4 +224,36 @@ test "M12 dynamo: calcScaleHeight = density-weighted RMS |π/2−θ|" {
     }
     try std.testing.expectApproxEqRel(@sqrt(num / den), s.scaleth[@intCast(ix)], 1e-12);
     try std.testing.expect(s.scaleth[@intCast(ix)] > 0);
+}
+
+test "P1 dynamo threading: applyDynamo nthreads=4 is bit-identical to nthreads=1" {
+    // The dynamo's parallel passes (per-ix scale-height columns, the ΔA_φ +
+    // DAMPBETA ring loop, the superpose+p2u loop) all write only their own
+    // cell/column, so any band split must reproduce the serial bits exactly —
+    // same contract as the u2p/implicit threading gate, on a real MKS2 torus
+    // (which also runs the threaded calc_u2p with polar-corrected cells).
+    const a = std.testing.allocator;
+
+    var s1 = try SimP.init(a, puffy.makeGrid(48, 44), dynamoOptions(1));
+    defer s1.deinit();
+    var s4 = try SimP.init(a, puffy.makeGrid(48, 44), dynamoOptions(4));
+    defer s4.deinit();
+
+    _ = try puffy.initAll(SimP, &s1);
+    _ = try puffy.initAll(SimP, &s4);
+    try injectB3(&s1);
+    try injectB3(&s4);
+
+    // two applications, as in one full RK2IMEX step
+    for (0..2) |_| {
+        try dynamo.applyDynamo(SimP, &s1, 0.0, 10.0);
+        try dynamo.applyDynamo(SimP, &s4, 0.0, 10.0);
+    }
+
+    // full arrays (domain + ghosts: the ΔA_φ ring damps ghost B³ too),
+    // the scale-height reduction, and the ΔA_φ scratch — all to the bit
+    for (s1.p.data, s4.p.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.u.data, s4.u.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.dyn_a.data, s4.dyn_a.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.scaleth, s4.scaleth) |v1, v4| try std.testing.expectEqual(v1, v4);
 }
