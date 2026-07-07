@@ -207,6 +207,25 @@ pub fn transPmhdCoco(
     geom2: *const Geometry,
     mp: MetricParams,
 ) relele.Error![layout.VarLayout(cfg).count]f64 {
+    if (geom1.coords == geom2.coords) return ppin;
+    // The transform uses geom1's point Jacobian ∂x2/∂x1 twice (u^μ and b^μ);
+    // compute it once here and share the body with the precomputed-Jacobian
+    // entry point (identical arithmetic — trans2Coco reduces to multiply2·J).
+    const jac = coco.dxdx(geom1.xxvec, geom1.coords, geom2.coords, mp);
+    return transPmhdCocoJ(cfg, ppin, geom1, geom2, jac);
+}
+
+/// As transPmhdCoco but with the geom1→geom2 point Jacobian supplied by the
+/// caller (finding #1: the dynamo reads MetricCache.jacMy2Bl instead of
+/// recomputing coco.dxdx per cell per sub-step). `jac` must equal
+/// coco.dxdx(geom1.xxvec, geom1.coords, geom2.coords, mp) for C-parity.
+pub fn transPmhdCocoJ(
+    comptime cfg: config.Config,
+    ppin: [layout.VarLayout(cfg).count]f64,
+    geom1: *const Geometry,
+    geom2: *const Geometry,
+    jac: [4][4]f64,
+) relele.Error![layout.VarLayout(cfg).count]f64 {
     const L = layout.VarLayout(cfg);
     var pp2 = ppin;
     if (geom1.coords == geom2.coords) return pp2;
@@ -223,10 +242,10 @@ pub fn transPmhdCoco(
             ug1.con,
             ug1.cov,
         );
-        bcon = trans2Coco(geom1.xxvec, bcon, geom1.coords, geom2.coords, mp);
+        bcon = relele.multiply2(bcon, jac);
     }
 
-    var ucon = trans2Coco(geom1.xxvec, ug1.con, geom1.coords, geom2.coords, mp);
+    var ucon = relele.multiply2(ug1.con, jac);
     ucon = try relele.convVelsUt(ucon, .vel4, .velr, &geom2.gg, &geom2.GG);
 
     pp2[L.index(.vx)] = ucon[1];

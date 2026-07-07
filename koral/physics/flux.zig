@@ -30,14 +30,14 @@ pub fn fFluxPrime(
     var ff: [L.count]f64 = @splat(0);
     const gdetu = geom.gdet;
 
-    // T^μν → T^μ_ν
-    const tij_uu = try hydro.calcTij(cfg, pp, geom, gamma_adiab);
-    const tij_ud = relele.indices2221(tij_uu, &geom.gg);
-
     const rho = pp[L.index(.rho)];
     const ugas = pp[L.index(.uu)];
     const s = pp[L.index(.entr)];
 
+    // Gas 4-velocity and magnetic four-vector, solved once and shared with the
+    // stress tensor below (finding #3: calcTij used to re-derive both from the
+    // same pp/geom). convVelsBoth + bconBcovBsqFrom4vel are pure, so calcTij's
+    // internal result and this one are the same bits.
     const vcon = [4]f64{ 0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
     const u = try relele.convVelsBoth(vcon, .velr, &geom.gg, &geom.GG);
 
@@ -55,6 +55,10 @@ pub fn fFluxPrime(
         bcov = b.bcov;
         bsq = b.bsq;
     }
+
+    // T^μν → T^μ_ν (reusing the u/b just computed)
+    const tij_uu = hydro.calcTijFromState(cfg, pp, geom, gamma_adiab, u, bcon, bsq);
+    const tij_ud = relele.indices2221(tij_uu, &geom.gg);
 
     const pre = (gamma_adiab - 1.0) * ugas;
     const etap = ugas + pre + bsq; // eta - rho

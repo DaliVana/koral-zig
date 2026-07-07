@@ -244,10 +244,17 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.timers = .{};
             self.team = if (opt.nthreads > 1) try threading.Team.init(allocator, opt.nthreads) else null;
 
+            // The dynamo / radviscosity passes work in BL (OUTCOORDS): build
+            // the per-cell BL geometry sidecar and point the my2out Jacobian
+            // store at BL so both are precomputed once instead of per sub-step
+            // per cell (finding #1). Kerr coords are guaranteed here — both
+            // switches imply a Kerr problem.
+            const want_bl = opt.dynamo or opt.radviscosity;
             self.cache = try precompute.MetricCache.init(allocator, g, .{
                 .coords = opt.coords,
-                .out_coords = opt.coords,
+                .out_coords = if (want_bl) .bl else opt.coords,
                 .mp = opt.mp,
+                .bl_cache = want_bl,
             });
 
             inline for (.{
@@ -825,6 +832,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             const tij = try hydro.calcTij(cfg, pp, &geom, self.opt.gam);
             const t = relele.indices2221(tij, &geom.gg);
 
+            const kr_blk = self.cache.krBlock(ix, iy, iz);
             const rows = [4]usize{ L.index(.uu), L.index(.vx), L.index(.vy), L.index(.vz) };
             if (comptime L.hasVar(.ee)) {
                 const rij_up = try radiation.calcRij(cfg, pp, &geom);
@@ -833,8 +841,8 @@ pub fn Sim(comptime cfg: config.Config) type {
                 for (0..4) |k| {
                     for (0..4) |l| {
                         for (0..4) |nu| {
-                            ss[rows[nu]] += gdetu * t[k][l] * self.cache.kr(l, nu, k, ix, iy, iz);
-                            ss[rrows[nu]] += gdetu * rij[k][l] * self.cache.kr(l, nu, k, ix, iy, iz);
+                            ss[rows[nu]] += gdetu * t[k][l] * kr_blk[l * 16 + nu * 4 + k];
+                            ss[rrows[nu]] += gdetu * rij[k][l] * kr_blk[l * 16 + nu * 4 + k];
                         }
                     }
                 }
@@ -842,7 +850,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                 for (0..4) |k| {
                     for (0..4) |l| {
                         for (0..4) |nu| {
-                            ss[rows[nu]] += gdetu * t[k][l] * self.cache.kr(l, nu, k, ix, iy, iz);
+                            ss[rows[nu]] += gdetu * t[k][l] * kr_blk[l * 16 + nu * 4 + k];
                         }
                     }
                 }

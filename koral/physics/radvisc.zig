@@ -29,7 +29,6 @@ const relele = @import("../relele.zig");
 const radiation = @import("radiation.zig");
 const radforce = @import("radforce.zig");
 const p2u_mod = @import("../p2u.zig");
-const coco = @import("../metric/coco.zig");
 const metric = @import("../metric/metric.zig");
 const misc = @import("../math/misc.zig");
 const threading = @import("../sim/threading.zig");
@@ -175,16 +174,17 @@ pub fn calcShearLab(
     }
 
     // covariant derivatives du_i;j and (diagonal) du^i;i
+    const kr_blk = sim.cache.krBlock(ix, iy, iz);
     var dcu: [4][4]f64 = @splat(@splat(0));
     var dcudiag: [4]f64 = @splat(0);
     for (0..4) |i| {
         for (0..4) |j| {
             var krsum: f64 = 0;
-            for (0..4) |k| krsum += sim.cache.kr(k, i, j, ix, iy, iz) * ucov[k];
+            for (0..4) |k| krsum += kr_blk[k * 16 + i * 4 + j] * ucov[k];
             dcu[i][j] = du[i][j] - krsum;
         }
         var krsum: f64 = 0;
-        for (0..4) |k| krsum += sim.cache.kr(i, i, k, ix, iy, iz) * ucon[k];
+        for (0..4) |k| krsum += kr_blk[i * 16 + i * 4 + k] * ucon[k];
         dcudiag[i] = du2[i][i] + krsum;
     }
 
@@ -268,14 +268,16 @@ pub fn calcRadViscCoeff(
 
     // RADVISCMFPSPH: mfp capped by the spherical (BL) radius, killed inside
     // rmin = 1.2·r_horizon (no RADVISCMFPSPHRMIN / RADVISCMFPSPHMAX for PUFFY).
+    // BL radius from the cached BL geometry (finding #1) — bit-identical to
+    // coco.cocoN(geom.xxvec, coords, .bl, mp)[1].
     const rhor = metric.rHorizonBL(sim.opt.mp.a);
     const rmin = 1.2 * rhor;
-    const xxbl = coco.cocoN(geom.xxvec, cfg.coords, .bl, sim.opt.mp);
-    const mfplim = xxbl[1];
+    const r_bl = sim.cache.blGeom(ix, iy, iz).xxvec[1];
+    const mfplim = r_bl;
     if (mfp > mfplim or chi < small) mfp = mfplim;
     if (mfp < 0 or !std.math.isFinite(mfp)) mfp = 0;
-    mfp *= misc.stepFunction(xxbl[1] - rmin, 0.2 * rmin);
-    if (xxbl[1] <= 1.0 * rhor) mfp = 0;
+    mfp *= misc.stepFunction(r_bl - rmin, 0.2 * rmin);
+    if (r_bl <= 1.0 * rhor) mfp = 0;
 
     var nu = sim.opt.radvisc.alpha * mfp;
 

@@ -140,6 +140,13 @@ pub const MetricCache = struct {
     /// faces, stride 20; dim d has one extra slice in direction d
     gb: [3][]f64,
     gconb: [3][]f64,
+    /// BL (OUTCOORDS) geometry per cell — one entry per cell (incl. ghosts),
+    /// filled only when `bl_cache` is set (the dynamo / radviscosity passes).
+    /// Empty otherwise. Each entry is bit-identical to geometryBLat(...) and
+    /// its .xxvec carries the cell's BL {r, θ}, so callers read those without
+    /// re-running cocoN. Paired with out_coords == .bl, dxdx_my2out then holds
+    /// the MYCOORDS→BL point Jacobian (see jacMy2Bl). Finding #1.
+    bl_geom: []Geometry,
 
     pub const InitOpts = struct {
         coords: Coords,
@@ -149,6 +156,9 @@ pub const MetricCache = struct {
         modify_kris: bool = true,
         /// skip face metrics (postprocessing mode)
         faces: bool = true,
+        /// precompute the per-cell BL (OUTCOORDS) geometry sidecar. Requires
+        /// out_coords == .bl and a Kerr `coords` (the cocoN(.bl) target).
+        bl_cache: bool = false,
     };
 
     pub fn init(allocator: std.mem.Allocator, grid: Grid, opts: InitOpts) !MetricCache {
@@ -166,6 +176,7 @@ pub const MetricCache = struct {
             .dxdx_out2my = try allocator.alloc(f64, nc * 16),
             .gb = undefined,
             .gconb = undefined,
+            .bl_geom = try allocator.alloc(Geometry, if (opts.bl_cache) nc else 0),
         };
         for (0..3) |d| {
             const nf = faceCount(grid, d);
@@ -179,6 +190,7 @@ pub const MetricCache = struct {
 
         self.fillCenters(opts.modify_kris);
         if (opts.faces) self.fillFaces();
+        if (opts.bl_cache) self.fillBl();
         return self;
     }
 
@@ -188,6 +200,7 @@ pub const MetricCache = struct {
         self.allocator.free(self.kris);
         self.allocator.free(self.dxdx_my2out);
         self.allocator.free(self.dxdx_out2my);
+        self.allocator.free(self.bl_geom);
         for (0..3) |d| {
             self.allocator.free(self.gb[d]);
             self.allocator.free(self.gconb[d]);
@@ -204,7 +217,7 @@ pub const MetricCache = struct {
         };
     }
 
-    fn cellIndex(self: *const MetricCache, ix: i64, iy: i64, iz: i64) usize {
+    inline fn cellIndex(self: *const MetricCache, ix: i64, iy: i64, iz: i64) usize {
         const grid = &self.grid;
         const jx: usize = @intCast(ix + @as(i64, @intCast(grid.ngx)));
         const jy: usize = @intCast(iy + @as(i64, @intCast(grid.ngy)));
@@ -215,7 +228,7 @@ pub const MetricCache = struct {
 
     /// Face `dim`-index f is the *left* face of cell f in that dimension;
     /// f ranges one past the last cell.
-    fn faceIndex(self: *const MetricCache, dim: usize, ix: i64, iy: i64, iz: i64) usize {
+    inline fn faceIndex(self: *const MetricCache, dim: usize, ix: i64, iy: i64, iz: i64) usize {
         const grid = &self.grid;
         const jx: usize = @intCast(ix + @as(i64, @intCast(grid.ngx)));
         const jy: usize = @intCast(iy + @as(i64, @intCast(grid.ngy)));
@@ -298,6 +311,29 @@ pub const MetricCache = struct {
     // (Christoffel gdet-trace correction lives at module level below so
     // tests can apply it to a single cell without building the full cache.)
 
+    /// Fill the BL (OUTCOORDS) geometry sidecar over every cell incl. ghosts.
+    /// Each entry equals geometryBLat(&grid, coords, mp, ix, iy, iz) exactly —
+    /// same cocoN → geometryAt(.bl) chain — so cached reads are bit-identical.
+    fn fillBl(self: *MetricCache) void {
+        const grid = &self.grid;
+        var iz: i64 = -@as(i64, @intCast(grid.ngz));
+        while (iz < @as(i64, @intCast(grid.nz + grid.ngz))) : (iz += 1) {
+            var iy: i64 = -@as(i64, @intCast(grid.ngy));
+            while (iy < @as(i64, @intCast(grid.ny + grid.ngy))) : (iy += 1) {
+                var ix: i64 = -@as(i64, @intCast(grid.ngx));
+                while (ix < @as(i64, @intCast(grid.nx + grid.ngx))) : (ix += 1) {
+                    const xx = [4]f64{ 0, grid.xc(ix), grid.yc(iy), grid.zc(iz) };
+                    const xxbl = coco.cocoN(xx, self.coords, .bl, self.mp);
+                    var bg = geometryAt(.bl, self.mp, xxbl);
+                    bg.ix = ix;
+                    bg.iy = iy;
+                    bg.iz = iz;
+                    self.bl_geom[self.cellIndex(ix, iy, iz)] = bg;
+                }
+            }
+        }
+    }
+
     fn fillFaces(self: *MetricCache) void {
         const grid = &self.grid;
         const ngx: i64 = @intCast(grid.ngx);
@@ -336,8 +372,45 @@ pub const MetricCache = struct {
 
     // ---- accessors -------------------------------------------------------
 
-    pub fn kr(self: *const MetricCache, i: usize, j: usize, k: usize, ix: i64, iy: i64, iz: i64) f64 {
+    pub inline fn kr(self: *const MetricCache, i: usize, j: usize, k: usize, ix: i64, iy: i64, iz: i64) f64 {
         return self.kris[self.cellIndex(ix, iy, iz) * 64 + i * 16 + j * 4 + k];
+    }
+
+    /// The full 64-entry Christoffel block Γ^i_jk (flattened i·16 + j·4 + k)
+    /// at a cell center — fetched once so the metric-source and shear loops
+    /// index it directly instead of recomputing cellIndex on every one of the
+    /// 64/128 kr() calls per cell. Bit-identical to kr(i,j,k,ix,iy,iz).
+    pub inline fn krBlock(self: *const MetricCache, ix: i64, iy: i64, iz: i64) *const [64]f64 {
+        return self.kris[self.cellIndex(ix, iy, iz) * 64 ..][0..64];
+    }
+
+    /// √−g at a cell center — the block store's gdet slot (off + 3·5 + 4),
+    /// identical to fillGeometry(ix,iy,iz).gdet without building a Geometry.
+    /// Finding #1: the calc_BfromA_core hot path only needs this scalar.
+    pub fn gdet(self: *const MetricCache, ix: i64, iy: i64, iz: i64) f64 {
+        return self.g[self.cellIndex(ix, iy, iz) * 20 + 19];
+    }
+
+    /// BL (OUTCOORDS) geometry at a cell center — requires the bl_cache
+    /// sidecar. Bit-identical to precompute.geometryBLat(&grid, coords, mp,
+    /// ix, iy, iz); its .xxvec holds the cell's BL {r, θ}.
+    pub fn blGeom(self: *const MetricCache, ix: i64, iy: i64, iz: i64) *const Geometry {
+        std.debug.assert(self.bl_geom.len != 0); // bl_cache must be set
+        return &self.bl_geom[self.cellIndex(ix, iy, iz)];
+    }
+
+    /// The MYCOORDS→BL point Jacobian ∂x_BL/∂x_my at a cell center — the
+    /// dxdx_my2out store when out_coords == .bl. Equals
+    /// coco.dxdx({0, xc, yc, zc}, coords, .bl, mp), i.e. exactly the Jacobian
+    /// trans_pmhd_coco recomputes; used by transPmhdCocoJ (finding #1).
+    pub fn jacMy2Bl(self: *const MetricCache, ix: i64, iy: i64, iz: i64) [4][4]f64 {
+        std.debug.assert(self.out_coords == .bl);
+        const di = self.cellIndex(ix, iy, iz) * 16;
+        var j: [4][4]f64 = undefined;
+        for (0..4) |i| {
+            for (0..4) |k| j[i][k] = self.dxdx_my2out[di + i * 4 + k];
+        }
+        return j;
     }
 
     fn geometryFromBlocks(self: *const MetricCache, src_g: []const f64, src_gcon: []const f64, off: usize, ix: i64, iy: i64, iz: i64, ifacedim: i8, xxvec: [4]f64) Geometry {

@@ -45,8 +45,6 @@ pub fn calcTij(
     gamma_adiab: f64,
 ) relele.Error![4][4]f64 {
     const L = layout.VarLayout(cfg);
-    const rho = pp[L.index(.rho)];
-    const uu = pp[L.index(.uu)];
 
     const u = try relele.uconUcovFromPrims(
         .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
@@ -65,6 +63,28 @@ pub fn calcTij(
         bcon = b.bcon;
         bsq = b.bsq;
     }
+
+    return calcTijFromState(cfg, pp, geom, gamma_adiab, u, bcon, bsq);
+}
+
+/// The tensor assembly of calcTij with the gas 4-velocity `u` and magnetic
+/// four-vector (`bcon`, `bsq`) already in hand — lets a caller that has
+/// solved these (e.g. fFluxPrime) skip the duplicate convVelsBoth +
+/// bconBcovBsqFrom4vel. Bit-identical to calcTij: same inputs, same
+/// expression shape. (`bcon`/`bsq` are the zero-field values when b1 is
+/// absent from the layout, exactly as calcTij passes them.)
+pub fn calcTijFromState(
+    comptime cfg: config.Config,
+    pp: [layout.VarLayout(cfg).count]f64,
+    geom: *const Geometry,
+    gamma_adiab: f64,
+    u: relele.ConCov,
+    bcon: [4]f64,
+    bsq: f64,
+) [4][4]f64 {
+    const L = layout.VarLayout(cfg);
+    const rho = pp[L.index(.rho)];
+    const uu = pp[L.index(.uu)];
 
     const p = (gamma_adiab - 1.0) * uu;
     const w = rho + uu + p;

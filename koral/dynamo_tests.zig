@@ -22,6 +22,8 @@ const puffy = @import("problems/puffy.zig");
 const dynamo = @import("magn/dynamo.zig");
 const ct = @import("magn/ct.zig");
 const coco = @import("metric/coco.zig");
+const precompute = @import("metric/precompute.zig");
+const Geometry = @import("geometry.zig").Geometry;
 const p2u_mod = @import("p2u.zig");
 const invert = @import("solve/invert.zig");
 const invert_rad = @import("solve/invert_rad.zig");
@@ -113,6 +115,71 @@ test "M12 dynamo: DAMPBETA saturation + monotonicity + no-overshoot (formula)" {
     const d1 = dynamo.dampBphi(ab, 1, 1, 1e-5, 0.2, bsat, 1.0);
     const d2 = dynamo.dampBphi(ab, 1, 1, 1e-5, 0.5, bsat, 1.0);
     try std.testing.expect(@abs(d2) > @abs(d1));
+}
+
+fn expectBits(x: f64, y: f64) !void {
+    try std.testing.expectEqual(@as(u64, @bitCast(x)), @as(u64, @bitCast(y)));
+}
+
+/// Every numeric field of two Geometry blocks agrees bit-for-bit.
+fn expectGeomBits(c: *const Geometry, f: *const Geometry) !void {
+    try std.testing.expectEqual(c.coords, f.coords);
+    try std.testing.expectEqual(c.ix, f.ix);
+    try std.testing.expectEqual(c.iy, f.iy);
+    try std.testing.expectEqual(c.iz, f.iz);
+    try std.testing.expectEqual(c.ifacedim, f.ifacedim);
+    for (0..4) |i| try expectBits(c.xxvec[i], f.xxvec[i]);
+    for (0..4) |i| for (0..5) |j| {
+        try expectBits(c.gg[i][j], f.gg[i][j]);
+        try expectBits(c.GG[i][j], f.GG[i][j]);
+    };
+    try expectBits(c.gdet, f.gdet);
+    try expectBits(c.alpha, f.alpha);
+    try expectBits(c.gttpert, f.gttpert);
+}
+
+// Finding #1: the BL geometry, MYCOORDS→BL Jacobian, and gdet the dynamo /
+// radviscosity passes now read from the MetricCache sidecar must be BYTE-FOR-
+// BYTE equal to recomputing them per cell (geometryBLat / coco.dxdx /
+// fillGeometry().gdet) — the guarantee that goldens are unaffected. Checked on
+// every cell including the full ghost frame the passes touch.
+test "M12 dynamo: BL geom / Jacobian / gdet caches are bit-identical to recompute (finding #1)" {
+    const a = std.testing.allocator;
+    var s = try SimP.init(a, puffy.makeGrid(48, 44), dynamoOptions(1));
+    defer s.deinit();
+    _ = try puffy.initAll(SimP, &s);
+
+    const g = &s.grid;
+    const mp = s.opt.mp;
+    const ngx: i64 = @intCast(g.ngx);
+    const ngy: i64 = @intCast(g.ngy);
+    const ngz: i64 = @intCast(g.ngz);
+
+    var nchecked: usize = 0;
+    var iz: i64 = -ngz;
+    while (iz < s.nzi() + ngz) : (iz += 1) {
+        var iy: i64 = -ngy;
+        while (iy < s.nyi() + ngy) : (iy += 1) {
+            var ix: i64 = -ngx;
+            while (ix < s.nxi() + ngx) : (ix += 1) {
+                // (1) cached BL geometry == fresh geometryBLat, all fields
+                const fresh = precompute.geometryBLat(g, .mks2, mp, ix, iy, iz);
+                try expectGeomBits(s.cache.blGeom(ix, iy, iz), &fresh);
+
+                // (2) cached MKS2→BL Jacobian == coco.dxdx at the cell center
+                const xx = [4]f64{ 0, g.xc(ix), g.yc(iy), g.zc(iz) };
+                const jf = coco.dxdx(xx, .mks2, .bl, mp);
+                const jc = s.cache.jacMy2Bl(ix, iy, iz);
+                for (0..4) |i| for (0..4) |k| try expectBits(jf[i][k], jc[i][k]);
+
+                // (3) gdet accessor == fillGeometry().gdet
+                try expectBits(s.cache.fillGeometry(ix, iy, iz).gdet, s.cache.gdet(ix, iy, iz));
+                nchecked += 1;
+            }
+        }
+    }
+    std.debug.print("dynamo BL-cache bit-identity: {d} cells verified\n", .{nchecked});
+    try std.testing.expect(nchecked > 2000);
 }
 
 test "M12 dynamo: ΔA_φ equatorial sign flip + |B³| non-increasing + divB" {

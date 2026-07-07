@@ -319,7 +319,7 @@ fn calcBfromACore(comptime SimT: type, sim: *SimT) void {
                     }
                 }
 
-                const gdet = sim.cache.fillGeometry(ix, iy, iz).gdet;
+                const gdet = sim.cache.gdet(ix, iy, iz); // finding #1: no full Geometry build
                 sim.vecpot.set(3, ix, iy, iz, (dA[2][3] - dA[3][2]) / gdet);
                 sim.vecpot.set(4, ix, iy, iz, (dA[3][1] - dA[1][3]) / gdet);
                 sim.vecpot.set(5, ix, iy, iz, (dA[1][2] - dA[2][1]) / gdet);
@@ -342,7 +342,7 @@ pub fn calcDivB(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64
     const g = &sim.grid;
     const pB = struct {
         fn f(s: *const SimT, iv: usize, jx: i64, jy: i64, jz: i64) f64 {
-            return s.cache.fillGeometry(jx, jy, jz).gdet * s.p.get(iv, jx, jy, jz);
+            return s.cache.gdet(jx, jy, jz) * s.p.get(iv, jx, jy, jz); // finding #1
         }
     }.f;
 

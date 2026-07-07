@@ -37,10 +37,8 @@ const relele = @import("../relele.zig");
 const mhd = @import("../physics/bfield.zig");
 const radiation = @import("../physics/radiation.zig");
 const frames = @import("../frames.zig");
-const coco = @import("../metric/coco.zig");
 const metric = @import("../metric/metric.zig");
 const misc = @import("../math/misc.zig");
-const precompute = @import("../metric/precompute.zig");
 const p2u_mod = @import("../p2u.zig");
 const ct = @import("ct.zig");
 const threading = @import("../sim/threading.zig");
@@ -93,7 +91,6 @@ pub fn calcScaleHeight(comptime SimT: type, sim: *SimT) void {
 
 /// The per-column scale-height body for ix ∈ [ix0, ix1).
 fn scaleHeightCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
-    const cfg = SimT.Cfg;
     const L = SimT.Layout;
     const rho_i = comptime L.index(.rho);
 
@@ -108,12 +105,14 @@ fn scaleHeightCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
         while (iy < ny) : (iy += 1) {
             var iz: i64 = 0;
             while (iz < nz) : (iz += 1) {
-                const geom = sim.cache.fillGeometry(ix, iy, iz);
-                const xxbl = coco.cocoN(geom.xxvec, cfg.coords, .bl, sim.opt.mp);
+                // √−g and BL θ from the caches — no per-cell fill_geometry /
+                // cocoN (finding #1); bit-identical to the recomputed values.
+                const gd = sim.cache.gdet(ix, iy, iz);
+                const th = sim.cache.blGeom(ix, iy, iz).xxvec[2];
                 const rho = sim.p.get(rho_i, ix, iy, iz);
-                const dth = pi / 2.0 - xxbl[2];
-                sigma += rho * geom.gdet;
-                scaleth += rho * geom.gdet * dth * dth;
+                const dth = pi / 2.0 - th;
+                sigma += rho * gd;
+                scaleth += rho * gd * dth * dth;
             }
         }
         // C quirk: the innermost radial index is left unnormalized
@@ -121,24 +120,19 @@ fn scaleHeightCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
     }
 }
 
-/// BL geometry at a cell center (C: fill_geometry_arb KERRCOORDS) — the
-/// reduction lives once in precompute.geometryBLat.
-fn geomBLat(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64) Geometry {
-    return precompute.geometryBLat(&sim.grid, SimT.Cfg.coords, sim.opt.mp, ix, iy, iz);
-}
-
 /// C: calc_angle_brbphibsq (magn.c:804), non-avg path — the field pitch
-/// −b^r b^φ √(g_rr g_φφ) / b² evaluated in BL. Returns {angle, bsq}.
-fn fieldAngle(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64, pp: *const [SimT.nv]f64) relele.Error!struct { angle: f64, bsq: f64 } {
+/// −b^r b^φ √(g_rr g_φφ) / b² evaluated in BL. Returns {angle, bsq}. The
+/// MKS2/BL geometries and the MKS2→BL Jacobian are supplied precomputed
+/// (finding #1): the BL sidecar (MetricCache.blGeom/jacMy2Bl) is bit-identical
+/// to the per-cell fill_geometry_arb(BL) + coco.dxdx this used to do inline.
+fn fieldAngle(comptime SimT: type, geomMKS2: *const Geometry, geomBL: *const Geometry, jac: [4][4]f64, pp: *const [SimT.nv]f64) relele.Error!struct { angle: f64, bsq: f64 } {
     const cfg = SimT.Cfg;
     const L = SimT.Layout;
-    const geomMKS2 = sim.cache.fillGeometry(ix, iy, iz);
-    const geomBL = geomBLat(SimT, sim, ix, iy, iz);
 
-    const ppbl = try frames.transPmhdCoco(cfg, pp.*, &geomMKS2, &geomBL, sim.opt.mp);
+    const ppbl = try frames.transPmhdCocoJ(cfg, pp.*, geomMKS2, geomBL, jac);
     const u = try relele.uconUcovFromPrims(
         .{ ppbl[L.index(.vx)], ppbl[L.index(.vy)], ppbl[L.index(.vz)] },
-        &geomBL,
+        geomBL,
     );
     const b = mhd.bconBcovBsqFrom4vel(
         .{ ppbl[L.index(.b1)], ppbl[L.index(.b2)], ppbl[L.index(.b3)] },
@@ -220,17 +214,20 @@ fn deltaARows(comptime SimT: type, sim: *SimT, dt: f64, iy0: i64, iy1: i64) rele
             var ix: i64 = -xlim;
             while (ix < nx + xlim) : (ix += 1) {
                 const geom = sim.cache.fillGeometry(ix, iy, iz);
+                const geomBL = sim.cache.blGeom(ix, iy, iz);
+                const jac = sim.cache.jacMy2Bl(ix, iy, iz);
                 var pp: [SimT.nv]f64 = undefined;
                 sim.p.load(ix, iy, iz, &pp);
 
                 // dynamo scratch starts at zero (memset above)
-                const fa = try fieldAngle(SimT, sim, ix, iy, iz, &pp);
+                const fa = try fieldAngle(SimT, &geom, geomBL, jac, &pp);
                 var angle = fa.angle;
                 const bsq = fa.bsq;
 
-                const xxbl = coco.cocoN(geom.xxvec, cfg.coords, .bl, sim.opt.mp);
-                const r = xxbl[1];
-                const th = xxbl[2];
+                // BL {r, θ} come from the cached BL geometry's position vector
+                // (bit-identical to coco.cocoN(geom.xxvec, coords, .bl, mp)).
+                const r = geomBL.xxvec[1];
+                const th = geomBL.xxvec[2];
                 if (r < 1.0001 * rhor) continue; // avoid the BH
 
                 const omk = 1.0 / (sim.opt.mp.a + @sqrt(r * r * r));
