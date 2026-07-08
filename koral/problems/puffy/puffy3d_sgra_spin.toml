@@ -64,14 +64,14 @@ rmax = 1000.0      # optional: enlarge the outer boundary (default 500 M snugly
 
 [run]
 tstart = 0.0
-tmax = 10000.0     # GM/c^3 (~21.2 s each → ~2.45 days; reduce for a quick look)
-nstep_max = 20000   # hard cap on steps
+tmax = 100000.0     # GM/c^3 (~21.2 s each → ~2.45 days; reduce for a quick look)
+nstep_max = 200000   # hard cap on steps
 tsteplim = 0.5     # CFL factor
-dtout1 = 100.0     # code-time output cadence in GM/c³ (NOT steps): scalars +
+dtout1 = 10.0     # code-time output cadence in GM/c³ (NOT steps): scalars +
                    # dump + .silo when t crosses a multiple. At dt~5e-3 the
                    # first frame (t=100) is ~19k steps away, so for a short run
                    # use nout_step below instead.
-dtout2 = 500.0     # >0 also writes a binary prim dump at each output
+dtout2 = 50.0     # >0 also writes a binary prim dump at each output
 nout_step = 100    # ALSO output every N steps (0 = time-based only). This is
                    # what makes a short run produce frames: with nstep_max=1000
                    # you get ~10 .silo frames to watch the evolution in VisIt.

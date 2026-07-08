@@ -18,14 +18,16 @@ other. Start with the one that matches what you need:
 
 ### Project status
 
-The implementation follows a milestone plan (M0–M13) — all milestones are
+The implementation follows a milestone plan (M0–M14) — all milestones are
 complete: metric layer, relele/frames, p2u/u2p + floors, reconstruction +
 wavespeeds + fluxes, hydro/MHD evolution with constrained transport, M1 radiation,
 opacities + four-force, the implicit radiation–gas solver, the full RK2IMEX
-pipeline, the PUFFY problem (limotorus init, GK21 quadrature, β-normalization),
-the dynamo + radiative viscosity + Comptonization, and the full driver with scalar
-diagnostics and opt-in threading. See the top-level [`README.md`](../README.md) for
-the milestone checklist and each milestone's validation summary.
+pipeline, the PUFFY problem (limotorus init, GK21 quadrature, β-normalization,
+2D and 3D), the dynamo + radiative viscosity + Comptonization, and the full driver
+with scalar diagnostics, restart checkpoints, and opt-in threading. See
+[`MILESTONES.md`](MILESTONES.md) for the milestone checklist and each milestone's
+validation summary, or the top-level [`README.md`](../README.md) for the project
+overview and quickstart.
 
 ### How the docs were kept honest
 

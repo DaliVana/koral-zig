@@ -1,318 +1,249 @@
 # koral-zig
 
-A Zig reimplementation of [KORAL](../koral_lite) — general-relativistic
-radiation magnetohydrodynamics — targeting the **PUFFY** disk problem
-(Lančová et al. 2019). Serial/threaded only for now; MPI comes later.
+A [Zig](https://ziglang.org) reimplementation of **[KORAL](https://github.com/achael/koral_lite)** — a
+general-relativistic radiation-magnetohydrodynamics (GR-RMHD) code — targeting the
+**PUFFY** radiation-supported accretion torus around a 10 M☉ Schwarzschild black
+hole (Lančová et al. 2019).
 
-**Project documentation** ([`docs/`](docs/README.md)): a deep
-[architecture overview](docs/ARCHITECTURE.md) (how the simulation works, for
-programmers), a [physics & numerics reference](docs/PHYSICS.md) (the equations
-solved, for physicists), and a [user & developer guide](docs/USER_GUIDE.md) (build/run,
-config, and how to create a new problem or modify the code).
+![Zig 0.16.0](https://img.shields.io/badge/Zig-0.16.0-f7a41d)
+![status](https://img.shields.io/badge/status-2D%20%26%203D%20validated-brightgreen)
+![license](https://img.shields.io/badge/license-GPLv3-blue)
 
-The original design documents live in the C repo:
-`../koral_lite/docs/zig-rewrite-architecture.md` (architecture),
-`../koral_lite/docs/zig-theory-background.md` (physics + validation ladder).
+It is a **faithful, bit-comparable transcription** of the C code: matching variable
+order and floating-point expression shapes so that, cell for cell, it reproduces the
+reference to machine precision — deliberate C quirks included. The goal is a modern,
+memory-safe, dependency-light GR-RMHD core that is easy to read, test, and extend.
 
-## Build & run
+- **What it solves.** The GRMHD conservation laws coupled to the M1 radiation
+  moments, with an implicit radiation–gas four-force, opacities (bremsstrahlung,
+  synchrotron, Klein–Nishina scattering) + Comptonization, radiative shear
+  viscosity, constrained-transport magnetic fields, and a mean-field dynamo — on
+  a black-hole spacetime in modified Kerr–Schild (MKS2) coordinates.
+- **How it runs.** Single binary per problem, one TOML config, no runtime
+  dependencies beyond the Zig standard library. Serial by default with **opt-in
+  shared-memory threading**; runs on a laptop or a single workstation node. (MPI
+  is not yet implemented — see [Status](#status).)
+- **How it's checked.** Validated against the original C code — the 2D and 3D
+  PUFFY problems reproduce it bit-for-bit — through a large battery of analytic
+  "theory" tests and C-generated golden files. See [Testing](#testing).
 
-Requires Zig 0.16.x.
+> **New to the physics or the code?** The [documentation](#documentation) below
+> has a dedicated guide for each audience — users, programmers, and physicists.
 
-```bash
-zig build test                     # library unit tests (theory + golden)
-zig build                          # build all problem executables
+---
+
+## Quickstart
+
+### 1. Install Zig 0.16.0
+
+koral-zig requires **exactly Zig 0.16.0** (it uses the 0.16 `std.Io` API; earlier
+releases will not compile it). Pick one:
+
+**A. Official prebuilt binary (recommended — pins the exact version).**
+Download the `0.16.0` archive for your OS/arch from
+**[ziglang.org/download](https://ziglang.org/download/)**, unpack it, and put the
+folder on your `PATH`. For example, on Apple Silicon macOS:
+
+```sh
+# grab the exact filename shown on the download page for your platform
+curl -LO https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz
+tar xf zig-aarch64-macos-0.16.0.tar.xz
+export PATH="$PWD/zig-aarch64-macos-0.16.0:$PATH"   # add to your shell profile to persist
+```
+
+Linux (`zig-x86_64-linux-0.16.0.tar.xz`) and Windows (`zig-x86_64-windows-0.16.0.zip`)
+work the same way.
+
+**B. A version manager** — handy if you juggle Zig versions:
+
+```sh
+# zvm — https://github.com/tristanisham/zvm
+zvm install 0.16.0 && zvm use 0.16.0
+```
+
+**C. A package manager** (e.g. `brew install zig`) — convenient, but only if it
+currently ships **0.16.0**; otherwise use A or B.
+
+Verify:
+
+```sh
+zig version      # must print 0.16.0
+```
+
+### 2. Get the code
+
+```sh
+git clone https://github.com/<user>/koral-zig.git
+cd koral-zig
+```
+
+### 3. Build and test
+
+```sh
+zig build test      # run the library test battery (fast; no external deps)
+zig build           # build every problem executable into zig-out/bin/
+```
+
+### 4. Run the PUFFY simulation
+
+The default `puffy.toml` runs a short, laptop-sized 2D slice. Use a release build
+for anything beyond a smoke test:
+
+```sh
+# build & run in one step (recommended optimization for real runs)
+zig build run-puffy -Doptimize=ReleaseFast -- koral/problems/puffy/puffy.toml
+
+# ...or run the installed binary directly
 ./zig-out/bin/puffy koral/problems/puffy/puffy.toml
 ```
 
-## Testing strategy
+On startup it echoes the derived configuration, then prints a throttled progress
+"heartbeat" and writes output frames into the run's `out_dir` (default
+`dumps/puffy/`):
 
-No end-to-end regression against the C code is possible (long runs are
-chaotic). Instead, two families of partial tests:
+```
+puffy: NV=13 grid 384×360×1 (+3 ghosts) | M=10 M☉ (GM/c³=4.9e-05s) | threads=12
+puffy: init done — β-normalization fac = …
+puffy: t=… nstep=… dt=… | Ṁ=… L=… H/R=… β⁻¹=… | nan=0 hdfix=… radimpfail=…
+puffy: done (t=…, … steps)
+```
 
-- **Theory tests** — pure Zig unit/property tests checking analytic
-  identities (metric g·G = δ, Christoffel symmetry, p2u→u2p round-trips,
-  M1 closure invariants, E = aT⁴, conservation in the implicit solve, …)
-  and known solutions (Sod tube, Bondi stationarity, radiative shock
-  battery). Run hermetically via `zig build test`.
-- **C-comparison tests** — golden files generated by small C harnesses in
-  `oracle/` (built against `../koral_lite`, needs `brew install gsl`),
-  plus short forced-dt step comparisons on tiny grids. Regenerate with
-  `tools/gen_golden.sh`; committed under `tests/golden/`.
+Every quantity is in **geometrized/code units (GU)**, matching KORAL's convention;
+convert to CGS/Eddington in downstream analysis. To run longer or larger, edit the
+TOML (`tmax`, `nstep_max`, `nx`/`ny`, `nthreads`) — see below.
 
-### The two-π caveat (MKS2 tolerances)
+---
 
-KORAL's `ko.h` defines `Pi` as the *truncated* `3.141592654` and the
-Mathematica-exported MKS2 metric expressions use it, while the `coco_*`
-point transforms use exact `M_PI` — and the exports themselves mix full-θ
-and (θ−π/2) forms. Measured from the golden data, C's own MKS2 `g·G − I`
-reaches **4.6e-9** near the polar axis. The Zig metric mirrors C's
-covariant-metric flavor exactly (matches at ~2e-14) and is internally
-consistent at 1e-15, so MKS2 *derived* quantities (inverse, dlgdet,
-Christoffels) gate against C at 1e-8 — that spread is C's, not ours.
-Consequence for later milestones: near-axis step-comparison budgets on the
-PUFFY grid cannot be tighter than ~1e-8 for θ-sensitive quantities.
+## Configuration
 
-### Forced-dt step tests (M5+)
+Runtime parameters live in a small flat-TOML file passed on the command line.
+Ready-made configs for the PUFFY problem are in
+[`koral/problems/puffy/`](koral/problems/puffy/):
 
-`tests/golden/step/*.kstp` hold 10-step trajectories of tiny problems run
-by the C oracle (`oracle/harness_step.c`, built with the koral-zig test
-problems `oracle/problems/ZIG{SOD,OT,MHDTUBE}` as PROBLEM 200/201/202).
-The Zig side loads C's post-init state bit-for-bit, forces C's recorded dt
-sequence, and diffs the full domain each step against a budget growing
-from 1e-13 (step 1) to 1e-10 (step 10); Zig's own CFL dt must match C's
-within the same budget and the ENTROPYFLAG/HDFIXUPFLAG cell flags exactly.
-Measured: sod64 4.4e-14, ot32 2.5e-14, mhdtube64 1.1e-14 after all 10
-steps — 30-1000× inside budget. Radiative problems (M10: radtube64,
-radpulse64; 4 flag maps incl. RADFIXUPFLAG/RADIMPFIXUPFLAG) budget at
-2e-10 → 8e-7 instead: both sides' implicit Newton stops at RADIMPCONV =
-1e-10 residuals, so razor-edge iteration differences legitimately move
-converged cells at the ~1e-10 level (measured plateau ~2e-9; the
-LTE-consistent pulse stays at 2.9e-12).
+| File | Run |
+|---|---|
+| [`puffy.toml`](koral/problems/puffy/puffy.toml) | 2D axisymmetric (384×360), the validated production slice |
+| [`puffy3d.toml`](koral/problems/puffy/puffy3d.toml) | 3D wedge (`nz > 1`, periodic φ), workstation-watchable |
+| `puffy3d_sgra*.toml` | Sgr A*-flavored 3D variants |
 
-Two C-fidelity notes worth remembering: MPI4CORNERS is force-defined by
-MAGNFIELD (choices.h:790) even in serial builds, so MHD configs sweep ±1
-ghost rows and fill 2D ghost corners while hydro configs skip corners; and
-serial periodic runs fill the 1-deep ghost corner *surfaces* by copying
-the adjacent domain row (finite.c:3213) rather than wrapping, so the
-corner-based divB is exactly preserved in the interior but approximate at
-the domain-edge seam (MPI runs exchange corners exactly). Both behaviors
-are transcribed and pinned by tests.
+Common knobs: `mass`, `bhspin`, `gam` (physics); `nx`/`ny`/`nz` (resolution);
+`tmax`, `nstep_max`, `tsteplim` (run control); `dtout1`/`dtout2`/`nout_step`
+(output cadence); `nthreads` (1 = serial, >1 = shared-memory worker team);
+floors/ceilings. The full field-by-field reference is in the
+[User Guide](docs/USER_GUIDE.md#3-the-params-toml-file).
 
-### Geometry-in-record goldens (M2+)
+Anything that changes the *generated code* (module set, reconstruction scheme,
+coordinate system) is a compile-time `Config` in the problem source, not a runtime
+param — see the guide's ["creating a new problem"](docs/USER_GUIDE.md) recipe.
 
-State-level golden records (`tests/golden/state/`) embed the geometry the C
-code actually used (gg, GG, gdet, α, gttpert), so the Zig side replays pure
-state algebra with identical inputs — the MKS2 two-π spread never enters
-and gates stay at 1e-13/1e-14. Residual noise between clang-built C and
-Zig comes from FMA contraction (clang fuses, Zig doesn't), which only
-matters in rows that cancel to ~0; those are normalized by their record's
-natural conserved scale.
+---
+
+## Output & visualization
+
+Written into the config's `out_dir`:
+
+- **`scalars.dat`** — a whitespace-separated time series of global diagnostics
+  (mass, accretion rate Ṁ, radiative/total luminosity, scale height H/R,
+  peak magnetization, fixup/NaN counters). One row per output frame.
+- **`prims#####.kdmp`** — little-endian binary snapshots of all primitives
+  (enabled when `dtout2 > 0`). Each is also a complete restart checkpoint.
+- **`.silo`** *(optional)* — VisIt-openable field dumps, when built with
+  `-Dsilo` (needs a Silo/VisIt install; point `-Dsilo-prefix` at it).
+
+See the [User Guide](docs/USER_GUIDE.md#4-output-formats) for exact byte layouts
+and column definitions.
+
+### Restarting a run
+
+Every output frame writes a checkpoint, so a run is always resumable:
+
+```sh
+# continue from a specific checkpoint, or from the newest one in a directory
+./zig-out/bin/puffy koral/problems/puffy/puffy.toml --restart dumps/puffy
+```
+
+A C KORAL serial restart (`res####.head` + `res####.dat`) can be bridged into a
+KDMP checkpoint with `zig build res2kdmp -- <path/res####.head> [out.kdmp]`.
+
+---
+
+## Documentation
+
+Three cross-referenced guides in [`docs/`](docs/README.md), written from the actual
+source — start with the one that matches what you need:
+
+| Document | For | Covers |
+|---|---|---|
+| **[User & Developer Guide](docs/USER_GUIDE.md)** | anyone building, running, or modifying it | prerequisites, build/run, the TOML reference, output formats, running tests, and recipes for adding a new problem or changing the physics |
+| **[Architecture](docs/ARCHITECTURE.md)** | programmers getting into the code | design philosophy and the C-diffability contract, the module graph, the core data model, and the anatomy of one time step |
+| **[Physics & Numerics](docs/PHYSICS.md)** | physicists validating or extending the science | the governing equations, metric/coordinates, stress tensors, opacities, viscosity, dynamo, the numerical scheme, and the PUFFY initial conditions |
+
+The [validation log](docs/MILESTONES.md) records each milestone (M0–M14) and how it
+was checked against C.
+
+---
+
+## Testing
+
+End-to-end regression against the C code is impossible (turbulent GR-RMHD runs are
+chaotic), so correctness is pinned two ways:
+
+- **Theory tests** — pure Zig unit/property tests of analytic identities
+  (`g·G = δ`, Christoffel symmetry, p2u↔u2p round-trips, M1 closure invariants,
+  `E = aT⁴`, conservation in the implicit solve, …) and known solutions
+  (Sod tube, Bondi/Michel stationarity, radiative-shock battery).
+- **C-comparison goldens** — records generated by small C harnesses in
+  [`oracle/`](oracle/) (compiled against the C KORAL) plus short forced-`dt` step
+  comparisons on tiny grids, committed under `tests/golden/`. The 2D and 3D PUFFY
+  problems match C bit-for-bit.
+
+```sh
+zig build test                    # the fast battery
+zig build test -Dslow-tests       # + convergence studies, soaks, full-grid PUFFY t=0 keystone
+```
+
+Regenerating goldens needs `clang`, GSL (`brew install gsl`), and a sibling checkout
+of [koral_lite](https://github.com/achael/koral_lite); the committed goldens mean you
+only need the Zig toolchain to build, run, and test. Details in the
+[User Guide](docs/USER_GUIDE.md#5-running-the-tests) and the
+[validation log](docs/MILESTONES.md).
+
+---
 
 ## Status
 
-- [x] M0 — skeleton, build system, variable layout (C-index-compatible),
-      units, grid/field storage, params loader, serial comm, PUFFY stub
-- [x] M1 — metric & coordinates (MINK/BL/KS/MKS2): dual-number AD metric
-      layer (exact Christoffels/dlgdet, no Mathematica transcription),
-      coco transforms + Jacobians, precomputed cache with C's gdet-trace
-      Christoffel correction; theory gates + C goldens green
-- [x] M2 — relele + frames: conv_vels (VEL3/VEL4/VELR, all pairs), index
-      gymnastics, Lorentz boosts lab↔fluid/rad frames, trans2/22_coco,
-      whole-primitive coordinate transforms; C quirks mirrored & pinned by
-      tests (dead α-correction in ff2lab boosts; trans_pall_coco requires
-      aliased in/out in C)
-- [x] M3 — p2u (mhd via cancellation-free utp1, rad M1) + u2p_solver_W
-      (hot/entropy Newton, Noble residual, C's exact iteration path incl.
-      its 1/γ entropy derivative) + cascade + check_floors_mhd (drift-frame
-      B²-floors, γ-ceiling); golden agreement 1e-13..1e-14, solver
-      success/failure outcomes match C record-for-record
-- [x] M4 — reconstruction + LAXF + wavespeeds: avg2point (donor,
-      minmod-θ, non-uniform PPM incl. near-boundary order reduction),
-      gas wavespeeds (fluid-frame c_s²+v_A²−c_s²v_A² boosted per direction,
-      co-going clamps), f_flux_prime (cancellation-free energy row, M1
-      radiative rows; Rijvisc lands in M12), LAXF/HLL face combination;
-      goldens at 3e-16..4e-15
-- [x] M5 — hydro evolution: Sim(cfg) driver (koral/sim.zig) with the full
-      RK2IMEX stage arithmetic (problem.c:141-402, exact FP expression
-      shapes), op_explicit fused sweep, LAXF/HLL face combination, metric
-      source terms, wavespeed/CFL machinery, generic BCs (periodic/copy/
-      specific + C's 2D ghost-corner filling), u2p driver + neighbor-average
-      fixups, update_entropy; theory gates (uniform static, exact
-      flux telescoping, bitwise mirror symmetry for linear recon, Sod vs
-      exact SR Riemann solver, acoustic dispersion order 2, Bondi/Michel
-      stationarity in KS) + sod64 forced-dt step test vs C at 4e-14/10 steps
-- [x] M6 — MHD + constrained transport: Tóth flux-CT + calc_BfromA + corner
-      divB diagnostic (koral/magn/ct.zig); theory gates (B-from-A div-free
-      1e-16, OT interior divB 8e-15 over 200 steps, uniform-B static, CP
-      Alfvén phase order 2, Balsara-1 with exactly constant Bx); C goldens
-      flux_ct 1e-16, calc_BfromA bitwise, ot32/mhdtube64 forced-dt step
-      tests at 2e-14/10 steps
-- [x] M7 — radiation M1 basics: calc_Rij_M1 + fluid-frame Ê (calc_ff_Rtt),
-      closed-form u2p_rad (JCM γ² solution, gamma2a/b cancellation branches,
-      cold γ=1/γmax fallbacks; koral/solve/invert_rad.zig), τ-limited rad
-      wavespeeds (rv2 = (4/3)²/τ², incl. C's rv2z-uses-τ_y quirk rad.c:3702),
-      check_floors_rad; Sim wiring (arad scalars, rad0-based timestep,
-      per-block flux speeds, RADFIXUPFLAG, rad fixup pass — off like PUFFY);
-      theory gates (Eddington, R^μ_μ=0, streaming limit, u2p_rad round-trip
-      1e-13, γ² vs bisection, cold-branch caps, ±1/√3 and 4/(3τ) speeds,
-      floors, uniform rad state static 50 steps) + C goldens (Rij 4e-16,
-      u2p_rad 2e-14 with all 336 branch decisions exact, wavespeeds 2e-16,
-      floors 1e-14)
-- [x] M8 — opacities + four-force: thermo layer (composition with PUFFY's
-      direct MU_GAS/MU_I/MU_E=1/2/2 overrides, C-shaped constant globals,
-      single-temperature Te=Ti=Tgas with 1e2 K floors), bremsstrahlung +
-      synchrotron absorption channels (Terelfactor suppression — the
-      choices.h bridge functions are commented out), PUFFY kappaes hook
-      with Klein–Nishina, both C kappaes flavors (Trad=Te standalone /
-      Trad=TradBB in-state), calc_chi wired into the Sim τ-limiter, and
-      calc_Gi (thermal four-force + Comptonization; the C return value is
-      uninitialized garbage all callers discard); theory gates (κ_es hand
-      values incl. exact KN half at 4.5e8 K, ρ²/T^-3.5/B² scalings,
-      Kirchhoff at ζ=1, G^μ=0 at LTE, heating/cooling sign, G·u frame
-      invariance @1e-12, Compton exactly zero/linear in ΔT, τ-thick
-      uniform state static) + C goldens (state thermo 3e-15, opacities
-      8e-15, kappa/kappaes/chi 3e-15, Gi 3e-14 with the Compton ΔT-noise
-      term in the normalization)
-- [x] M9 — implicit radiation–gas solver (koral/solve/implicit.zig): the
-      full rung ladder (energy-LAB → energy-FF → RAD/MHD swap ×2 →
-      entropy-FF ×2), 4-prim Newton with one-sided FD Jacobian (ε=1e-6,
-      sign-retry), SCALE_JACOBIAN row/column scaling, LU inversion
-      mirroring GSL's silent-inf singular path, the damping ladder with
-      energy/Tgas/Trad per-step limiters, the conservation constraint
-      (implicit_apply_constraints) and the 1-D bisection starting guess;
-      wired into Sim.opImplicit (RADIMPFIXUPFLAG, FIXUP_RADIMP pass,
-      opac == null ≡ SKIPRADSOURCE). C bugs transcribed: the 4D entropy
-      residual reads state->Tgas where Sgas is meant (rad.c:1749/1767);
-      the bisect residual's pp0[EE]/ratio (rad.c:1929). Theory gates:
-      internal-uu conservation exact (4e-15), LTE fixed point, 0-D
-      relaxation vs test-local RK45 at 7.8e-8 (gate 1e-6), L-stability at
-      κΔτ=1e6, RAD/MHD branch agreement on residual-verified solutions,
-      3000-state fuzz (no NaN, clean failures). C golden (full wrapper on
-      PUFFY cells, ~10 decades of κΔt): success/failure agreement
-      331/336, rung agreement 267/278, residual-verified primitives at
-      6.8e-8 (gate 1e-6)
-- [x] M10 — full radiative step pipeline: correct_polaraxis + the polar-cell
-      contract (u2p_solver_Bonly + floor skips in calc_u2p, op_implicit
-      skip, cell_fixup target skip — finite.c:5525/1427/5042, u2p.c:57),
-      PR_KAPPA/PR_KAPPAES problem-opacity hooks (grey modes; the C wrapper
-      reads uninitialized stack when a kappa.c leaves the opac slots unset —
-      our oracle problems assign them explicitly), test problems radtube/
-      radpulse (oracle/problems/ZIGRADTUBE 203, ZIGRADPULSE 204; per-tube
-      MASS makes KORAL's Kelvin-based LTE the papers' T = p/ρ convention,
-      koral/testing/tubes.zig). Theory gates: κ=0 ⇒ IMEX ≡ its explicit
-      RK2 at 1.2e-7 (bounded by RADIMPCONVREL = 1e-8 rel-change exits, not
-      bitwise — in C too), temporal order 2.04/2.07 on smooth relaxation,
-      L-stable stiff step at κρΔt = 1e4 (single ~9e-4 nonlinear crossing,
-      then monotone), thin pulse streams at 0.9979c (expect 0.99875),
-      thick scattering pulse diffuses at D = 1/(3χ) to 0.1%; the Farris/
-      Sądowski tube battery evolved to stationarity + dt/5 polish (the
-      IMEX fixed point carries an O(γ·CFL) splitting bias) and validated
-      against the stationary system itself: plateaus at 1e-5..2.7e-3,
-      analytic total-flux constancy 3.8e-3 (4a) / 4.7e-2 (3a, front ~2
-      cells), pointwise ∂ₓR^{xν} = −G^ν in the exchanging core at 0.32
-      (the dt/5 splitting-bias floor, resolution-independent; full battery
-      incl. tubes 1/2/4b + hi-res under -Dslow-tests — tube 3b (κ = 25)
-      excluded: its initial discontinuity carries κρΔx ≈ 40/cell and
-      collapses production C KORAL identically, verified with the C
-      oracle). C goldens: radtube64/radpulse64
-      forced-dt step tests (10 steps, 4 flag maps exact, budget 2e-10 →
-      8e-7; measured plateau ~2e-9 — implicit Newton threshold noise —
-      and 2.9e-12 for the LTE pulse)
-- [x] M11 — PUFFY problem code: the limotorus initial conditions
-      (koral/problems/puffy.zig — tools.c's lamBL/rmidlam bisections at 5ε
-      and the ln f integral, with gsl_integration_qags replaced by
-      koral/math/quad.zig adaptive Gauss–Kronrod 21 at rtol 1e-12),
-      prepinit's atmosphere + LTE pressure-split quartic + prad_ff2lab +
-      BL→MKS2 + QUADLOOPS A_φ, init's ENTR/p2u, postinit's global
-      β = 1/20 normalization, and bc.c (XBCHI outflow with r²-rescaling +
-      no-inflow, XBCLO copy, polar reflection). Theory gates: GK21 vs a
-      test-local tanh-sinh at 1e-10, bisection residuals at the 5ε target,
-      the ℓ(λ) broken power law + an independent ω cross-formula, the
-      quartic residual ≤ 1e-11·P, the torus surface (inner edge pinned at
-      LT_RIN, polytropic ρ ∝ ε³ falloff), and on a reduced grid: max β ≡
-      MAXBETA to 1e-12, A-derived B div-free to 1e-12, the full bc.c
-      contract (polar sign-flip maps, XBCLO copy, XBCHI rescaling +
-      no-inflow); the hydro-only limotorus (Γ = Γ_LT = 4/3, its own
-      polytrope) is stationary — L1 ρ drift 8e-5 @ 40², order 2.13 with
-      resolution, exercising correct_polaraxis on a real spherical grid.
-      C keystone (oracle/harness_init.c → tests/golden/init, gzipped): the
-      full ko.c init sequence on the production 384×360 MKS2 grid, three
-      snapshots (A_φ, all 13 primitives post-BfromA, β-normalized B) cell
-      by cell over the domain + ghosts — torus ρ/u/Ê and their derived
-      fields inherit C's qags epsrel 1e-8 (gate 1e-6), confirmed by the
-      epsrel-1e-12 attribution variant collapsing the torus deviation; the
-      analytic atmosphere matches near machine precision (full cell-by-cell
-      + attribution under -Dslow-tests)
-- [x] M12 — dynamo + radiative viscosity + Comptonization.
-      **Radiative shear viscosity** (koral/physics/radvisc.zig, PUFFY's
-      RADVISCOSITY==SHEARVISCOSITY): calc_shear_lab (the lab-frame σ_ij from
-      the radiation-frame velocity field with Christoffel corrections + the
-      grid-corner-avoidance branches), calc_rad_visccoeff (ν = ALPHARADVISC·mfp
-      with the RADVISCMFPSPH spherical mfp limiter and the RADVISCNUDAMP
-      diffusion cap), R^ij_visc = −2 ν Ê σ^ij filled once per step
-      (calc_Rij_visc_total) and added at the faces with the RADVISCMAXVELDAMP
-      velocity cap (f_flux_prime_rad_total). **Mean-field dynamo**
-      (koral/magn/dynamo.zig, MIMICDYNAMO): the CALCHRONTHEGO density-weighted
-      scale height, the BL field-pitch angle, the ΔA_φ ∝ α_dyn·(dt/P_K)·B^φ
-      prescription with its ALPHAFLIPSSIGN equatorial flip, the DAMPBETA
-      azimuthal damping, and calc_BfromA of ΔA_φ superimposed on the poloidal
-      field (calc_BfromA refactored to curl any A-source). **Comptonization**
-      was already wired in M8/M9 (calc_Compt_Gi thermal G^t into the implicit
-      solver). Theory gates: the dampBphi formula (saturation below β_sat,
-      monotone damping + no-overshoot clamp above), the ΔA_φ equatorial
-      sign flip, dynamo divB-preservation (acts through A_φ), calcScaleHeight
-      vs a density-weighted RMS, and the RADVISCNUDAMP / RADVISCMAXVELDAMP caps.
-      C goldens (oracle/harness_visc.c + harness_dynamo.c, PUFFY t=0): the
-      shear σ^ij isolates the FD/Christoffel code (6.4e-8, MKS2 near-axis
-      floor), while ν, R^i_j and the dynamo B inherit C's qags kink error
-      through calc_chi / Ê (~1e-3, the M11 keystone story; a bug would show
-      far above it), under -Dslow-tests
-- [x] M13 — full PUFFY. **Wiring** (koral/problems/puffy/main.zig): the complete
-      driver — the ko.c init sequence (limotorus + calc_BfromA + β-norm) then
-      the CFL-driven RK2IMEX time loop, writing the scalar diagnostics time
-      series and periodic binary primitive dumps, and printing NaN / fixup /
-      implicit-failure counts each cadence. **Scalars** (koral/io/scalars.zig,
-      C: postproc.c calc_scalars): total mass, Ṁ through the horizon, radiative
-      + total luminosity at the outer shell (BL-frame R^r_t / T^r_t), and the
-      density-weighted scale height (reusing the dynamo's calc_avgs_throughout
-      RMS). A C inconsistency is transcribed as-is: calc_totalmass's snapshot
-      path uses the raw cell dφ (the wedge), while calc_mdot / calc_lum force
-      dφ→2π for an axisymmetric slice. **Threading** (opt-in, opt.nthreads): the
-      per-cell inversions (calc_u2p / op_implicit) dispatch row-parallel over
-      std.Thread — disjoint rows, `*const` geometry reads — proven bit-identical
-      to serial by a determinism gate; the golden tests all run serial.
-      **Output** (koral/io/dump.zig): a minimal KDMP primitive snapshot +
-      scalars.dat text series (HDF5/SILO stay deferred). Theory gates
-      (scalars_tests.zig): closed forms for mass / Ṁ / magnetization on a
-      uniform MINK box; the threading determinism check. C goldens
-      (-Dslow-tests): (a) harness_scalars.c — mass / Ṁ / H match calc_scalars
-      on the shared t=0 state to 1e-6 (MKS2 √−g two-π spread), the run's H/R is
-      C's H/R (≈0.68, the radiation-supported thick torus); (b)
-      harness_puffy_step.c — a reduced 64×60 PUFFY (full physics, committable
-      golden), 4 forced-dt RK2IMEX steps: the flag maps (entropy / hd-fixup /
-      rad-fixup / radimp-fixup) agree cell-for-cell, ≥97% of cells track C to
-      <1e-3, and the whole grid stays bounded. The residual FX/FY spread lives
-      in the plunging region (r<2) and the polar-axis rim where the M9 τ≫1
-      implicit conditioning is worst — the chaotic FP-seed amplification of the
-      stiff torus (bounded + plateauing, flags perfect), i.e. exactly the
-      divergence that rules out end-to-end tests
+All planned milestones (M0–M14) are complete: the metric layer, frames/velocities,
+p2u/u2p inversions with floors, reconstruction + wavespeeds + fluxes, hydro/MHD
+evolution with constrained transport, M1 radiation, opacities + four-force, the
+implicit radiation–gas solver, the full RK2-IMEX pipeline, the PUFFY problem
+(2D **and** 3D, both validated bit-for-bit against C), the dynamo + radiative
+viscosity + Comptonization, scalar diagnostics, restart checkpoints, and opt-in
+threading.
 
-**Post-M13 hardening (2026-07-08):** a correctness pass over the full codebase
-(`docs/CODE_REVIEW_2026-07-06.md`, priority tier P1) — `Sim.init` now validates its
-runtime preconditions (ghost depth vs reconstruction, `.specific` axis ⇒ `specific_bc`,
-`opt.coords == cfg.coords`, `radviscosity` ⇒ `opac`, polar-row count) and returns
-`error.InvalidConfig`; `SpecificBc` is fallible (`relele.Error!`) so boundary conversions
-propagate instead of `catch unreachable`; `fFluxPrime` refuses a non-finite flux
-(`error.NanInFlux`) rather than letting `cellFixup` silently heal it; the driver guards its
-CFL dt and exits non-zero on a NaN/blow-up; and the metric cache zeroes its previously-
-undefined `gcon` column-4 slots (deterministic `Geometry`). All golden batteries remain
-byte-for-byte identical (`-Dslow-tests`: 215/216).
+**Not yet implemented:** distributed-memory **MPI** (runs are currently single-node;
+the production 384×360×32 science grid is a future cluster job). HDF5 output is
+deferred in favor of the KDMP + optional Silo paths.
 
-**Post-M13 performance (2026-07-08):** priority tier P2 of the same review — all
-golden-safe-by-construction. The threading rewrite (persistent worker team + dynamic-tile
-dispatch, whole explicit path parallelised) had already landed; this pass added: `cellFixup`
-early-outs the four full-grid copies when no cell is flagged (the common case); the `sweep`/flux
-loops iterate the contiguous x index innermost so the stencil streams instead of striding `iy`/`iz`;
-the per-component update/stage/flux-combine loops stack-buffer each cell once instead of recomputing
-the offset `NV` times; `fFluxPrime` lowers only the stress-tensor row it uses and drops a dead
-`Qdotnp` chain (a division/u2p); the metric cache reads face √-g via `metric.gdetAt` instead of a
-full inverse+Christoffel `compute`; and the hot leaf accessors are `inline`. Bit-identical
-(`-Dslow-tests`: 215/216). A/B-measured on the PUFFY 384×360 problem in ReleaseFast (25 steps,
-`/usr/bin/time -l`): **−7% instructions retired** (deterministic), **−3.7% stepping wall
-single-thread / −6.1% at nthreads=12**, total wall −4%; per-phase `fixup` −96%, `stage` −80%,
-`fluxes` −41%, `update` −22%, `sweep` −9%, init −4.7%. The implicit radiation solver (~60% of the
-step) was deliberately left untouched (deferred review item), which bounds the whole-step figure.
-Two review items were consciously deferred (the sweep face-geometry carry — marginal, the geometry is
-a cache read; and the wavespeed/implicit state-sharing — invasive with an FP-shape trap the review
-itself flags); see the P2 tier notes.
+See the [validation log](docs/MILESTONES.md) for the per-milestone detail and
+measured tolerances.
 
-**Post-M13 idiomatic polish (2026-07-08):** priority tier P5 — all 13 low-risk cleanups, none affecting
-goldens. `convVelsCore` and `avg2pointScalar` now dispatch through exhaustive switches (compiler-proven
-coverage, `unreachable`/error on the impossible arm) instead of silent else-catchalls; `FaceStore` owns
-its allocator so `deinit()` matches `Field.deinit`; the golden-file readers guard `nrec==0`, add an
-`errdefer` on the vars alloc, and return `error.BadGoldenFile` instead of panicking on a corrupt file;
-the `Scal` wavespeed enum is grouped per-dimension so a flux pass reads one contiguous run; the
-per-problem build uses a single install artifact; and `-Dmpi` (which has no backend) now `@compileError`s
-instead of silently building serial. Dead code removed: `state.zig`'s unused `State(cfg)` stub and four
-write-only `Geometry` cell-identity fields (`ix/iy/iz/ifacedim` — `rijviscFace` takes its `dim`
-explicitly). Byte-identical (`-Dslow-tests`: 215/216).
+---
+
+## License
+
+koral-zig is a derivative work of [KORAL / koral_lite](https://github.com/achael/koral_lite),
+which is released under the **GNU General Public License v3.0**. koral-zig is
+therefore distributed under the [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html)
+as well.
+
+## Credits & references
+
+- **KORAL** — the original GR radiation-MHD code, by Aleksander Sądowski and
+  collaborators (Sądowski, Narayan, Tchekhovskoy, Zhu, et al.).
+- **koral_lite** — the lighter reference implementation this port follows, by
+  Andrew Chael: <https://github.com/achael/koral_lite>.
+- **PUFFY** — the radiation-supported thick-torus problem: Lančová et al. (2019),
+  *"Puffy Accretion Disks: Sustaining 3D Dynamics of Radiation-supported Thick Tori,"*
+  ApJ Letters 884, L37.
+
+If you use this code, please also cite the original KORAL papers.
