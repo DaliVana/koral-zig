@@ -20,6 +20,7 @@ const std = @import("std");
 const config = @import("config.zig");
 const grid_mod = @import("grid.zig");
 const sim_mod = @import("sim.zig");
+const relele = @import("relele.zig");
 const ct = @import("magn/ct.zig");
 const hydro = @import("physics/hydro.zig");
 const radforce = @import("physics/radforce.zig");
@@ -250,7 +251,7 @@ fn radtubeBc(
     t: f64,
     ifinit: bool,
     face: sim_mod.BcFace,
-) [SimRad.nv]f64 {
+) relele.Error![SimRad.nv]f64 {
     _ = s;
     _ = iy;
     _ = iz;

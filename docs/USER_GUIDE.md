@@ -501,8 +501,16 @@ pub const SpecificBc = *const fn (
     t: f64,
     ifinit: bool,                // true during initial set_bc
     face: BcFace,                // .xlo/.xhi/.ylo/.yhi/.zlo/.zhi
-) [NV]f64;                       // returns the ghost cell's primitives
+) relele.Error![NV]f64;          // ghost-cell primitives, or a conversion error
 ```
+
+The callback is **fallible**: any frame/velocity conversion it performs
+(`frames.transPmhdCoco`, `relele.convVels`, …) returns `relele.Error`, so use
+`try` and let it propagate — a boundary-adjacent cell can transiently reach a
+spacelike velocity, and `setBc` already threads the error to the driver's
+step-failure path (do **not** swallow it with `catch unreachable`). A BC that
+does no conversions just returns the `[NV]f64` directly (the error union accepts
+a plain value).
 
 Because `Sim` is generic over `Config`, the callback lives inside a comptime
 factory `Bc(SimT)` returning a struct with a `pub fn calc(...)` — exactly the
@@ -516,6 +524,7 @@ const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const grid_mod = @import("../grid.zig");
 const hydro = @import("../physics/hydro.zig");
+const relele = @import("../relele.zig");   // for SpecificBc's error set
 const sim_mod = @import("../sim.zig");
 
 pub const cfg = config.mytube;
@@ -567,7 +576,7 @@ pub fn Bc(comptime SimT: type) type {
         pub fn calc(
             sim: *const SimT, ix: i64, iy: i64, iz: i64,
             t: f64, ifinit: bool, face: sim_mod.BcFace,
-        ) [SimT.nv]f64 {
+        ) relele.Error![SimT.nv]f64 {   // fallible: `try` any frame conversion
             _ = t; _ = ifinit;
             // Copy the nearest domain cell (simple outflow). For a static tube
             // you could instead return the fixed left/right asymptotic state.
@@ -578,7 +587,7 @@ pub fn Bc(comptime SimT: type) type {
             };
             var pp: [SimT.nv]f64 = undefined;
             sim.p.load(src, iy, iz, &pp);
-            return pp;
+            return pp;   // no conversion here, so a plain return is fine
         }
     };
 }
@@ -588,7 +597,11 @@ Key API points, all real:
 
 - `sim.initCell(ix, iy, iz, pp)` stores the primitives and derives the conserveds
   via `p2u` (`koral/sim.zig`).
-- `sim.finishInit()` runs `setBc(0, true)` then `initTimestepGuess()`.
+- `sim.finishInit()` runs `setBc(0, true)` then `initTimestepGuess()` — seed the CFL
+  denominator this way (or `s.step` will assert `tstepdenmax > 0` on the first step,
+  turning a forgotten guess into a NaN run).
+- `sim.cflDt()` returns the CFL timestep `1/tstepdenmax` from the last wavespeeds —
+  the one place the driver and `step()` share the dt expression.
 - `sim.grid.xc(ix)` is the cell-center internal coordinate (the two-face average,
   `0.5*(xl(i)+xl(i+1))` — an intentional ulp-level match to C; do not "simplify").
 - `sim.nxi()/nyi()/nzi()` are the interior cell counts.
@@ -636,24 +649,32 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
     const params_path = args.next() orelse "koral/problems/mytube/mytube.toml";
 
-    const p = try koral.Params.load(a, io, params_path);
-    defer a.free(p.out_dir);
+    var p = try koral.Params.load(a, io, params_path);
+    defer p.deinit(a);              // frees every heap-owned string field
 
+    // SimT.init validates its preconditions and returns error.InvalidConfig on
+    // a mismatch (ghost depth < reconstruction stencil, a `.specific` axis with
+    // no `specific_bc`, opt.coords ≠ cfg.coords, radviscosity with a null opac,
+    // or correct_polaraxis with ny ≤ 2·nccorrectpolar) — so `try` it.
     var s = try SimT.init(a, mytube.makeGrid(p.nx), options(&p));
     defer s.deinit();
 
     try mytube.initAll(SimT, &s);
 
     while (s.t < p.tmax and s.nstep < p.nstep_max) {
-        var dt = 1.0 / s.tstepdenmax;          // CFL dt from the previous step
+        var dt = s.cflDt();                    // = 1/s.tstepdenmax, previous step
         if (s.t + dt > p.tmax) dt = p.tmax - s.t;
+        // Guard before stepping: a global blow-up leaves tstepdenmax at its −1
+        // reset sentinel (NaN fails the `>` update) → dt = −1 and time marches
+        // backwards; a diverging denominator stalls at dt = 0. Abort loudly.
+        if (!(dt > 0) or !std.math.isFinite(dt)) return error.InvalidTimestep;
         try s.step(dt);
     }
     std.debug.print("mytube: done (t={d}, {d} steps)\n", .{ s.t, s.nstep });
 }
 ```
 
-The core loop is `dt = 1/s.tstepdenmax` then `s.step(dt)`. `Sim.step` runs one full
+The core loop is `dt = s.cflDt()` (= `1/s.tstepdenmax`) then `s.step(dt)`. `Sim.step` runs one full
 RK2IMEX step, alternating the implicit radiative-source operator with the explicit
 operator across the stages. The explicit operator (`opExplicit`) itself is:
 wavespeeds → reconstruction sweep → face fluxes → flux-CT for MHD → conserved

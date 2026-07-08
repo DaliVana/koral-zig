@@ -59,7 +59,7 @@ fn tubeBc(
     t: f64,
     ifinit: bool,
     face: sim_mod.BcFace,
-) [NV]f64 {
+) relele.Error![NV]f64 {
     _ = s;
     _ = iy;
     _ = iz;

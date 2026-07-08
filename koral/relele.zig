@@ -30,6 +30,15 @@ pub const Error = error{
     /// C calls my_err("delta.lt.0 in fill_utinucon") and would continue
     /// into sqrt(<0) = NaN (relele.c:394); we refuse instead.
     SpacelikeVelocity,
+    /// A NaN reached the assembled face flux (physics/flux.zig). Same spirit
+    /// as the two above — we refuse to propagate an unphysical state rather
+    /// than let it flow into the conserved update, where cell_fixup could
+    /// silently neighbour-average it away and finish the run with quietly
+    /// wrong physics. C: f_flux_prime's isnan → my_err + exit(-1)
+    /// (physics.c:1230-1247). It lives in this shared evolution error set so
+    /// it threads through the sweep, the ChunkResult reduction, and the
+    /// driver's step-failure path unchanged.
+    NanInFlux,
 };
 
 pub inline fn dot(a: [4]f64, b: [4]f64) f64 {

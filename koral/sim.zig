@@ -105,6 +105,12 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub const FieldT = field_mod.Field(NV);
         pub const FaceT = FaceStore(NV);
 
+        /// A problem's boundary-condition hook. Returns the ghost-cell
+        /// primitives, or an Error — the fallible frame/velocity conversions a
+        /// boundary-adjacent cell can reach (SpacelikeVelocity,
+        /// VelocityConversionFailed) propagate instead of being swallowed by
+        /// `catch unreachable` (panic in safe builds, UB in ReleaseFast). The
+        /// sole caller setBcCell already returns Error!void.
         pub const SpecificBc = *const fn (
             sim: *const Self,
             ix: i64,
@@ -113,7 +119,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             t: f64,
             ifinit: bool,
             face: BcFace,
-        ) [NV]f64;
+        ) relele.Error![NV]f64;
 
         pub const Options = struct {
             coords: config.Coords,
@@ -233,6 +239,41 @@ pub fn Sim(comptime cfg: config.Config) type {
         timers: timers_mod.PassTimers = .{},
 
         pub fn init(allocator: std.mem.Allocator, g: Grid, opt: Options) !Self {
+            // Runtime precondition checks (P1 correctness). Each unchecked
+            // invariant otherwise fails far from its cause; we return
+            // error.InvalidConfig rather than std.debug.assert so ReleaseFast
+            // production builds are covered too. Cost is negligible (once/run).
+            //
+            // (1) Ghost depth must cover the reconstruction stencil. PPM's
+            //     unconditional i−2 load (with the ±1 MHD cross range) drives
+            //     Field.cellOffset's @intCast negative when g.ng is too small —
+            //     a safe-build panic, OOB UB in ReleaseFast — deep in the sweep.
+            if (g.ng < cfg.ghostCells()) return error.InvalidConfig;
+            // (2) A `.specific` boundary needs its callback, else setBcCell
+            //     unwraps a null specific_bc on the first ghost fill.
+            if ((opt.bc_x == .specific or opt.bc_y == .specific or opt.bc_z == .specific) and
+                opt.specific_bc == null) return error.InvalidConfig;
+            // (3) The runtime metric coords (drives the MetricCache) must match
+            //     the comptime coords every other consumer reads via Cfg.coords
+            //     (dynamo/scalars/puffy coco transforms); divergence silently
+            //     mixes two coordinate systems — wrong physics, no diagnostic.
+            if (opt.coords != cfg.coords) return error.InvalidConfig;
+            // (4) Radiative shear viscosity needs opacities: ν = α·mfp, mfp =
+            //     1/χ, and χ = calc_chi is undefined without opac. C's
+            //     SKIPRADSOURCE keeps viscosity active via mfp=1e50, but the Zig
+            //     path would silently store ν=0 with the sweep still running.
+            //     Reject the unsupported combination outright.
+            if (comptime L.hasVar(.ee)) {
+                if (opt.radviscosity and opt.opac == null) return error.InvalidConfig;
+            }
+            // (5) correct_polaraxis overwrites the most-polar nccorrectpolar rows
+            //     per side; with ny ≤ 2·nccorrectpolar every row is "corrected"
+            //     and the overwrite sources lie inside the overwritten band —
+            //     order-dependent garbage (the module supports reduced ny for
+            //     tests, so this is reachable).
+            if (opt.correct_polaraxis and
+                @as(i64, @intCast(g.ny)) <= 2 * opt.nccorrectpolar) return error.InvalidConfig;
+
             var self: Self = undefined;
             self.allocator = allocator;
             self.grid = g;
@@ -461,6 +502,16 @@ pub fn Sim(comptime cfg: config.Config) type {
                     }
                 }
             }
+        }
+
+        /// The CFL timestep from the last-computed wavespeeds: 1/tstepdenmax
+        /// (C: 1/tstepdenmax). Single source of truth for the dt that step()
+        /// uses and the driver recomputes — call it in both so they cannot
+        /// drift. Requires the denominator to have been seeded
+        /// (initTimestepGuess or a prior step); returns +inf if tstepdenmax is
+        /// still 0, which the driver's pre-step guard rejects.
+        pub fn cflDt(self: *const Self) f64 {
+            return 1.0 / self.tstepdenmax;
         }
 
         // ---- boundary conditions --------------------------------------------
@@ -1494,7 +1545,12 @@ pub fn Sim(comptime cfg: config.Config) type {
             const t = self.t;
             self.time = t; // C: global_time = t
 
-            self.own_dt = 1.0 / self.tstepdenmax;
+            // The CFL denominator must have been seeded (initTimestepGuess, part
+            // of C's solve preamble) or be forced — otherwise tstepdenmax is 0
+            // and own_dt is +inf → NaNs on the first step, diagnosed only far
+            // downstream. Turn that ordering bug into an immediate failure.
+            std.debug.assert(forced_dt != null or self.tstepdenmax > 0);
+            self.own_dt = self.cflDt();
             const dt = forced_dt orelse self.own_dt;
             self.dt = dt;
 

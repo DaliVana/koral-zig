@@ -429,6 +429,16 @@ corners; `base_order` (0/1/2) comes from `cfg.reconstruction`.
 `radvisc` params, `dynamo` + params, per-axis `bc_x/bc_y/bc_z`, `specific_bc`, and
 `nthreads`.
 
+`Sim.init` **validates its runtime preconditions** up front and returns
+`error.InvalidConfig` (not a `std.debug.assert`, so ReleaseFast is covered) rather than
+letting a violation fail deep in a hot loop: `g.ng ≥ cfg.ghostCells()` (PPM's `i−2` load
+would otherwise drive a padded index negative — a safe-build panic / ReleaseFast OOB), a
+`.specific` axis requires a non-null `specific_bc`, `opt.coords == cfg.coords` (the runtime
+metric coords must match the comptime coords the physics layer reads via `Cfg.coords`),
+`radviscosity` requires a non-null `opac` (ν = α·mfp needs opacities — otherwise C's
+SKIPRADSOURCE keeps viscosity active but the Zig path would silently store ν = 0), and
+`correct_polaraxis` requires `ny > 2·nccorrectpolar`.
+
 ### 5.2 The stage buffers (what each one holds)
 
 The IMEX arithmetic shuffles the conserved vector `u` through several whole-grid snapshot
@@ -456,10 +466,13 @@ b, f2, c)` computes `dst = a + f1·b + f2·c`. Both run over the domain in the e
 
 ### 5.3 `step()` — the exact sequence
 
-Read this alongside `sim.zig:1667`. `own_dt = 1/tstepdenmax` is the CFL dt that the
-*previous* step accumulated; `dt = forced_dt orelse own_dt`. The wavespeed accumulators are
-reset (`tstepdenmax = -1`), the once-per-step viscous stress is filled (if
-`radviscosity`), `γ = 1 − 1/√2`, and `saveTimesteps()` records each cell's `dt`. Then:
+Read this alongside `step()` in `sim.zig`. `own_dt = cflDt() = 1/tstepdenmax` is the CFL dt
+that the *previous* step accumulated; `dt = forced_dt orelse own_dt`. `step()` first asserts
+the denominator was seeded (`forced_dt != null or tstepdenmax > 0`) so a forgotten
+`initTimestepGuess` fails immediately instead of stepping with `dt = +inf`; the driver calls
+the same `cflDt()` so the two cannot drift. The wavespeed accumulators are then reset
+(`tstepdenmax = -1`), the once-per-step viscous stress is filled (if `radviscosity`),
+`γ = 1 − 1/√2`, and `saveTimesteps()` records each cell's `dt`. Then:
 
 ```
 step(dt):
@@ -756,7 +769,10 @@ for each ghost depth. Per-axis behaviour is `BcKind`:
 - **`.periodic`** — wraps the index (plus the C quirk: if `NY < NG` pin the index to 0).
 - **`.copy`** — clamps to the domain edge (outflow copy).
 - **`.specific`** — calls `opt.specific_bc`, the user-supplied `SpecificBc` function pointer
-  (PUFFY uses this for both radial and both polar faces).
+  (PUFFY uses this for both radial and both polar faces). The callback is **fallible**
+  (`relele.Error![NV]f64`): a boundary-adjacent cell can transiently reach a spacelike
+  velocity in a frame conversion, and `setBcCell` propagates that with `try` rather than
+  letting the BC swallow it (`catch unreachable` → panic in safe builds, UB in ReleaseFast).
 
 After filling a ghost cell's primitives, `setBcCell` runs p2u to derive its conserveds.
 If `wide` (MHD) and 2D (`ny>1, nz==1`), `setBc` calls `fillCorners2d` to fill the ghost

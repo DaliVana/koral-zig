@@ -184,4 +184,5 @@ test {
     _ = @import("restart_tests.zig");
     _ = @import("threading_tests.zig");
     _ = @import("puffystep_golden_tests.zig");
+    _ = @import("sim_tests.zig");
 }

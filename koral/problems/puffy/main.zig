@@ -431,8 +431,23 @@ pub fn main(init: std.process.Init) !void {
     s.timers.reset(); // drop init-time bc/u2p/wavespeed samples
     var hb = Heartbeat{ .last_ns = koral.sim.nowNs() };
     while (s.t < p.tmax and s.nstep < p.nstep_max) {
-        var dt = 1.0 / s.tstepdenmax; // CFL dt from the previous step's speeds
+        var dt = s.cflDt(); // CFL dt from the previous step's speeds
         if (s.t + dt > p.tmax) dt = p.tmax - s.t;
+
+        // Guard the timestep before stepping. A global blow-up leaves
+        // tstepdenmax stuck at its −1 reset sentinel (NaN fails the `>` update
+        // in save_wavespeeds), giving dt = −1 → time marches backwards and the
+        // NaN check below never fires; a diverging denominator gives dt → 0 and
+        // stalls. `!(dt > 0)` catches both; the isFinite guard is defensive.
+        // Abort loudly with a non-zero exit rather than spinning out garbage
+        // steps until nstep_max (P1 correctness).
+        if (!(dt > 0) or !std.math.isFinite(dt)) {
+            std.debug.print(
+                "puffy: invalid timestep dt={e} at step {d} t={d} (tstepdenmax={e}) — aborting\n",
+                .{ dt, s.nstep, s.t, s.tstepdenmax },
+            );
+            return error.InvalidTimestep;
+        }
 
         const step_t0 = koral.sim.nowNs();
         s.step(dt) catch |err| {
@@ -472,7 +487,9 @@ pub fn main(init: std.process.Init) !void {
             s.timers.reset();
             if (row.n_nan > 0) {
                 std.debug.print("puffy: NaN detected — aborting\n", .{});
-                return;
+                // Non-zero exit so batch scripts / CI treat a NaN-poisoned run
+                // as a failure rather than success (P1 correctness).
+                return error.NanDetected;
             }
             if (time_due) next_out += p.dtout1;
         }

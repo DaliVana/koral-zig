@@ -482,6 +482,12 @@ test "precompute: fillGeometry/fillGeometryFace agree with direct computation" {
         try std.testing.expectEqual(d.gdet, geo.gdet);
         try std.testing.expectEqual(d.gttpert, geo.gttpert);
         try expectClose(@sqrt(-1.0 / d.gcon[0][0]), geo.alpha, 1e-15, 0);
+        // gcon column 4 must be deterministic and match the on-the-fly
+        // geometryAt convention (rows 0..2 = 0, row 3 = gttpert). P1: storeBlocks
+        // used to leave GG[0..2][4] as alloc-garbage, so the cached Geometry
+        // differed bit-for-bit from the recomputed one and tripped msan.
+        for (0..3) |i| try std.testing.expectEqual(@as(f64, 0), geo.GG[i][4]);
+        try std.testing.expectEqual(d.gttpert, geo.GG[3][4]);
     }
 
     // faces: left x-face of cell 0 and the one-past-last x-face
@@ -491,6 +497,9 @@ test "precompute: fillGeometry/fillGeometryFace agree with direct computation" {
         const d = metric.compute(.mks2, puffy_mp, geo.xxvec);
         try std.testing.expectEqual(d.gcov[1][1], geo.gg[1][1]);
         try std.testing.expectEqual(d.gdet, geo.gdet);
+        // same col-4 determinism on the face path (fillGeometryFace)
+        for (0..3) |i| try std.testing.expectEqual(@as(f64, 0), geo.GG[i][4]);
+        try std.testing.expectEqual(d.gttpert, geo.GG[3][4]);
     }
     // y-face one past the last cell
     const geo_top = cache.fillGeometryFace(2, 6 + 3, 0, 1);

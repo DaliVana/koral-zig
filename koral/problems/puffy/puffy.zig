@@ -704,7 +704,7 @@ pub fn Bc(comptime SimT: type) type {
             t: f64,
             ifinit: bool,
             face: sim_mod.BcFace,
-        ) [NV]f64 {
+        ) relele.Error![NV]f64 {
             _ = t;
             _ = ifinit;
             const nx: i64 = @intCast(sim.grid.nx);
@@ -720,7 +720,7 @@ pub fn Bc(comptime SimT: type) type {
                     const geomBL = fillGeometryBL(&sim.grid, cfg.coords, ix, iy, iz);
 
                     // MHD prims to BL (ghost-cell geometries, as in C)
-                    pp = frames.transPmhdCoco(cfg, pp, &geom, &geomBL, mp) catch unreachable;
+                    pp = try frames.transPmhdCoco(cfg, pp, &geom, &geomBL, mp);
 
                     const geombdBL = fillGeometryBL(&sim.grid, cfg.coords, nx - 1, iy, iz);
                     const rghost = geomBL.xxvec[1];
@@ -745,28 +745,28 @@ pub fn Bc(comptime SimT: type) type {
                         pp[L.index(.fz)] *= scale1;
                     }
 
-                    pp = frames.transPmhdCoco(cfg, pp, &geomBL, &geom, mp) catch unreachable;
+                    pp = try frames.transPmhdCoco(cfg, pp, &geomBL, &geom, mp);
 
                     // no-inflow: gas
                     var ucon = [4]f64{ 0.0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
-                    ucon = relele.convVels(ucon, .velr, .vel4, &geom.gg, &geom.GG) catch unreachable;
+                    ucon = try relele.convVels(ucon, .velr, .vel4, &geom.gg, &geom.GG);
                     ucon = frames.trans2Coco(geom.xxvec, ucon, cfg.coords, .bl, mp);
                     if (ucon[1] < 0.0) {
                         ucon[1] = 0.0;
                         ucon = frames.trans2Coco(geomBL.xxvec, ucon, .bl, cfg.coords, mp);
-                        ucon = relele.convVels(ucon, .vel4, .velr, &geom.gg, &geom.GG) catch unreachable;
+                        ucon = try relele.convVels(ucon, .vel4, .velr, &geom.gg, &geom.GG);
                         pp[L.index(.vx)] = ucon[1];
                         pp[L.index(.vy)] = ucon[2];
                         pp[L.index(.vz)] = ucon[3];
                     }
                     if (comptime has_rad) {
                         var urf = [4]f64{ 0.0, pp[L.index(.fx)], pp[L.index(.fy)], pp[L.index(.fz)] };
-                        urf = relele.convVels(urf, .velr, .vel4, &geom.gg, &geom.GG) catch unreachable;
+                        urf = try relele.convVels(urf, .velr, .vel4, &geom.gg, &geom.GG);
                         urf = frames.trans2Coco(geom.xxvec, urf, cfg.coords, .bl, mp);
                         if (urf[1] < 0.0) {
                             urf[1] = 0.0;
                             urf = frames.trans2Coco(geomBL.xxvec, urf, .bl, cfg.coords, mp);
-                            urf = relele.convVels(urf, .vel4, .velr, &geom.gg, &geom.GG) catch unreachable;
+                            urf = try relele.convVels(urf, .vel4, .velr, &geom.gg, &geom.GG);
                             pp[L.index(.fx)] = urf[1];
                             pp[L.index(.fy)] = urf[2];
                             pp[L.index(.fz)] = urf[3];

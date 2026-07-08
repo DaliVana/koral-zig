@@ -243,7 +243,13 @@ pub fn calcRadViscCoeff(
     global_dt: f64,
 ) relele.Error!f64 {
     const cfg = SimT.Cfg;
-    const opac = &(sim.opt.opac orelse return 0);
+    // Sim.init rejects radviscosity with a null opac (there is no meaningful
+    // ν without opacities — cf. the precondition check), so on the production
+    // path this capture always binds. The `else return 0` stays as a defensive
+    // guard for any direct call; the optional-pointer capture avoids copying
+    // the whole ~300-byte Params to a stack temporary per cell per step (the
+    // idiom sim.zig uses at the wavespeed τ-limiter).
+    const opac = if (sim.opt.opac) |*o| o else return 0;
 
     const chi = try radforce.calcChiSlim(cfg, pp.*, geom, sim.opt.gam, opac);
     var mfp = 1.0 / chi;

@@ -276,3 +276,14 @@ natural conserved scale.
       implicit conditioning is worst — the chaotic FP-seed amplification of the
       stiff torus (bounded + plateauing, flags perfect), i.e. exactly the
       divergence that rules out end-to-end tests
+
+**Post-M13 hardening (2026-07-08):** a correctness pass over the full codebase
+(`docs/CODE_REVIEW_2026-07-06.md`, priority tier P1) — `Sim.init` now validates its
+runtime preconditions (ghost depth vs reconstruction, `.specific` axis ⇒ `specific_bc`,
+`opt.coords == cfg.coords`, `radviscosity` ⇒ `opac`, polar-row count) and returns
+`error.InvalidConfig`; `SpecificBc` is fallible (`relele.Error!`) so boundary conversions
+propagate instead of `catch unreachable`; `fFluxPrime` refuses a non-finite flux
+(`error.NanInFlux`) rather than letting `cellFixup` silently heal it; the driver guards its
+CFL dt and exits non-zero on a NaN/blow-up; and the metric cache zeroes its previously-
+undefined `gcon` column-4 slots (deterministic `Geometry`). All golden batteries remain
+byte-for-byte identical (`-Dslow-tests`: 215/216).

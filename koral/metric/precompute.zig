@@ -259,6 +259,13 @@ pub const MetricCache = struct {
         }
         for (0..3) |j| dst_g[off + j * 5 + 4] = d.dlgdet[j];
         dst_g[off + 3 * 5 + 4] = d.gdet;
+        // gcon column 4: row 3 holds gttpert; rows 0..2 are unused but MUST be
+        // written so the whole 4×5 block is deterministic — geometryFromBlocks
+        // copies all 20 slots into Geometry.GG, and the on-the-fly geometryAt
+        // (line 103) explicitly sets GG[i][4] = 0 for i<3. Leaving them at
+        // alloc-garbage made the cached and recomputed Geometry differ bit-for-
+        // bit and tripped msan/valgrind (P1 correctness).
+        for (0..3) |i| dst_gcon[off + i * 5 + 4] = 0;
         dst_gcon[off + 3 * 5 + 4] = d.gttpert;
     }
 

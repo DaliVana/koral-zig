@@ -158,7 +158,7 @@ fn setBcCell(comptime SimT: type, sim: *SimT, ix: i64, iy: i64, iz: i64, t: f64,
     var pp: [NV]f64 = undefined;
     switch (kind) {
         .specific => {
-            pp = sim.opt.specific_bc.?(sim, ix, iy, iz, t, ifinit, face);
+            pp = try sim.opt.specific_bc.?(sim, ix, iy, iz, t, ifinit, face);
         },
         .periodic, .copy => {
             var iix = ix;

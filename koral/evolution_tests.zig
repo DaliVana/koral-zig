@@ -645,7 +645,7 @@ const BondiCtx = struct {
         return pp;
     }
 
-    fn bc(s: *const SimKs, ix: i64, iy: i64, iz: i64, t: f64, ifinit: bool, face: sim_mod.BcFace) [SimKs.nv]f64 {
+    fn bc(s: *const SimKs, ix: i64, iy: i64, iz: i64, t: f64, ifinit: bool, face: sim_mod.BcFace) relele.Error![SimKs.nv]f64 {
         _ = iy;
         _ = iz;
         _ = t;

@@ -6,6 +6,11 @@
 //! correction (Rijvisc) is added on top at the faces by the sweep
 //! (sim.rijviscFace + radvisc.addRadViscFlux, M12), so it is absent from
 //! this function's golden records (harness_flux zeroes Rijviscglobal).
+//!
+//! Divergence from C: C's f_flux_prime calls my_err + exit(-1) on a NaN stress
+//! tensor (physics.c:1230-1247); we return error.NanInFlux instead so the
+//! sweep's `try` carries it to the driver's step-failure path (see the check
+//! at the end of fFluxPrime).
 
 const std = @import("std");
 const relele = @import("../relele.zig");
@@ -18,7 +23,8 @@ const layout = @import("../layout.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 /// C: f_flux_prime — flux vector at the face whose geometry is `geom`
-/// (idim: 0/1/2 for x/y/z). GDETIN == 1: gdetu = geom.gdet.
+/// (idim: 0/1/2 for x/y/z). GDETIN == 1: gdetu = geom.gdet. Returns
+/// relele.Error.NanInFlux if the assembled flux is non-finite (see below).
 pub fn fFluxPrime(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
@@ -93,6 +99,20 @@ pub fn fFluxPrime(
         for (0..4) |nu| {
             ff[L.index(.ee) + nu] = gdetu * rij_ud[idim + 1][nu];
         }
+    }
+
+    // C: f_flux_prime hard-aborts on any NaN in the stress tensor right after
+    // calc_Tij ('nan in flux_prime', physics.c:1230-1247 → my_err + exit(-1),
+    // compiled in for PUFFY). We check the assembled flux instead (so the
+    // radiative rows are covered too) and surface it as error.NanInFlux, which
+    // the sweep's `try` (sim.zig) propagates to the driver's step-failure path.
+    // The point is to pin the origin cell and close the between-outputs window
+    // where cell_fixup could otherwise neighbour-average a transient NaN away —
+    // making the run finish with quietly wrong physics and no trace. We do NOT
+    // exit(-1) (Zig-native error propagation); healthy states never trip this,
+    // so golden records are unaffected.
+    for (ff) |v| {
+        if (!std.math.isFinite(v)) return error.NanInFlux;
     }
 
     return ff;
