@@ -47,15 +47,18 @@ const r_scale: f64 = 15.0;
 const heartbeat_interval_ns: u64 = 1_000_000_000;
 
 fn options(p: *const koral.Params) SimT.Options {
+    // The physics param sets come from the puffy module's overridable state
+    // (defaults = the validated `.puffy` constants; `applyPhysicsOverrides`
+    // below may retarget them from the params file — the puffy_agn.toml preset).
     return .{
         .coords = .mks2,
         .mp = puffy.mp,
         .gam = puffy.gam,
         .tsteplim = p.tsteplim,
-        .floors = koral.solve.invert.FloorParams.puffy,
-        .rad = koral.solve.invert_rad.RadParams.puffy,
-        .opac = koral.physics.radforce.Params.puffyMass(p.mass),
-        .implicit = koral.solve.implicit.ImplicitParams.puffy,
+        .floors = puffy.floor_params,
+        .rad = puffy.rad_params,
+        .opac = koral.physics.radforce.Params.puffyMassChan(p.mass, puffy.composition, puffy.channels),
+        .implicit = puffy.impl_params,
         .correct_polaraxis = true,
         .nccorrectpolar = 2,
         .radviscosity = true,
@@ -65,6 +68,49 @@ fn options(p: *const koral.Params) SimT.Options {
         .specific_bc = &puffy.Bc(SimT).calc,
         .nthreads = p.nthreads,
     };
+}
+
+/// Apply the optional params-file physics overrides onto the puffy module's
+/// overridable state. Every override is `null` (→ keep the validated `.puffy`
+/// value) unless the file sets it, so a plain `puffy.toml` run is unchanged and
+/// the `puffy_agn.toml` preset retargets to the koral_lite_puffy configuration.
+/// Called once at startup BEFORE `options()`/`makeGridNz`/`initAll` so the whole
+/// chain (grid extents, torus, opacities, floors, solver) agrees. Note: several
+/// koral_lite_puffy settings are NOT ports and cannot be matched here — see
+/// docs/PUFFY_AGN_DIVERGENCES.md.
+fn applyPhysicsOverrides(p: *const koral.Params) void {
+    // MKS2 coordinate shape
+    if (p.mksr0) |v| puffy.mp.mksr0 = v;
+    if (p.mksh0) |v| puffy.mp.mksh0 = v;
+    // torus entropy constant / β-norm target / atmosphere floors
+    if (p.lt_kappa) |v| puffy.lt_kappa = v;
+    if (p.maxbeta) |v| puffy.maxbeta = v;
+    if (p.rhoatmmin) |v| puffy.rhoatmmin = v;
+    if (p.atm_tgas) |v| puffy.atm_tgas = v;
+    if (p.atm_trad_init) |v| puffy.atm_trad_init = v;
+    if (p.atm_erad_factor) |v| puffy.atm_erad_factor = v;
+    // gas composition: giving hfrac switches to the formula-based μ's (no MU_*
+    // override), matching koral_lite_puffy's HFRAC/HEFRAC/MFRAC path.
+    if (p.hfrac) |h| puffy.composition = .{ .hfrac = h, .hefrac = p.hefrac orelse 0.0 };
+    // opacity channels
+    if (p.bremsstrahlung) |b| puffy.channels.bremsstrahlung = b;
+    if (p.kleinnishina) |b| puffy.channels.kleinnishina = b;
+    // rmhd floors / ceilings
+    if (p.rhofloor) |v| puffy.floor_params.rhofloor = v;
+    if (p.uurhoratiomin) |v| puffy.floor_params.uurhoratiomin = v;
+    if (p.uurhoratiomax) |v| puffy.floor_params.uurhoratiomax = v;
+    if (p.b2rhoratiomax) |v| puffy.floor_params.b2rhoratiomax = v;
+    if (p.b2uuratiomax) |v| puffy.floor_params.b2uuratiomax = v;
+    if (p.gammamaxhd) |v| puffy.floor_params.gammamaxhd = v;
+    // radiation caps / floors
+    if (p.gammamaxrad) |v| puffy.rad_params.gammamaxrad = v;
+    if (p.eerhoratiomin) |v| puffy.rad_params.eerhoratiomin = v;
+    if (p.eerhoratiomax) |v| puffy.rad_params.eerhoratiomax = v;
+    if (p.eeuuratiomin) |v| puffy.rad_params.eeuuratiomin = v;
+    if (p.eeuuratiomax) |v| puffy.rad_params.eeuuratiomax = v;
+    // implicit rad–gas solver
+    if (p.radimpeps) |v| puffy.impl_params.eps = v;
+    if (p.radimpmaxiter) |v| puffy.impl_params.maxiter = v;
 }
 
 /// Domain diagnostics for one output row (finite/NaN + fixup counters).
@@ -295,7 +341,8 @@ pub fn main(init: std.process.Init) !void {
     // (e.g. the Sagittarius A* presets: ~4.3e6 M☉, and a ≈ 0.5–0.9). Set them
     // before options()/initAll so the whole chain agrees: MASS drives the
     // torus thermo/opacity/radiation-floor unit scale (consts()/atmConsts()
-    // and — via options() → radforce.puffyMass(p.mass) — the stepping opacity);
+    // and — via options() → radforce.puffyMassChan(p.mass, …) — the stepping
+    // opacity);
     // BHSPIN (mp.a) drives the metric, the limotorus construction, and the
     // dynamo's horizon/ISCO/Ωₖ. options() copies puffy.mp into the sim, so mp.a
     // must be set first. RMIN is recomputed from the spin BEFORE makeGridNz so
@@ -308,6 +355,12 @@ pub fn main(init: std.process.Init) !void {
     // outflow/wind run. MKSR0/MKSH0 stay fixed PUFFY constants.
     puffy.mass = p.mass;
     puffy.mp.a = p.bhspin;
+    // Apply the optional physics overrides (coords, floors, opacities, torus,
+    // atmosphere, solver) BEFORE deriving rmin/makeGrid/options — a plain
+    // puffy.toml sets none of these and runs exactly as before; puffy_agn.toml
+    // retargets to the koral_lite_puffy AGN config. This can set mp.mksr0, so
+    // it must run before rminForSpin/makeGridNz (both read mp.mksr0).
+    applyPhysicsOverrides(&p);
     puffy.rmin = if (p.rmin > 0.0) p.rmin else puffy.rminForSpin(p.bhspin);
     if (p.rmax > 0.0) puffy.rmax = p.rmax; // else keep the fiducial 500 M
 

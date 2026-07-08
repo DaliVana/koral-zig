@@ -37,6 +37,10 @@ const mhd = @import("../../physics/bfield.zig");
 const thermo = @import("../../physics/thermo.zig");
 const radiation = @import("../../physics/radiation.zig");
 const invert_rad = @import("../../solve/invert_rad.zig");
+const invert = @import("../../solve/invert.zig");
+const implicit = @import("../../solve/implicit.zig");
+const opacities = @import("../../physics/opacities.zig");
+const radforce = @import("../../physics/radforce.zig");
 const units_mod = @import("../../units.zig");
 const metric = @import("../../metric/metric.zig");
 const coco = @import("../../metric/coco.zig");
@@ -101,11 +105,46 @@ pub fn rminForSpin(a: f64) f64 {
 /// in GM units and only weakly (inward) spin-dependent, so 500 always contains
 /// it; enlarging RMAX is a modeling choice, not an auto-tracked scale.
 pub var rmax: f64 = 500.0; // RMAX
-pub const rhoatmmin: f64 = 1.0e-24; // RHOATMMIN
-pub const maxbeta: f64 = 1.0 / 20.0; // MAXBETA (after #undef, BETANORMFULL)
+
+// ---------------------------------------------------------------------------
+// AGN-preset-overridable physics state.
+//
+// These module globals default to the VALIDATED koral_lite PUFFY values
+// (10 M☉ torus, PROBLEM 147) so tests and every golden — which never write
+// them — are bit-for-bit unchanged. `PROBLEMS/puffy/main.zig` overwrites them
+// once at startup from the params file (like `mass`/`mp`/`rmin`/`rmax` above),
+// which is how the `puffy_agn.toml` preset retargets the run to the
+// koral_lite_puffy AGN configuration without disturbing the const `.puffy`
+// defaults the tests pin against. See docs/PUFFY_AGN_DIVERGENCES.md for what
+// this can and cannot match.
+pub var rhoatmmin: f64 = 1.0e-24; // RHOATMMIN
+pub var maxbeta: f64 = 1.0 / 20.0; // MAXBETA (after #undef, BETANORMFULL)
+pub var lt_kappa: f64 = 6.0e1; // LT_KAPPA
+
+/// TGASATMMIN — gas temperature the atmosphere floor UINTATMMIN is built at.
+pub var atm_tgas: f64 = 1.0e10;
+/// ATMTRADINIT — radiation temperature the atmosphere floor ERADATMMIN uses.
+pub var atm_trad_init: f64 = 3.0e5;
+/// ERADATMMIN form selector. `null` = the validated Brandon collapsing-sim
+/// form `LTE(atm_trad_init)/10·6.62/MASS`; when set (AGN preset), the
+/// koral_lite_puffy form `atm_erad_factor·LTE(atm_trad_init)`.
+pub var atm_erad_factor: ?f64 = null;
+
+/// Floor/ceiling set (C: choices.h + PROBLEMS/PUFFY/define.h). Default is the
+/// validated `.puffy`; the AGN preset widens it via main.zig.
+pub var floor_params: invert.FloorParams = invert.FloorParams.puffy;
+/// Radiation caps/floors (C: define.h EE*/GAMMAMAXRAD). Used by both the init
+/// `pradFf2Lab` and the stepping u2p_rad, so it lives here (one source).
+pub var rad_params: invert_rad.RadParams = invert_rad.RadParams.puffy;
+/// Implicit rad–gas solver knobs (C: define.h RADIMP*).
+pub var impl_params: implicit.ImplicitParams = implicit.ImplicitParams.puffy;
+/// Gas composition (C: MU_* or HFRAC/HEFRAC/MFRAC). Feeds `consts()` and the
+/// stepping opacity params — one source keeps them consistent.
+pub var composition: thermo.Composition = thermo.Composition.puffy;
+/// Opacity channels (C: BREMSSTRAHLUNG/SYNCHROTRON/KLEINNISHINA/COMPTONIZATION).
+pub var channels: opacities.Channels = opacities.Channels.puffy;
 
 pub const lt = struct {
-    pub const kappa: f64 = 6.0e1; // LT_KAPPA
     pub const xi: f64 = 0.995; // LT_XI
     pub const r1: f64 = 20.0; // LT_R1
     pub const r2: f64 = 350.0; // LT_R2
@@ -141,7 +180,7 @@ pub fn makeGridNz(nx: usize, ny: usize, nz: usize) Grid {
 }
 
 pub fn consts() thermo.Consts {
-    return thermo.Consts.init(units_mod.Units.init(mass), thermo.Composition.puffy);
+    return thermo.Consts.init(units_mod.Units.init(mass), composition);
 }
 
 /// UINTATMMIN / ERADATMMIN (define.h:221/225), computed once.
@@ -149,9 +188,14 @@ pub const Atm = struct { uintatmmin: f64, eradatmmin: f64 };
 
 pub fn atmConsts(con: *const thermo.Consts) Atm {
     return .{
-        .uintatmmin = thermo.uFromTrho(con, 1.0e10, rhoatmmin, gam),
-        // calc_LTE_EfromT(3.e5)/10*6.62/MASS — Brandon's collapsing-sim value
-        .eradatmmin = con.lteEfromT(3.0e5) / 10.0 * 6.62 / mass,
+        .uintatmmin = thermo.uFromTrho(con, atm_tgas, rhoatmmin, gam),
+        // Default (validated): calc_LTE_EfromT(3.e5)/10*6.62/MASS — Brandon's
+        // collapsing-sim value. With `atm_erad_factor` set (AGN preset), the
+        // koral_lite_puffy form  ERADATMMIN = factor·calc_LTE_EfromT(ATMTRADINIT).
+        .eradatmmin = if (atm_erad_factor) |f|
+            f * con.lteEfromT(atm_trad_init)
+        else
+            con.lteEfromT(atm_trad_init) / 10.0 * 6.62 / mass,
     };
 }
 
@@ -368,7 +412,7 @@ pub fn initDsandvels(r: f64, th: f64, a: f64, tc: *const TorusConsts) DsVels {
     const R = r * @sin(th);
     if (R < lt.rin) return .{ .rho = -1.0, .uu = 0.0, .ell = 0.0 };
 
-    const kappa = lt.kappa;
+    const kappa = lt_kappa;
     const gd = computeGd(r, th, a);
     const lam = lamBL(R, gd, a, tc.lambreak1, tc.lambreak2, lt.xi);
     const l = l3d(lam, a, tc.lambreak1, tc.lambreak2, lt.xi);
@@ -511,7 +555,7 @@ pub fn prepInitCell(
     setHdAtmosphere(cfg, &ppback, geom, atm);
     if (has_rad) setRadAtmosphere(cfg, &ppback, geom, atm);
 
-    uint = lt.kappa * std.math.pow(f64, rho, lt.gamma) / (lt.gamma - 1.0);
+    uint = lt_kappa * std.math.pow(f64, rho, lt.gamma) / (lt.gamma - 1.0);
     ell *= -1.0;
 
     const GGBL = &geomBL.GG;
@@ -546,7 +590,7 @@ pub fn prepInitCell(
         pp[L.index(.fz)] = 0.0;
 
         // BL fluid-frame radiative primitives → BL lab
-        try radiation.pradFf2Lab(cfg, &pp, geomBL, invert_rad.RadParams.puffy);
+        try radiation.pradFf2Lab(cfg, &pp, geomBL, rad_params);
     }
 
     // BL → MYCOORDS

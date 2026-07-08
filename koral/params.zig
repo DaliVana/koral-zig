@@ -27,8 +27,11 @@ pub const Params = struct {
     // internal bounds (e.g. MINX = ln(rmin − mksr0) for MKS2).
     rmin: f64 = 0.0,
     rmax: f64 = 0.0,
-    mksr0: f64 = 0.0,
-    mksh0: f64 = 1.0,
+    // MKS2 coordinate shape (C: MKSR0/MKSH0). Optional so a preset can retarget
+    // them (MKSR0 may be negative) while a run that omits them keeps the
+    // problem's built-in constants. null = not overridden.
+    mksr0: ?f64 = null,
+    mksh0: ?f64 = null,
     miny: f64 = 0.0,
     maxy: f64 = 1.0,
     minz: f64 = 0.0,
@@ -50,16 +53,47 @@ pub const Params = struct {
     nout_step: usize = 0,
     out_dir: []const u8 = "dumps",
 
-    // floors & ceilings (C: choices.h / define.h)
-    rhofloor: f64 = 1.0e-30,
-    uurhoratiomin: f64 = 1.0e-8,
-    uurhoratiomax: f64 = 1.0e2,
-    eerhoratiomin: f64 = 1.0e-20,
-    eerhoratiomax: f64 = 1.0e20,
-    b2rhoratiomax: f64 = 100.0,
-    b2uuratiomax: f64 = 100.0,
-    gammamaxhd: f64 = 100.0,
-    gammamaxrad: f64 = 100.0,
+    // Floors & ceilings and other per-run physics knobs (C: choices.h /
+    // define.h). All OPTIONAL overrides: `null` (a key the file omits) keeps
+    // the problem's built-in value; a set value overrides it. This is how the
+    // `puffy_agn.toml` preset retargets koral-zig to the koral_lite_puffy AGN
+    // configuration without disturbing the validated `.puffy` constants the
+    // goldens pin against. Consumed by PROBLEMS/puffy/main.zig; see
+    // docs/PUFFY_AGN_DIVERGENCES.md.
+    rhofloor: ?f64 = null,
+    uurhoratiomin: ?f64 = null,
+    uurhoratiomax: ?f64 = null,
+    eerhoratiomin: ?f64 = null,
+    eerhoratiomax: ?f64 = null,
+    eeuuratiomin: ?f64 = null,
+    eeuuratiomax: ?f64 = null,
+    b2rhoratiomax: ?f64 = null,
+    b2uuratiomax: ?f64 = null,
+    gammamaxhd: ?f64 = null,
+    gammamaxrad: ?f64 = null,
+
+    // implicit rad–gas solver (C: RADIMP*)
+    radimpeps: ?f64 = null,
+    radimpmaxiter: ?usize = null,
+
+    // opacity channels (C: BREMSSTRAHLUNG / KLEINNISHINA on/off)
+    bremsstrahlung: ?bool = null,
+    kleinnishina: ?bool = null,
+
+    // gas composition (C: HFRAC/HEFRAC; MFRAC is derived = 1−hfrac−hefrac).
+    // When hfrac is set the μ's come from the composition formula (no MU_*
+    // override); when omitted the problem's built-in composition is kept.
+    hfrac: ?f64 = null,
+    hefrac: ?f64 = null,
+
+    // torus / atmosphere / β-normalization (C: LT_KAPPA, MAXBETA, RHOATMMIN,
+    // TGASATMMIN, ATMTRADINIT, and the ERADATMMIN factor form).
+    lt_kappa: ?f64 = null,
+    maxbeta: ?f64 = null,
+    rhoatmmin: ?f64 = null,
+    atm_tgas: ?f64 = null,
+    atm_trad_init: ?f64 = null,
+    atm_erad_factor: ?f64 = null,
 
     // execution
     deterministic: bool = false,
@@ -148,6 +182,13 @@ pub const Params = struct {
     }
 
     fn parseValue(comptime T: type, allocator: std.mem.Allocator, val: []const u8) !T {
+        // Optional field: parse the inner type; a present key always means a
+        // value (there is no syntax for writing `null`), which coerces to the
+        // optional. An absent key keeps the null default and never gets here.
+        switch (@typeInfo(T)) {
+            .optional => |opt| return try parseValue(opt.child, allocator, val),
+            else => {},
+        }
         return switch (T) {
             f64 => std.fmt.parseFloat(f64, val),
             usize => std.fmt.parseInt(usize, val, 10),
@@ -196,10 +237,28 @@ test "params: parse TOML subset with sections, comments, all value kinds" {
     try std.testing.expectEqual(@as(usize, 360), p.ny);
     try std.testing.expectEqual(@as(usize, 1), p.nz); // default
     try std.testing.expectApproxEqRel(@as(f64, 1.85), p.rmin, 1e-15);
+    try std.testing.expectEqual(@as(?f64, 0.1), p.mksr0); // optional, provided
     try std.testing.expectEqual(true, p.deterministic);
     try std.testing.expectEqualStrings("out/puffy", p.out_dir);
-    // untouched defaults survive
-    try std.testing.expectEqual(@as(f64, 1.0e-30), p.rhofloor);
+    // untouched optional override defaults stay null (→ keep the built-in)
+    try std.testing.expectEqual(@as(?f64, null), p.rhofloor);
+    try std.testing.expectEqual(@as(?f64, null), p.mksh0);
+}
+
+test "params: optional physics overrides parse and default to null" {
+    var p = try Params.parse(
+        std.testing.allocator,
+        "hfrac = 0.70\nkleinnishina = false\nradimpmaxiter = 50\nlt_kappa = 8.e-2\nmksr0 = -1.5\n",
+    );
+    defer p.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?f64, 0.70), p.hfrac);
+    try std.testing.expectEqual(@as(?bool, false), p.kleinnishina);
+    try std.testing.expectEqual(@as(?usize, 50), p.radimpmaxiter);
+    try std.testing.expectEqual(@as(?f64, 8.0e-2), p.lt_kappa);
+    try std.testing.expectEqual(@as(?f64, -1.5), p.mksr0);
+    // an omitted override stays null → main.zig keeps the built-in value
+    try std.testing.expectEqual(@as(?bool, null), p.bremsstrahlung);
+    try std.testing.expectEqual(@as(?f64, null), p.maxbeta);
 }
 
 test "params: unknown key is an error (typo protection)" {

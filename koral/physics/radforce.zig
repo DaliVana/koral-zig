@@ -83,7 +83,20 @@ pub const Params = struct {
     /// floors). Used by the Sagittarius A* preset (MASS ≈ 4.3e6). The goldens
     /// stay on `puffy()` at MASS = 10.
     pub fn puffyMass(mass_msun: f64) Params {
-        var p = init(units_mod.Units.init(mass_msun), thermo.Composition.puffy);
+        return puffyMassChan(mass_msun, thermo.Composition.puffy, .{});
+    }
+
+    /// The PUFFY build at an arbitrary mass with an explicit gas composition
+    /// and opacity channel set — the entry point the `puffy_agn.toml` preset
+    /// uses to retarget to the koral_lite_puffy configuration (HFRAC/HEFRAC/
+    /// MFRAC metallicity, bremsstrahlung/Klein–Nishina toggled). Klein–Nishina
+    /// scattering (`kappaes = .puffy`) is still the PUFFY hook; its KN
+    /// correction is itself gated by `chan.kleinnishina`, so switching that
+    /// channel off falls back to plain Thomson. `puffyMassChan(m,
+    /// Composition.puffy, .{})` is bit-identical to `puffyMass(m)`.
+    pub fn puffyMassChan(mass_msun: f64, comp: thermo.Composition, chan: opacities.Channels) Params {
+        var p = init(units_mod.Units.init(mass_msun), comp);
+        p.channels = chan;
         p.kappaes = .puffy;
         return p;
     }

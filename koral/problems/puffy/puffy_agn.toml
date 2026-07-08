@@ -1,0 +1,108 @@
+# PUFFY — AGN preset, matching koral_lite_puffy/PROBLEMS/PUFFY/define.h
+# ============================================================================
+# WHAT THIS IS
+# ----------------------------------------------------------------------------
+# A 10^9 M_sun AGN torus: the configuration currently committed in the sibling
+# C tree `koral_lite_puffy/` (PROBLEM 147), retargeted onto koral-zig at RUNTIME
+# via the optional override fields in koral/params.zig. It leaves the validated
+# `.puffy` constants (the 10 M_sun torus koral-zig is golden-tested against)
+# untouched, so `zig build test` is unaffected — only this run is retargeted.
+#
+#   zig build -Doptimize=ReleaseFast
+#   ./zig-out/bin/puffy koral/problems/puffy/puffy_agn.toml
+#
+# !!! NOT BIT-COMPARABLE TO koral_lite_puffy !!!
+# ----------------------------------------------------------------------------
+# Several koral_lite_puffy settings are physics features that are NOT ported to
+# koral-zig and CANNOT be reproduced by any toml value. The headline one:
+#
+#   * MESA_KAPPA — koral_lite_puffy gets its ABSORPTION opacity from the MESA
+#     tables and has BREMSSTRAHLUNG switched OFF. koral-zig has no MESA loader,
+#     so with bremsstrahlung off (as set below, to match the define.h) the only
+#     absorption left is SYNCHROTRON. Free-free / bound-free / line absorption
+#     from MESA are simply ABSENT. This materially changes the radiation–matter
+#     coupling of the run.
+#
+# The full list of unported / divergent settings — MESA, the synchrotron bridge
+# functions, ZAMO b^2/rho floor frame, MAXDIFFTRADS, opacity damping in the
+# implicit solver, UUEERATIOMAX, near-axis rad-wavespeed damping, radimp
+# fixups, u2pconv — is in docs/PUFFY_AGN_DIVERGENCES.md. Read it before treating
+# any output as "the koral_lite_puffy run."
+# ============================================================================
+
+[physical]
+mass   = 1.0e9     # MASS  (was 10 for the validated torus)
+bhspin = 0.0       # BHSPIN — Schwarzschild
+# GAMMA 5/3 is a compile-time constant in the puffy module (puffy.gam); the
+# `gam` key is not read by this problem.
+
+[coords]
+# MKS2COORDS shape (define.h). MKSR0 is negative here — handled via the optional
+# mksr0/mksh0 params. RMIN 1.85 / RMAX 500 are the defaults (rmin left unset so
+# it auto-tracks the horizon; = 1.85 at a = 0).
+mksr0 = -1.5       # MKSR0  (was 0.1)
+mksh0 = 0.875      # MKSH0  (was 0.9)
+
+[grid]
+nx = 384           # TNX
+ny = 384           # TNY  (was 360 for the validated torus)
+nz = 1             # TNZ — 2D axisymmetric
+
+[run]
+tstart    = 0.0
+tmax      = 50000.0     # GM/c^3. At 1e9 M_sun, GM/c^3 ~= 4930 s, so this is
+                        # ~2853 days simulated — cut it down for a first look.
+nstep_max = 100000000   # effectively uncapped; tmax is the real stop
+tsteplim  = 0.5         # TSTEPLIM
+dtout1    = 100.0       # DTOUT1 — scalars + KDMP checkpoint + silo cadence
+dtout2    = 500.0       # DTOUT2
+nout_step = 0           # 0 = time-based only. Set e.g. 200 to force early
+                        # frames while the disk is still near t=0 (the first
+                        # DTOUT1 frame at t=100 is many steps away on 384x384).
+out_dir   = "dumps/puffy_agn"
+nthreads  = 12          # shared-memory worker team (1 = serial)
+
+# --- rmhd floors & ceilings (define.h) --------------------------------------
+[floors]
+rhofloor      = 1.0e-40   # RHOFLOOR       (was 1e-30)
+uurhoratiomin = 1.0e-10   # UURHORATIOMIN  (was 1e-8)
+uurhoratiomax = 1.0e2     # UURHORATIOMAX  (was 1e0)
+eerhoratiomin = 1.0e-20   # EERHORATIOMIN
+eerhoratiomax = 1.0e20    # EERHORATIOMAX  (was 1e4)
+eeuuratiomin  = 1.0e-20   # EEUURATIOMIN
+eeuuratiomax  = 1.0e20    # EEUURATIOMAX
+b2rhoratiomax = 50.0      # B2RHORATIOMAX
+b2uuratiomax  = 1.0e3     # B2UURATIOMAX   (was 50)
+gammamaxhd    = 10.0      # GAMMAMAXHD
+gammamaxrad   = 10.0      # GAMMAMAXRAD
+
+# --- implicit rad–gas solver (define.h RADIMP*) -----------------------------
+# Only the two that differ from ImplicitParams.puffy are set; RADIMPCONV 1e-10,
+# RADIMPCONVREL 1e-8, RADIMPLICITDAMPINGFACTOR 3, MAXRADIMPDAMPING 1e-3,
+# RADIMP_START_WITH_BISECT, SCALE_JACOBIAN, ALLOWRADCEILINGINIMPLICIT,
+# ALLOWFORENTRINF4DPRIM already match.
+[implicit]
+radimpeps     = 1.0e-5    # RADIMPEPS      (was 1e-6)
+radimpmaxiter = 50        # RADIMPMAXITER  (was 40)
+
+# --- opacities & composition (define.h) -------------------------------------
+# BREMSSTRAHLUNG is OFF and Klein–Nishina is OFF, matching the define.h. See the
+# MESA warning in the header: absorption is synchrotron-only here.
+[opacities]
+bremsstrahlung = false    # BREMSSTRAHLUNG commented out (was on)
+kleinnishina   = false    # KLEINNISHINA commented out (was on)
+# SYNCHROTRON + COMPTONIZATION stay on (Channels.puffy defaults).
+
+[composition]
+hfrac = 0.70              # HFRAC   (matches MESA a09_z0.02_x0.7)
+hefrac = 0.28             # HEFRAC  (MFRAC = 1-hfrac-hefrac = 0.02 is derived)
+
+# --- torus / atmosphere / β-normalization (define.h) ------------------------
+[torus]
+lt_kappa       = 8.0e-2                # LT_KAPPA   (was 6e1 — 750x smaller)
+maxbeta        = 0.03333333333333333  # MAXBETA = 1/30  (was 1/20)
+rhoatmmin      = 1.0e-20              # RHOATMMIN  (was 1e-24)
+atm_tgas       = 1.0e4               # TGASATMMIN (was 1e10)
+atm_trad_init  = 3.0e4              # ATMTRADINIT (was 3e5)
+atm_erad_factor = 1.0e-8          # ERADATMMIN = factor * LTE(atm_trad_init)
+                                 # koral_lite_puffy: (1e-8)*calc_LTE_EfromT(3e4)
