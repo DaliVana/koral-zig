@@ -149,6 +149,7 @@ pub fn readKstp(allocator: std.mem.Allocator, comptime relpath: []const u8) !Kst
     // infer the flag count from the file length
     {
         const ncell = k.nx * k.ny * k.nz;
+        if (k.nrec == 0 or ncell == 0) return error.BadGoldenFile; // guard the divides below
         const per_rec = (raw.len - 32) / 8 / k.nrec;
         if (per_rec < 2 + 2 * ncell * k.nv) return error.BadGoldenFile;
         k.nflags = (per_rec - 2 - 2 * ncell * k.nv) / ncell;
@@ -210,10 +211,6 @@ pub fn sym10(vals: []const f64) [4][5]f64 {
 pub fn geomFromRecord(vals: []const f64, coords: config.Coords, x: [4]f64) Geometry {
     var geo = Geometry{
         .coords = coords,
-        .ix = 0,
-        .iy = 0,
-        .iz = 0,
-        .ifacedim = -1,
         .xxvec = x,
         .gg = sym10(vals[0..10]),
         .GG = sym10(vals[10..20]),
@@ -225,13 +222,13 @@ pub fn geomFromRecord(vals: []const f64, coords: config.Coords, x: [4]f64) Geome
     return geo;
 }
 
-pub fn coordsFromId(id: f64) config.Coords {
+pub fn coordsFromId(id: f64) !config.Coords {
     return switch (@as(u32, @intFromFloat(id))) {
         1 => .bl,
         2 => .ks,
         4 => .mink,
         10 => .mks2,
-        else => unreachable,
+        else => error.BadGoldenFile, // value read straight from the file
     };
 }
 
@@ -325,6 +322,7 @@ pub fn readKini(allocator: std.mem.Allocator, comptime relpath: []const u8) !Kin
     const nvars: usize = @intCast(rd.i32at(raw, 36));
     var off: usize = 40;
     k.vars = try allocator.alloc(i32, nvars);
+    errdefer allocator.free(k.vars); // a later BadGoldenFile must not leak vars
     for (0..nvars) |i| {
         k.vars[i] = rd.i32at(raw, off);
         off += 4;

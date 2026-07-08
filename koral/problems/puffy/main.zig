@@ -71,7 +71,6 @@ fn options(p: *const koral.Params) SimT.Options {
 const Diag = struct {
     n_nan: u64 = 0,
     n_hd_fixup: u64 = 0,
-    n_rad_fixup: u64 = 0,
 };
 
 fn collectDiag(s: *const SimT) Diag {
@@ -91,9 +90,6 @@ fn collectDiag(s: *const SimT) Diag {
                     }
                 }
                 if (s.getFlag(.hd_fixup, ix, iy, iz) != 0) d.n_hd_fixup += 1;
-                if (comptime L.hasVar(.ee)) {
-                    if (s.getFlag(.rad_fixup, ix, iy, iz) != 0) d.n_rad_fixup += 1;
-                }
             }
         }
     }
@@ -127,10 +123,9 @@ fn scalarRow(s: *SimT, dt: f64) !dump.ScalarRow {
     };
 }
 
-fn writeScalars(io: std.Io, out_dir: []const u8, allocator: std.mem.Allocator, log: []const u8) void {
+fn writeScalars(io: std.Io, out_dir: []const u8, log: []const u8) void {
     var buf: [1024]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "{s}/scalars.dat", .{out_dir}) catch return;
-    _ = allocator;
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = log }) catch |err| {
         std.debug.print("puffy: cannot write {s}: {s}\n", .{ path, @errorName(err) });
     };
@@ -418,7 +413,7 @@ pub fn main(init: std.process.Init) !void {
     {
         const row = try scalarRow(&s, 0.0);
         try dump.appendScalarLine(&log, allocator, row);
-        writeScalars(io, p.out_dir, allocator, log.items);
+        writeScalars(io, p.out_dir, log.items);
         // A fresh run writes frame 0 as its first checkpoint; a restart already
         // has frame out_idx on disk, so it only re-seeds the diagnostics.
         if (!restarted) {
@@ -471,7 +466,7 @@ pub fn main(init: std.process.Init) !void {
             out_idx += 1;
             const row = try scalarRow(&s, dt);
             try dump.appendScalarLine(&log, allocator, row);
-            writeScalars(io, p.out_dir, allocator, log.items);
+            writeScalars(io, p.out_dir, log.items);
             // The KDMP dump is the restart checkpoint (C writes it every
             // DTOUT1), so emit it on every output frame — a `--restart` on this
             // out_dir then continues from the newest one.

@@ -6,6 +6,14 @@
 
 const std = @import("std");
 
+comptime {
+    // `-Dmpi` is plumbed through build_options, but no MPI backend exists yet.
+    // Fail the build loudly on misuse — and this read keeps the option from
+    // being dead plumbing until the backend lands.
+    if (@import("build_options").mpi)
+        @compileError("koral: -Dmpi is set but the MPI backend is not implemented; build without it");
+}
+
 pub const config = @import("config.zig");
 pub const Config = config.Config;
 pub const Module = config.Module;
@@ -25,9 +33,6 @@ pub const Field = field.Field;
 
 pub const params = @import("params.zig");
 pub const Params = params.Params;
-
-pub const state = @import("state.zig");
-pub const State = state.State;
 
 pub const geometry = @import("geometry.zig");
 pub const Geometry = geometry.Geometry;
@@ -120,7 +125,6 @@ test {
     _ = grid;
     _ = field;
     _ = params;
-    _ = state;
     _ = comm.serial;
     _ = geometry;
     _ = math.dual;

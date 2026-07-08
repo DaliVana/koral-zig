@@ -171,7 +171,7 @@ pub fn calcRadWavespeeds(
 
     // unlimited rad wavespeeds, used for the time step
     const a0 = wavespeeds.lrCore(urf, &geom.GG, .{ rv2rad, rv2rad, rv2rad }, active_dims);
-    for (0..6) |i| aval[i] = a0[i];
+    aval[0..6].* = a0;
 
     // damped by the optical depth (Sądowski+13a); default branch only
     var rv2dim: [3]f64 = undefined;
@@ -188,7 +188,7 @@ pub fn calcRadWavespeeds(
     const rv2z = rv2dim[1]; // C quirk (rad.c:3702): z uses the y depth
 
     const a1 = wavespeeds.lrCore(urf, &geom.GG, .{ rv2x, rv2y, rv2z }, active_dims);
-    for (0..6) |i| aval[6 + i] = a1[i];
+    aval[6..12].* = a1;
 
     return aval;
 }

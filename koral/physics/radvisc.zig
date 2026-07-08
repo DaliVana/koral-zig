@@ -381,10 +381,8 @@ fn rijViscRows(comptime SimT: type, sim: *SimT, global_dt: f64, iy0: i64, iy1: i
                 sim.p.load(ix, iy, iz, &pp);
                 const geom = sim.cache.fillGeometry(ix, iy, iz);
                 const rvisc = try calcRijVisc(SimT, sim, ix, iy, iz, &pp, &geom, global_dt);
-                var t: [16]f64 = undefined;
-                for (0..4) |i| {
-                    for (0..4) |j| t[i * 4 + j] = rvisc[i][j];
-                }
+                // [4][4]f64 is row-major contiguous → bit-identical flatten.
+                const t: [16]f64 = @bitCast(rvisc);
                 sim.rijvisc.store(ix, iy, iz, &t);
             }
         }

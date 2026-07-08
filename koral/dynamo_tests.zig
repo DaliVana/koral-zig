@@ -124,10 +124,6 @@ fn expectBits(x: f64, y: f64) !void {
 /// Every numeric field of two Geometry blocks agrees bit-for-bit.
 fn expectGeomBits(c: *const Geometry, f: *const Geometry) !void {
     try std.testing.expectEqual(c.coords, f.coords);
-    try std.testing.expectEqual(c.ix, f.ix);
-    try std.testing.expectEqual(c.iy, f.iy);
-    try std.testing.expectEqual(c.iz, f.iz);
-    try std.testing.expectEqual(c.ifacedim, f.ifacedim);
     for (0..4) |i| try expectBits(c.xxvec[i], f.xxvec[i]);
     for (0..4) |i| for (0..5) |j| {
         try expectBits(c.gg[i][j], f.gg[i][j]);

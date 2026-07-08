@@ -22,24 +22,29 @@ pub const n_flags = @typeInfo(Flag).@"enum".fields.len;
 /// cell_tstepden/cell_dt). The arad slots hold the τ-limited speeds used
 /// for the fluxes; the unlimited ones only feed the timestep and are not
 /// stored per cell (finite.c:415-437).
+///
+/// Grouped per-dimension so one flux dim-pass reads a single contiguous
+/// 48-byte run (ahd{l,r,m} + arad{l,r,m}) per cell instead of scattering
+/// six values across the record (P5, DoD). All access goes through the
+/// ahd_*/arad_* tables or named literals, so the order is free.
 pub const Scal = enum(usize) {
     ahdxl,
     ahdxr,
-    ahdyl,
-    ahdyr,
-    ahdzl,
-    ahdzr,
     ahdx,
-    ahdy,
-    ahdz,
     aradxl,
     aradxr,
+    aradx,
+    ahdyl,
+    ahdyr,
+    ahdy,
     aradyl,
     aradyr,
+    arady,
+    ahdzl,
+    ahdzr,
+    ahdz,
     aradzl,
     aradzr,
-    aradx,
-    arady,
     aradz,
     tstepden,
     cell_dt,
@@ -64,6 +69,9 @@ pub fn FaceStore(comptime NV: usize) type {
         ngx: i64,
         ngy: i64,
         ngz: i64,
+        // Stored so deinit is self-managed like Field.deinit — no
+        // allocator threaded at the call site (P5: single deinit convention).
+        a: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator, g: Grid, dim: usize) !Self {
             const nx_s = g.sx() + @intFromBool(dim == 0);
@@ -79,11 +87,13 @@ pub fn FaceStore(comptime NV: usize) type {
                 .ngx = @intCast(g.ngx),
                 .ngy = @intCast(g.ngy),
                 .ngz = @intCast(g.ngz),
+                .a = allocator,
             };
         }
 
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            allocator.free(self.data);
+        pub fn deinit(self: *Self) void {
+            self.a.free(self.data);
+            self.* = undefined;
         }
 
         // `inline` on these leaf accessors: called O(NV × faces × passes)/step

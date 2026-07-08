@@ -21,9 +21,13 @@ pub const Faces = struct { ul: f64, ur: f64 };
 /// widths, `order` the effective integration order (already reduced).
 pub fn avg2pointScalar(u: [5]f64, dx: [5]f64, order: u8, theta: f64) Faces {
     return switch (order) {
+        0 => .{ .ul = u[2], .ur = u[2] }, // donor cell
         1 => linearMinmod(u, theta),
         2 => ppm(u, dx),
-        else => .{ .ul = u[2], .ur = u[2] }, // donor cell
+        // `eff` is base − reconstr_par, both clamped to the 3-member
+        // config.Reconstruction enum's 0/1/2 orders (sim.zig switches it
+        // exhaustively), so nothing else can reach here.
+        else => unreachable,
     };
 }
 

@@ -238,6 +238,16 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// accumulating; the driver prints/resets it at its output cadence.
         timers: timers_mod.PassTimers = .{},
 
+        /// The full-Field members allocated in init and freed in deinit, in one
+        /// place so the two lists cannot drift (P5). Startup allocation failure
+        /// is treated as fatal — Sim.init has no per-alloc errdefer; a driver
+        /// exits and the OS reclaims, and the test suite runs under the leak-
+        /// checking allocator only after a *successful* init.
+        const heap_field_names = .{
+            "p",    "u",    "ut0",     "ut1",  "ut2",           "dut1",  "dut2",
+            "drt1", "drt2", "uforget", "ptm1", "ppostimplicit", "u_bak", "p_bak",
+        };
+
         pub fn init(allocator: std.mem.Allocator, g: Grid, opt: Options) !Self {
             // Runtime precondition checks (P1 correctness). Each unchecked
             // invariant otherwise fails far from its cause; we return
@@ -304,10 +314,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                 .bl_cache = want_bl,
             });
 
-            inline for (.{
-                "p",    "u",    "ut0",     "ut1",  "ut2",           "dut1",  "dut2",
-                "drt1", "drt2", "uforget", "ptm1", "ppostimplicit", "u_bak", "p_bak",
-            }) |name| {
+            inline for (heap_field_names) |name| {
                 @field(self, name) = try FieldT.init(allocator, g);
             }
             for (0..3) |d| {
@@ -361,18 +368,15 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub fn deinit(self: *Self) void {
             const allocator = self.allocator;
             if (self.team) |tm| tm.deinit();
-            inline for (.{
-                "p",    "u",    "ut0",     "ut1",  "ut2",           "dut1",  "dut2",
-                "drt1", "drt2", "uforget", "ptm1", "ppostimplicit", "u_bak", "p_bak",
-            }) |name| {
+            inline for (heap_field_names) |name| {
                 @field(self, name).deinit();
             }
             for (0..3) |d| {
-                self.pb_l[d].deinit(allocator);
-                self.pb_r[d].deinit(allocator);
-                self.fl_l[d].deinit(allocator);
-                self.fl_r[d].deinit(allocator);
-                self.flb[d].deinit(allocator);
+                self.pb_l[d].deinit();
+                self.pb_r[d].deinit();
+                self.fl_l[d].deinit();
+                self.fl_r[d].deinit();
+                self.flb[d].deinit();
             }
             self.scal.deinit();
             allocator.free(self.flags);

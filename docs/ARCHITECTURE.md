@@ -76,7 +76,9 @@ index-for-index and to a few ulps, against a C dump. Concretely:
   the join, the numeric result is identical to serial (see [§10](#10-the-threading-model)).
 - **MPI is not implemented.** The communication layer is `comm/serial.zig`, a single-rank
   no-op (`exchangeHalos` does nothing, `allreduce` is the identity, `barrier` is a no-op).
-  A `-Dmpi` build flag exists but only threads an option through; there is no MPI backend.
+  A `-Dmpi` build flag exists but has no backend, so building with it now hard-errors at
+  compile time (`koral.zig` reads `build_options.mpi` and `@compileError`s) rather than
+  silently producing a serial binary.
   Numerics only ever talk to the `Serial` interface, so an MPI backend can be dropped in
   later without touching kernels.
 
@@ -266,11 +268,14 @@ layout flip to AoSoA later without touching a single kernel.
 `struct geometry`):
 
 ```zig
-coords: Coords,  ix/iy/iz: i64,  ifacedim: i8,   // -1 = center, 0/1/2 = x/y/z face
+coords: Coords,                                   // which coordinate system this point is in
 xxvec: [4]f64,                                    // point coords, xxvec[0]=0 (stationary metric)
 gg: [4][5]f64,   GG: [4][5]f64,                   // g_μν (covariant), g^μν (contravariant)
 gdet: f64,  alpha: f64,  gttpert: f64,            // √-g, lapse, perturbed g_tt
 ```
+
+(The former `ix/iy/iz/ifacedim` cell-identity fields were write-only — `rijviscFace`
+takes its `dim` explicitly, not from the geometry — and were dropped in the P5 pass.)
 
 The **4×5** layout is C's: columns 0..3 are the metric/inverse, column 4 packs extras
 (`gg[i][4]=dlgdet` for i<3, `gg[3][4]=gdet`; `GG[3][4]=gttpert`, other `GG[i][4]=0`).
@@ -322,13 +327,12 @@ Fields are grouped: physical (`mass, bhspin, gam`), grid (`nx, ny, nz`), domain
 tsteplim, dtout1, dtout2, out_dir`), floors/ceilings, and execution (`deterministic,
 nthreads`). `parseValue` dispatches on the field type (`f64`/`usize`/`bool`/`[]const u8`).
 
-### 3.7 `State(cfg)` — a stub at this milestone
+### 3.7 Per-cell derived state — `radforce.RadState`
 
-`koral/state.zig`. The per-cell derived-state struct (C `struct_of_state`). At the current
-milestone it is an **M0 stub** carrying only base fluid fields: `rho, uint, gamma, ucon,
-ucov, pgas`. Later milestones compose in each module's `StateFields` (bcon/bsq/pmag from
-MHD; Ehat/Rij/Gi from radiation). Do not assume MHD or radiation state fields exist here
-yet; the live radiation-state bundle used by the source solver is `radforce.RadState`
+The C `struct_of_state` bundle. An early `state.zig` `State(cfg)` stub was intended to
+grow into a comptime composition of each module's fields, but that design was never built
+and the type had zero users, so it was **deleted in the P5 pass**. The live per-cell state
+bundle used by the source solver is `radforce.RadState`
 (see [§6](#6-the-solver-stack-p2u-u2p-the-implicit-ladder-fixups)).
 
 ---
@@ -911,7 +915,7 @@ deviations are **expected**, not regressions — a real bug shows far above that
 
 | Subsystem | Primary files |
 | --- | --- |
-| **Foundation** (config, layout, storage, units, params, geometry, comm) | `koral/config.zig`, `koral/layout.zig`, `koral/grid.zig`, `koral/field.zig`, `koral/units.zig`, `koral/params.zig`, `koral/state.zig`, `koral/geometry.zig`, `koral/koral.zig`, `koral/comm/serial.zig` |
+| **Foundation** (config, layout, storage, units, params, geometry, comm) | `koral/config.zig`, `koral/layout.zig`, `koral/grid.zig`, `koral/field.zig`, `koral/units.zig`, `koral/params.zig`, `koral/geometry.zig`, `koral/koral.zig`, `koral/comm/serial.zig` |
 | **Metric / coordinates** | `koral/math/dual.zig`, `koral/metric/forms.zig`, `koral/metric/metric.zig`, `koral/metric/coco.zig`, `koral/metric/precompute.zig` |
 | **Velocity / index / boost algebra** | `koral/relele.zig`, `koral/frames.zig` |
 | **Primitive↔conserved (forward + inverse)** | `koral/p2u.zig`, `koral/solve/invert.zig` |

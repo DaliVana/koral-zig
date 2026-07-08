@@ -97,8 +97,8 @@ test "golden: trans_pall_coco vs C (MKS2 ↔ KS/BL)" {
     var t = DevTracker{};
     for (0..g.nrec) |ir| {
         const r = g.rec(ir);
-        const co1 = coordsFromId(r.in[0]);
-        const co2 = coordsFromId(r.in[1]);
+        const co1 = try coordsFromId(r.in[0]);
+        const co2 = try coordsFromId(r.in[1]);
         const x = [4]f64{ 0, r.in[2], r.in[3], r.in[4] };
         var pp: [NV]f64 = undefined;
         for (0..NV) |iv| pp[iv] = r.in[5 + iv];

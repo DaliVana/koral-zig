@@ -268,40 +268,60 @@ pub fn convVelsCore(
     GG: *const [4][5]f64,
     ut_known: bool,
 ) Error![4]f64 {
-    var uout: [4]f64 = undefined;
-
     if (from == to) {
         // VEL4 -> VEL4 recomputes u^t when unknown; VEL3/VELR copy through.
-        uout = uin;
+        var uout = uin;
         if (from == .vel4 and !ut_known) uout[0] = try utInUcon(uin, gg);
-    } else if (from == .vel4 and to == .vel3) {
-        const ut = if (ut_known) uin[0] else try utInUcon(uin, gg);
-        uout = .{ 1.0, uin[1] / ut, uin[2] / ut, uin[3] / ut };
-    } else if (from == .vel3 and to == .vel4) {
-        const ut = utInVel3(uin, gg);
-        if (ut < 1.0 or std.math.isNan(ut)) return Error.VelocityConversionFailed;
-        uout = .{ ut, uin[1] * ut, uin[2] * ut, uin[3] * ut };
-    } else if (from == .vel3 and to == .velr) {
-        const ut = utInVel3(uin, gg);
-        if (ut < 1.0 or std.math.isNan(ut)) return Error.VelocityConversionFailed;
-        uout = .{ ut, uin[1] * ut, uin[2] * ut, uin[3] * ut };
-        for (1..4) |i| {
-            uout[i] = uout[i] - uout[0] * GG[0][i] / GG[0][0];
-        }
-    } else if (from == .vel4 and to == .velr) {
-        const ut = if (ut_known) uin[0] else try utInUcon(uin, gg);
-        uout[0] = ut;
-        for (1..4) |i| {
-            uout[i] = uin[i] - ut * GG[0][i] / GG[0][0];
-        }
-    } else if (from == .velr and to == .vel4) {
-        uout = velrToVel4G(f64, uin, gg, GG);
-    } else { // VELR -> VEL3
-        const alpgam = calcAlpgam(uin, gg, GG);
-        uout[0] = -alpgam * GG[0][0];
-        uout[1] = uin[1] / uout[0] + GG[0][1] / GG[0][0];
-        uout[2] = uin[2] / uout[0] + GG[0][2] / GG[0][0];
-        uout[3] = uin[3] / uout[0] + GG[0][3] / GG[0][0];
+        return uout;
+    }
+
+    // from != to: an exhaustive (from, to) matrix so the compiler proves every
+    // VelType pair is handled. The diagonal arms are `unreachable` (caught by
+    // the from == to fast path above); this restores the my_err fallback the
+    // port dropped from C's conv_vels_core if-chain (relele.c:136).
+    var uout: [4]f64 = undefined;
+    switch (from) {
+        .vel4 => switch (to) {
+            .vel4 => unreachable,
+            .vel3 => {
+                const ut = if (ut_known) uin[0] else try utInUcon(uin, gg);
+                uout = .{ 1.0, uin[1] / ut, uin[2] / ut, uin[3] / ut };
+            },
+            .velr => {
+                const ut = if (ut_known) uin[0] else try utInUcon(uin, gg);
+                uout[0] = ut;
+                for (1..4) |i| {
+                    uout[i] = uin[i] - ut * GG[0][i] / GG[0][0];
+                }
+            },
+        },
+        .vel3 => switch (to) {
+            .vel3 => unreachable,
+            .vel4 => {
+                const ut = utInVel3(uin, gg);
+                if (ut < 1.0 or std.math.isNan(ut)) return Error.VelocityConversionFailed;
+                uout = .{ ut, uin[1] * ut, uin[2] * ut, uin[3] * ut };
+            },
+            .velr => {
+                const ut = utInVel3(uin, gg);
+                if (ut < 1.0 or std.math.isNan(ut)) return Error.VelocityConversionFailed;
+                uout = .{ ut, uin[1] * ut, uin[2] * ut, uin[3] * ut };
+                for (1..4) |i| {
+                    uout[i] = uout[i] - uout[0] * GG[0][i] / GG[0][0];
+                }
+            },
+        },
+        .velr => switch (to) {
+            .velr => unreachable,
+            .vel4 => uout = velrToVel4G(f64, uin, gg, GG),
+            .vel3 => {
+                const alpgam = calcAlpgam(uin, gg, GG);
+                uout[0] = -alpgam * GG[0][0];
+                uout[1] = uin[1] / uout[0] + GG[0][1] / GG[0][0];
+                uout[2] = uin[2] / uout[0] + GG[0][2] / GG[0][0];
+                uout[3] = uin[3] / uout[0] + GG[0][3] / GG[0][0];
+            },
+        },
     }
     return uout;
 }

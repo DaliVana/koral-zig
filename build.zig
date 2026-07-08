@@ -111,9 +111,11 @@ pub fn build(b: *std.Build) !void {
             m.addRPath(.{ .cwd_relative = silo_prefix });
             m.linkSystemLibrary("siloh5", .{});
         }
-        b.installArtifact(exe);
-
+        // One InstallArtifact shared by the default `install` step and the
+        // per-problem `build <name>` step (two separate ones would silently
+        // diverge if install options ever differ).
         const install = b.addInstallArtifact(exe, .{});
+        b.getInstallStep().dependOn(&install.step);
         b.step(entry.name, b.fmt("build {s}", .{entry.name})).dependOn(&install.step);
 
         const run = b.addRunArtifact(exe);

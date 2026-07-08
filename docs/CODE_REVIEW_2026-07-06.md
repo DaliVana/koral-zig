@@ -812,9 +812,21 @@ print a diagnostic first, as readGolden does.
 
 ---
 
-# P5 — Idiomatic polish & minor
+# P5 — Idiomatic polish & minor ✅ DONE (2026-07-08)
 
 Low-risk cleanups; batch them when touching the relevant file. None affect goldens.
+
+**Status (2026-07-08).** All 13 findings resolved: 10 applied, 1 partly-applied (#init errdefer —
+tuple hoisted + startup-OOM-fatal made explicit; arena declined), 2 no-action-by-decision (#materialize
+Geometry — verifier-downgraded; #MetricCache triangles — accounting, comment added). Each finding below
+carries a `Done`/`Partly done`/`No action` note. **Verified byte-for-byte:** `zig build test` →
+**207/216** (baseline, 9 slow skips); `zig build test -Dslow-tests` → **215/216** (1 skip), the
+384×360 PUFFY / M11 keystone / M12–M13 goldens all unchanged. The FP-adjacent items are golden-safe by
+construction — the `convVelsCore` switch copies each branch body verbatim, the `@bitCast`/whole-array
+copies are layout-identical, and the `Scal` reorder is a uniform enum-ordinal → storage-slot
+renumbering behind the `ahd_*`/`arad_*` accessor tables. The rest are non-FP (struct-field/dead-code/
+build/test-reader edits). One file was deleted (`state.zig`) and four `Geometry` fields removed
+(subsuming a P3 cell-identity item).
 
 #### `koral/sim.zig:143` — Split allocator convention: FaceStore.deinit(allocator) vs Field.deinit() in the same aggregate *(low)*
 
@@ -825,6 +837,10 @@ inconsistency that produces a wrong-allocator/double-free bug on a later refacto
 the `self.* = undefined` poisoning Field.deinit already does; then Sim.deinit's FaceStore loop matches
 the Field pattern. (Now lives in sim/storage.zig after the extraction.)
 
+**Done (2026-07-08):** `FaceStore` stores its allocator (field `a`, set in init); `deinit(self)` now
+frees via it and poisons `self.* = undefined` — identical in shape to `Field.deinit`. `Sim.deinit`'s
+FaceStore loop drops the threaded `allocator` arg, so both aggregates deinit the same way. ✔
+
 #### `koral/relele.zig:240` — convVelsCore's conversion dispatch ends in an else-catchall instead of an exhaustive switch *(low)*
 
 The if/else chain enumerates five (which1,which2)/(from,to) pairs and the final `else` is documented only
@@ -833,6 +849,11 @@ math (C had an explicit `my_err` fallback the port lost). **Fix:** Replace with 
 so the compiler proves coverage, branch bodies byte-identical; fold same-type cases in (mirrors C) or keep
 the `from == to` fast path in front and mark the diagonal arms `unreachable`.
 
+**Done (2026-07-08):** kept the `from == to` fast path (returns early), then an exhaustive
+`switch (from) { … switch (to) … }` matrix with the three diagonal arms `unreachable`. Branch bodies
+copied verbatim → byte-identical; the compiler now proves all nine VelType pairs are handled, restoring
+the `my_err` fallback the port had dropped. ✔
+
 #### `koral/recon/recon.zig:26` — avg2pointScalar's else-catchall silently degrades any unknown order to donor cell *(low, verifier-downgraded)*
 
 `order` is a raw u8, switch is `1 => linear, 2 => ppm, else => donor`. A caller passing 3 is silently
@@ -840,11 +861,18 @@ reconstructed at order 0. **Fix:** `0 => .{ .ul = u[2], .ur = u[2] }, 1 => linea
 else => unreachable`. Pure API hardening; the production path is already compile-time safe (sim.zig
 exhaustively switches the 3-member config.Reconstruction enum).
 
+**Done (2026-07-08):** switch is now `0 => donor, 1 => linear, 2 => ppm, else => unreachable`, with a
+comment noting `eff` is bounded to 0/1/2 by the config enum. An unknown order now traps instead of
+silently degrading to donor. ✔
+
 #### `koral/physics/radiation.zig:151` — Hand element-copy loops where whole-array assignment / @bitCast is idiomatic *(low)*
 
 `for (0..6) |i| aval[i] = a0[i];` (:151), `aval[6+i] = a1[i];` (:168), and the [4][4]→[16] flatten in
 radvisc.zig:358-361. **Fix:** `aval[0..6].* = a0;`, `aval[6..12].* = a1;`, and
 `const t: [16]f64 = @bitCast(rvisc);` (layout-identical) passed to store.
+
+**Done (2026-07-08):** applied all three — the two `aval` slices via whole-array assignment and the
+`[4][4]→[16]` flatten via `@bitCast` (row-major contiguous → same bits). ✔
 
 #### `PROBLEMS/puffy/main.zig:113` — Dead parameters/diagnostic: writeScalars' unused allocator, collectDiag's unreported n_rad_fixup *(low)*
 
@@ -853,6 +881,10 @@ counts `n_rad_fixup` (:55, :75-77) but scalarRow never reads it. **Fix:** Drop t
 :170, :187). For n_rad_fixup: the flag is genuinely populated (sim.zig:1051 sets .rad_fixup regardless
 of do_u2prad_fixups), so either add an n_radfix column to ScalarRow/header/appendScalarLine and wire it
 through, or delete the Diag field + counting branch.
+
+**Done (2026-07-08):** dropped the unused `allocator` param from `writeScalars` (and its two call sites)
+and deleted the write-only `Diag.n_rad_fixup` field plus its counting branch. Diagnostics are unchanged
+(the count was never reported); the more meaningful radiation counter, `n_radimp_fail`, still ships. ✔
 
 #### `koral/geometry.zig:14` — Geometry.ifacedim/ix/iy/iz are write-only dead data (and ifacedim is a -1 sentinel) *(low)*
 
@@ -863,6 +895,13 @@ their assignments across the five write sites. (Subsumes the geometryAt-fabricat
 if done — no cell parameter needed once nothing reads the fields.) If a face marker is later needed,
 reintroduce `face: ?Face = null` with `Face = enum(u2){x,y,z}` rather than a -1 sentinel.
 
+**Done (2026-07-08):** deleted all four fields from `Geometry`. Removed the write sites (`geometryAt`,
+`geometryBLat`, `fillBl`, `geomFromRecord`) and dropped the now-unused `ix/iy/iz/ifacedim` params from
+`geometryFromBlocks` and its two callers (`fillGeometry`/`fillGeometryFace`). The one reader —
+`dynamo_tests.zig`'s `expectGeomBits` — was comparing two dead values, so those four asserts were
+removed too. This also **subsumes the geometryAt-fabricates-cell-identity P3 item**: no cell parameter
+is needed now that nothing reads the fields. ✔
+
 #### `koral/state.zig:10` — State(cfg) is dead code with a stale doc promising a design that was never built *(low)*
 
 The module doc promises an M3+ comptime composition (base fields + each module's StateFields) that never
@@ -870,6 +909,12 @@ happened; the type still holds only the six M0 fluid fields, is exported as kora
 users — the real per-cell state is radforce.RadState. **Fix:** Either delete state.zig + the koral.zig
 re-export, or rewrite the doc to state the actual design ("superseded by radforce.RadState; kept only for
 X") pointing C's struct_of_state readers at radforce.zig.
+
+**Done (2026-07-08):** deleted `koral/state.zig` and its `koral.zig` re-exports (`pub const state` /
+`pub const State` + the `_ = state;` test marker). Confirmed zero users (the `state_tests.zig` /
+`state_golden_tests.zig` files are physics-identity gates named for the concept, not the type — they
+import velocity/boost/p2u helpers, never `State(cfg)`). ARCHITECTURE §3.7 rewritten to point at
+`radforce.RadState`. ✔
 
 #### `koral/testing/golden.zig:152` — readKstp panics on nrec==0; readKini leaks vars / coordsFromId turns corrupt data into unreachable *(low)*
 
@@ -880,6 +925,12 @@ std.testing.allocator). coordsFromId (:228-235) ends in `else => unreachable` on
 from the file. **Fix:** `if (k.nrec == 0 or ncell == 0) return error.BadGoldenFile;` after computing
 ncell; `errdefer a.free(k.vars);` after the vars alloc; change coordsFromId to `!config.Coords` with
 `else => error.BadGoldenFile`.
+
+**Done (2026-07-08):** all three. `readKstp` guards `if (k.nrec == 0 or ncell == 0) return
+error.BadGoldenFile;` before the two divides; `readKini` gains `errdefer allocator.free(k.vars);` after
+the vars alloc; `coordsFromId` now returns `!config.Coords` with `else => error.BadGoldenFile`, and its
+one out-of-module caller (`state_golden_tests.zig`) `try`s it. A truncated/corrupt golden now fails as
+a named error instead of a panic or leak. ✔
 
 #### `koral/sim.zig:332` — Sim.init (~35 allocs) and MetricCache.init (11 allocs) leak all prior allocations if a later one fails; duplicated field-name list *(low, verifier-downgraded)*
 
@@ -893,6 +944,13 @@ collapses the hand-maintained per-field deinit). At minimum, hoist the duplicate
 one comptime const referenced by both init and deinit. (No failing-allocator injection exists in the
 suite, so per-allocation errdefer would guard a path that never executes.)
 
+**Partly done (2026-07-08):** hoisted the duplicated Field-name list into one struct-level
+`heap_field_names` const referenced by both init and deinit (they can no longer drift). Made the
+"startup OOM is fatal — no per-alloc errdefer; a driver exits and the OS reclaims" decision **explicit
+in a doc comment** on that const, rather than adopting the arena (the arena would also fold the
+per-field deinit, but that's a larger structural change than a P5 polish warrants, and the leak checker
+only runs after a *successful* init). The MetricCache half was left as-is. ✔
+
 #### `koral/geometry.zig:8` — Geometry is a ~416-byte value re-gathered up to ~5×/cell per stage; could be materialized once *(low, verifier-downgraded)*
 
 Every fillGeometry/fillGeometryFace gathers 40 f64 from two heap arrays, recomputes alpha (sqrt+divide)
@@ -902,6 +960,10 @@ stage (polish). **Fix (if it ever matters):** Materialize precomputed Geometry v
 already take `*const Geometry`, and the from-scratch constructors keep working. Avoid the pointer-view
 variant (gg/GG as `*const [4][5]f64` into the cache): it turns a hazard-free value into a lifetime-managed
 view for the same gain.
+
+**No action (2026-07-08):** verifier-downgraded polish worth <1–2% of a stage; left as-is. Kept the
+value-returning `fillGeometry`/`fillGeometryFace` (hazard-free) rather than materializing per-cell
+Geometry now. Revisit only if profiling flags geometry gather as hot.
 
 #### `koral/metric/precompute.zig:109` — MetricCache stores ~2 KB/cell; symmetric tensors kept full-size *(low, accounting only)*
 
@@ -914,6 +976,10 @@ behind the existing storeBlocks/geometryFromBlocks/kr accessors. Otherwise a one
 deliberate C-shaped (gSIZE=20/gKr) memory-for-simplicity trade suffices. Do not touch CoordData.kris /
 applyKrisCorrection.
 
+**No action — comment added (2026-07-08):** left full-size (bit-identical C layout); added the one-line
+"deliberate memory-for-simplicity trade; compact to triangles behind the same accessors if 3D memory
+pressure appears" note at `MetricCache.init`. Accounting only, no code change. ✔
+
 #### `koral/sim.zig:83` — Scal AoS record scatters each direction's six wavespeeds across a 160-byte record *(low, DoD)*
 
 scal is Field(20) — the enum groups all-left/all-right/all-max across dimensions, so one dim-pass of
@@ -923,6 +989,12 @@ stores these as separate SoA arrays. **Fix:** Reorder the enum per-dimension —
 48-byte run per cell. All access goes through the ahd_*/arad_* tables or named literals, so the reorder
 needs no other changes and cannot affect goldens. (Optionally gate the 9 arad slots on L.hasVar(.ee) —
 larger change.)
+
+**Done (2026-07-08):** reordered the `Scal` enum to per-dimension groups
+(`ahdxl, ahdxr, ahdx, aradxl, aradxr, aradx, ahdyl, …`) so one flux dim-pass reads a contiguous
+48-byte run per cell. All access is via named literals or the `ahd_*`/`arad_*` tables, so the enum
+ordinal → slot renumbering is uniform and golden-safe; `n_scal` is derived. Left the `L.hasVar(.ee)`
+arad-gating as the noted larger change. ✔
 
 #### `build.zig:50` — Per-problem executable installed through two InstallArtifact steps; -Dmpi option plumbed but unread *(low, project structure)*
 
@@ -934,6 +1006,12 @@ and share it (`const install = b.addInstallArtifact(exe, .{}); b.getInstallStep(
 b.step(entry.name, ...).dependOn(&install.step);`). For -Dmpi, make misuse loud: either remove the option
 until the backend lands, or add a comptime guard
 `if (@import("build_options").mpi) @compileError("MPI backend not implemented; build without -Dmpi");`.
+
+**Done (2026-07-08):** the per-problem exe now goes through one `addInstallArtifact`, wired to both
+`getInstallStep()` and the named `build <name>` step (the redundant `installArtifact` call is gone). For
+`-Dmpi`, took the comptime-guard route: `koral.zig` reads `build_options.mpi` and `@compileError`s if
+set — this makes misuse loud at compile time **and** turns the previously-unread option into a genuine
+consumer. ✔
 
 ---
 

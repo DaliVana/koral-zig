@@ -14,9 +14,9 @@
 mass = 10.0        # MASS (solar masses)
 
 [grid]
-nx = 256           # radial
-ny = 240           # theta
-nz = 16            # azimuthal (φ) — subdivides the π/2 wedge, periodic
+nx = 128           # radial
+ny = 120           # theta
+nz = 12            # azimuthal (φ) — subdivides the π/2 wedge, periodic
 
 [run]
 tstart = 0.0
@@ -32,4 +32,4 @@ nout_step = 100    # ALSO output every N steps (0 = time-based only). This is
                    # what makes a short run produce frames: with nstep_max=1000
                    # you get ~10 .silo frames to watch the evolution in VisIt.
 out_dir = "dumps/puffy3d"
-nthreads = 12      # per-step worker team (1 = serial)
+nthreads = 8      # per-step worker team (1 = serial)

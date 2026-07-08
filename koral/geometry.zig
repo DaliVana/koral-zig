@@ -7,11 +7,6 @@ const config = @import("config.zig");
 
 pub const Geometry = struct {
     coords: config.Coords,
-    ix: i64,
-    iy: i64,
-    iz: i64,
-    /// -1 = cell center, 0/1/2 = x/y/z face (C: ifacedim).
-    ifacedim: i8,
     /// coordinates of the point; xxvec[0] = 0 (stationary metric).
     xxvec: [4]f64,
     gg: [4][5]f64,

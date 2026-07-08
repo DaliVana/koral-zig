@@ -86,10 +86,6 @@ pub fn geometryAt(coords: Coords, mp: MetricParams, x: [4]f64) Geometry {
     const d = metric.compute(coords, mp, x);
     var geo = Geometry{
         .coords = coords,
-        .ix = 0,
-        .iy = 0,
-        .iz = 0,
-        .ifacedim = -1,
         .xxvec = .{ 0, x[1], x[2], x[3] },
         .gg = undefined,
         .GG = undefined,
@@ -111,18 +107,14 @@ pub fn geometryAt(coords: Coords, mp: MetricParams, x: [4]f64) Geometry {
 
 /// BL (OUTCOORDS) geometry at a cell center — C: fill_geometry_arb(...,
 /// OUTCOORDS) with OUTCOORDS == BLCOORDS. Transforms the cell-center MYCOORDS
-/// position to Boyer–Lindquist, evaluates the Kerr-BL metric there, and stamps
-/// the cell indices. The single home for this reduction, shared by the
-/// diagnostics (io/scalars), the dynamo (magn/dynamo), and PUFFY init
-/// (problems/puffy) — see those modules' thin wrappers.
+/// position to Boyer–Lindquist and evaluates the Kerr-BL metric there. The
+/// single home for this reduction, shared by the diagnostics (io/scalars),
+/// the dynamo (magn/dynamo), and PUFFY init (problems/puffy) — see those
+/// modules' thin wrappers.
 pub fn geometryBLat(g: *const Grid, coords: Coords, mp: MetricParams, ix: i64, iy: i64, iz: i64) Geometry {
     const xx = [4]f64{ 0.0, g.xc(ix), g.yc(iy), g.zc(iz) };
     const xxbl = coco.cocoN(xx, coords, .bl, mp);
-    var geom = geometryAt(.bl, mp, xxbl);
-    geom.ix = ix;
-    geom.iy = iy;
-    geom.iz = iz;
-    return geom;
+    return geometryAt(.bl, mp, xxbl);
 }
 
 pub const MetricCache = struct {
@@ -166,6 +158,13 @@ pub const MetricCache = struct {
 
     pub fn init(allocator: std.mem.Allocator, grid: Grid, opts: InitOpts) !MetricCache {
         const nc = grid.cellCount();
+        // Deliberate memory-for-simplicity trade: g/gcon (gSIZE=20) and kris
+        // (64) are stored full-size even though gcov/gcon are symmetric and
+        // kris is symmetric in its lower indices — matching C's flat layouts so
+        // the storeBlocks/geometryFromBlocks/kr accessors are a 1:1 port. The
+        // cache layout is not part of the golden contract, so if 3D memory
+        // pressure appears these can be compacted to triangles behind the same
+        // accessors (P5 accounting).
         var self = MetricCache{
             .allocator = allocator,
             .grid = grid,
@@ -334,11 +333,7 @@ pub const MetricCache = struct {
                 while (ix < @as(i64, @intCast(grid.nx + grid.ngx))) : (ix += 1) {
                     const xx = [4]f64{ 0, grid.xc(ix), grid.yc(iy), grid.zc(iz) };
                     const xxbl = coco.cocoN(xx, self.coords, .bl, self.mp);
-                    var bg = geometryAt(.bl, self.mp, xxbl);
-                    bg.ix = ix;
-                    bg.iy = iy;
-                    bg.iz = iz;
-                    self.bl_geom[self.cellIndex(ix, iy, iz)] = bg;
+                    self.bl_geom[self.cellIndex(ix, iy, iz)] = geometryAt(.bl, self.mp, xxbl);
                 }
             }
         }
@@ -423,13 +418,9 @@ pub const MetricCache = struct {
         return j;
     }
 
-    fn geometryFromBlocks(self: *const MetricCache, src_g: []const f64, src_gcon: []const f64, off: usize, ix: i64, iy: i64, iz: i64, ifacedim: i8, xxvec: [4]f64) Geometry {
+    fn geometryFromBlocks(self: *const MetricCache, src_g: []const f64, src_gcon: []const f64, off: usize, xxvec: [4]f64) Geometry {
         var geo = Geometry{
             .coords = self.coords,
-            .ix = ix,
-            .iy = iy,
-            .iz = iz,
-            .ifacedim = ifacedim,
             .xxvec = xxvec,
             .gg = undefined,
             .GG = undefined,
@@ -456,10 +447,6 @@ pub const MetricCache = struct {
             self.g,
             self.gcon,
             self.cellIndex(ix, iy, iz) * 20,
-            ix,
-            iy,
-            iz,
-            -1,
             .{ 0, grid.xc(ix), grid.yc(iy), grid.zc(iz) },
         );
     }
@@ -477,10 +464,6 @@ pub const MetricCache = struct {
             self.gb[dim],
             self.gconb[dim],
             self.faceIndex(dim, ix, iy, iz) * 20,
-            ix,
-            iy,
-            iz,
-            @intCast(dim),
             xxvec,
         );
     }
