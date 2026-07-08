@@ -305,3 +305,14 @@ step) was deliberately left untouched (deferred review item), which bounds the w
 Two review items were consciously deferred (the sweep face-geometry carry — marginal, the geometry is
 a cache read; and the wavespeed/implicit state-sharing — invasive with an FP-shape trap the review
 itself flags); see the P2 tier notes.
+
+**Post-M13 idiomatic polish (2026-07-08):** priority tier P5 — all 13 low-risk cleanups, none affecting
+goldens. `convVelsCore` and `avg2pointScalar` now dispatch through exhaustive switches (compiler-proven
+coverage, `unreachable`/error on the impossible arm) instead of silent else-catchalls; `FaceStore` owns
+its allocator so `deinit()` matches `Field.deinit`; the golden-file readers guard `nrec==0`, add an
+`errdefer` on the vars alloc, and return `error.BadGoldenFile` instead of panicking on a corrupt file;
+the `Scal` wavespeed enum is grouped per-dimension so a flux pass reads one contiguous run; the
+per-problem build uses a single install artifact; and `-Dmpi` (which has no backend) now `@compileError`s
+instead of silently building serial. Dead code removed: `state.zig`'s unused `State(cfg)` stub and four
+write-only `Geometry` cell-identity fields (`ix/iy/iz/ifacedim` — `rijviscFace` takes its `dim`
+explicitly). Byte-identical (`-Dslow-tests`: 215/216).

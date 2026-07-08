@@ -4,9 +4,9 @@ This is the pruned + re-prioritized survivor of the full-codebase review (origin
 medium / 72 low across naming, structure, purity, hot-path/inlining, data-oriented design,
 idiomatic Zig, best-practices, test hygiene). Findings fixed in earlier passes were removed; what
 remains is the open work, re-ordered by *actionability now* rather than by the original per-dimension
-grouping. **Exception:** the just-completed **P1 and P2 tiers are kept in place with
-`Fixed`/`Done`/`Deferred` annotations** (2026-07-08) so the record of what changed stays visible —
-prune them once they're old news. Line numbers
+grouping. **Exception:** the just-completed **P1, P2, and P5 tiers are kept in place with
+`Fixed`/`Done`/`Deferred`/`No action` annotations** (2026-07-08) so the record of what changed stays
+visible — prune them once they're old news. Line numbers
 are from the pre-fix tree and may have drifted under the applied renames/extractions — re-grep the
 named symbol before editing.
 
@@ -23,6 +23,12 @@ named symbol before editing.
   A/B-measured in ReleaseFast: −7% instructions retired, −3.7%/−6.1% stepping wall (1/12 threads).
   Kept **annotated in place** in the P2 tier below (each finding has a `Fixed`/`Done`/`Deferred`
   note); prune when old news.
+- **P5 — Idiomatic polish & minor** ✅ **2026-07-08** — all 13 done (10 applied, 1 partly, 2
+  no-action-by-decision). Verified byte-for-byte (`-Dslow-tests` 215/216). Deleted dead `state.zig` +
+  four write-only `Geometry` cell-identity fields (subsumes a P3 item), made `convVelsCore`/
+  `avg2pointScalar` switches exhaustive, self-managed `FaceStore.deinit`, hardened the golden readers,
+  reordered the `Scal` enum per-dimension, de-duplicated the build install step, and turned `-Dmpi`
+  into a compile error. Kept **annotated in place** in the P5 tier below; prune when old news.
 
 The rest below were removed (fixed in earlier passes):
 
