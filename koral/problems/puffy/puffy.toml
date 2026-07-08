@@ -27,8 +27,10 @@ tstart = 0.0
 tmax = 10000.0     # run duration in GM/c^3 (reduce for a quick test)
 nstep_max = 100  # hard cap on steps
 tsteplim = 0.5     # TSTEPLIM (CFL factor)
-dtout1 = 100.0     # scalar-diagnostics cadence (code time)
-dtout2 = 500.0     # primitive-dump cadence (0 disables prim dumps)
+dtout1 = 100.0     # output cadence (code time): scalars + KDMP checkpoint + silo
+dtout2 = 500.0     # (reserved: C's avg-file cadence; a KDMP restart checkpoint
+                   #  is now written on every output frame, so a run started here
+                   #  is always resumable via `puffy <toml> --restart dumps/puffy`)
 out_dir = "dumps/puffy"
 nthreads = 12       # persistent worker team for all per-step passes (1 = serial)
 

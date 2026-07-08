@@ -29,7 +29,7 @@ const implicit = @import("solve/implicit.zig");
 const invert = @import("solve/invert.zig");
 const invert_rad = @import("solve/invert_rad.zig");
 const p2u_mod = @import("p2u.zig");
-const puffy = @import("problems/puffy.zig");
+const puffy = @import("problems/puffy/puffy.zig");
 
 const Grid = grid_mod.Grid;
 

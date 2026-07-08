@@ -1,7 +1,7 @@
 # PUFFY 3D — SAGITTARIUS A* preset, SPINNING (Kerr) variant.
 #
 # Run:  zig build puffy -Doptimize=ReleaseFast
-#       ./zig-out/bin/puffy PROBLEMS/puffy/puffy3d_sgra_spin.toml
+#       ./zig-out/bin/puffy koral/problems/puffy/puffy3d_sgra_spin.toml
 #
 # Same as puffy3d_sgra.toml but with BLACK-HOLE SPIN turned on. See that file's
 # header for the mass/regime caveats — they all still apply. This file documents
@@ -51,14 +51,21 @@ bhspin = 0.9375    # dimensionless Kerr spin a (prograde torus). RMIN auto-track
                    # 0.0 = the validated Schwarzschild case.
 
 [grid]
-nx = 128           # radial
+nx = 144           # radial
 ny = 120           # theta
 nz = 12            # azimuthal (φ) — subdivides the fixed π/2 wedge, periodic
+rmax = 1000.0      # optional: enlarge the outer boundary (default 500 M snugly
+                   # contains the torus). Useful for a long run (nstep_max above
+                   # is 20000) where viscous spreading / outflow reaches ~500 M.
+                   # NOTE: at fixed nx this coarsens the whole log grid — the
+                   # startup line's "~N cells inside" shows the resolution hit;
+                   # raise nx too if you enlarge the domain. RMIN auto-tracks the
+                   # horizon regardless. (RMAX is not derived from mass/spin.)
 
 [run]
 tstart = 0.0
 tmax = 10000.0     # GM/c^3 (~21.2 s each → ~2.45 days; reduce for a quick look)
-nstep_max = 1000   # hard cap on steps
+nstep_max = 20000   # hard cap on steps
 tsteplim = 0.5     # CFL factor
 dtout1 = 100.0     # code-time output cadence in GM/c³ (NOT steps): scalars +
                    # dump + .silo when t crosses a multiple. At dt~5e-3 the

@@ -61,8 +61,8 @@ you are regenerating it after changing `../koral_lite` or adding a new oracle.
 The build graph (`build.zig`) is small and fully automatic:
 
 - It creates one **library module** `koral` (root `koral/koral.zig`).
-- It scans `PROBLEMS/` and builds **one executable per subdirectory** from
-  `PROBLEMS/<name>/main.zig`, importing `koral`.
+- It scans `koral/problems/` and builds **one executable per subdirectory** from
+  `koral/problems/<name>/main.zig`, importing `koral`.
 - It wires a single **`test`** step (`zig build test`) that runs *all* library
   tests as one artifact.
 
@@ -76,17 +76,17 @@ zig build
 zig build puffy
 
 # Build and run a problem, forwarding args after `--` to the executable
-zig build run-puffy -- PROBLEMS/puffy/puffy.toml
+zig build run-puffy -- koral/problems/puffy/puffy.toml
 
 # Optimized build (recommended for real runs)
-zig build run-puffy -Doptimize=ReleaseFast -- PROBLEMS/puffy/puffy.toml
+zig build run-puffy -Doptimize=ReleaseFast -- koral/problems/puffy/puffy.toml
 ```
 
-The problem name is the directory name under `PROBLEMS/`. For each `<name>` you
+The problem name is the directory name under `koral/problems/`. For each `<name>` you
 get a `<name>` step (build & install) and a `run-<name>` step (build & run). The
 executable takes **one optional argument**: the path to a params file. `puffy`
-defaults to `PROBLEMS/puffy/puffy.toml` if none is given (see `main` in
-`PROBLEMS/puffy/main.zig`).
+defaults to `koral/problems/puffy/puffy.toml` if none is given (see `main` in
+`koral/problems/puffy/main.zig`).
 
 ### Build options
 
@@ -199,7 +199,7 @@ From `koral/params.zig` (defaults shown):
 > (`FloorParams.puffy`, `RadParams.puffy`) inside `options()` — those are what the
 > inversion and radiation solvers actually use (see §8, "Adjust floors").
 
-### PUFFY example (`PROBLEMS/puffy/puffy.toml`)
+### PUFFY example (`koral/problems/puffy/puffy.toml`)
 
 ```toml
 # PUFFY — radiative-MHD limotorus, 10 M☉ Schwarzschild, MKS2
@@ -449,8 +449,8 @@ Directory layout for a new problem `mytube`:
 koral/config.zig                 # (optional) add a comptime Config const
 koral/problems/mytube.zig        # init conditions + boundary conditions
 koral/koral.zig                  # register mytube under `problems` + tests
-PROBLEMS/mytube/main.zig         # the driver executable (auto-discovered)
-PROBLEMS/mytube/mytube.toml      # runtime params
+koral/problems/mytube/main.zig         # the driver executable (auto-discovered)
+koral/problems/mytube/mytube.toml      # runtime params
 ```
 
 ### (a) Choose or define a comptime `Config`
@@ -601,9 +601,9 @@ directly), store A_φ in the B slots and call `ct.calcBfromA(SimT, sim, true)` t
 `setBc` before `finishInit`, exactly as PUFFY's `initAll` does (which additionally
 runs β-normalization in `postinit`). See `koral/magn/ct.zig`.
 
-### (d) Write `PROBLEMS/<name>/main.zig` — the driver
+### (d) Write `koral/problems/<name>/main.zig` — the driver
 
-The driver is auto-discovered by `build.zig`. Use `PROBLEMS/puffy/main.zig` as the
+The driver is auto-discovered by `build.zig`. Use `koral/problems/puffy/main.zig` as the
 template; a minimal version:
 
 ```zig
@@ -634,7 +634,7 @@ pub fn main(init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     defer args.deinit();
     _ = args.next();
-    const params_path = args.next() orelse "PROBLEMS/mytube/mytube.toml";
+    const params_path = args.next() orelse "koral/problems/mytube/mytube.toml";
 
     const p = try koral.Params.load(a, io, params_path);
     defer a.free(p.out_dir);
@@ -681,7 +681,7 @@ test {
 
 ### (f) The `.toml`
 
-`PROBLEMS/mytube/mytube.toml`:
+`koral/problems/mytube/mytube.toml`:
 
 ```toml
 [physical]
@@ -701,7 +701,7 @@ out_dir  = "dumps/mytube"
 Build & run:
 
 ```sh
-zig build run-mytube -Doptimize=ReleaseFast -- PROBLEMS/mytube/mytube.toml
+zig build run-mytube -Doptimize=ReleaseFast -- koral/problems/mytube/mytube.toml
 ```
 
 ---
@@ -871,7 +871,7 @@ In `koral/io/scalars.zig` and `koral/io/dump.zig`:
    stay in sync — the `bufPrint` format has exactly 12 specifiers today), and add
    the column name to `scalar_header`.
 4. Populate it in the driver's per-cadence `ScalarRow` construction
-   (`scalarRow` in `PROBLEMS/<name>/main.zig`).
+   (`scalarRow` in `koral/problems/<name>/main.zig`).
 
 Keep reductions in **GU** — unit conversion is the driver's job at print time.
 
@@ -918,7 +918,7 @@ Where the major pieces live (all under `koral/` unless noted):
 | Reconstruction / wavespeeds / flux / Riemann | `recon/recon.zig`, `physics/wavespeeds.zig`, `physics/flux.zig`, `riemann/laxf.zig` |
 | Evolution driver | `sim.zig` |
 | Constrained transport, dynamo, radiative viscosity | `magn/ct.zig`, `magn/dynamo.zig`, `physics/radvisc.zig` |
-| PUFFY problem + quadrature | `problems/puffy.zig`, `PROBLEMS/puffy/main.zig`, `math/quad.zig` |
+| PUFFY problem + quadrature | `problems/puffy.zig`, `koral/problems/puffy/main.zig`, `math/quad.zig` |
 | Diagnostics / I/O | `io/scalars.zig`, `io/dump.zig` |
 | Build / tests / oracle | `build.zig`, `koral.zig` (`test {}`), `tools/gen_golden.sh`, `testing/golden.zig`, `testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/` |
 

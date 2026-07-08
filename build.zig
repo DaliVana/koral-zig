@@ -67,9 +67,27 @@ pub fn build(b: *std.Build) !void {
     b.step("bench-implicit", "time the implicit solver: scalar vs SIMD Jacobian")
         .dependOn(&run_bench.step);
 
-    // One executable per PROBLEMS/<name>/main.zig
+    // res2kdmp: convert a C KORAL serial restart (res####.head/.dat) into a Zig
+    // KDMP checkpoint so a C-initialized run can be continued by `puffy
+    // --restart`. Pure std.Io + byte-shuffling — no libc, honors -Doptimize.
+    const res2kdmp = b.addExecutable(.{
+        .name = "res2kdmp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/res2kdmp.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "koral", .module = koral }},
+        }),
+    });
+    b.installArtifact(res2kdmp);
+    const run_res2kdmp = b.addRunArtifact(res2kdmp);
+    if (b.args) |args| run_res2kdmp.addArgs(args);
+    b.step("res2kdmp", "convert a C restart (res####.head/.dat) to a KDMP checkpoint")
+        .dependOn(&run_res2kdmp.step);
+
+    // One executable per koral/problems/<name>/main.zig
     const io = b.graph.io;
-    var dir = try b.build_root.handle.openDir(io, "PROBLEMS", .{ .iterate = true });
+    var dir = try b.build_root.handle.openDir(io, "koral/problems", .{ .iterate = true });
     defer dir.close(io);
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
@@ -77,7 +95,7 @@ pub fn build(b: *std.Build) !void {
         const exe = b.addExecutable(.{
             .name = entry.name,
             .root_module = b.createModule(.{
-                .root_source_file = b.path(b.fmt("PROBLEMS/{s}/main.zig", .{entry.name})),
+                .root_source_file = b.path(b.fmt("koral/problems/{s}/main.zig", .{entry.name})),
                 .target = target,
                 .optimize = optimize,
                 .imports = &.{.{ .name = "koral", .module = koral }},

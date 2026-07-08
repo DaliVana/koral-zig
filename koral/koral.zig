@@ -87,7 +87,7 @@ pub const magn = struct {
 };
 
 pub const problems = struct {
-    pub const puffy = @import("problems/puffy.zig");
+    pub const puffy = @import("problems/puffy/puffy.zig");
 };
 
 pub const testing = struct {
@@ -170,7 +170,7 @@ test {
     _ = @import("radstep_tests.zig");
     _ = @import("radtube_tests.zig");
     _ = @import("math/quad.zig");
-    _ = @import("problems/puffy.zig");
+    _ = @import("problems/puffy/puffy.zig");
     _ = @import("puffy_tests.zig");
     _ = @import("puffy_golden_tests.zig");
     _ = @import("visc_golden_tests.zig");
@@ -181,6 +181,7 @@ test {
     _ = io.dump;
     _ = io.silo;
     _ = @import("scalars_tests.zig");
+    _ = @import("restart_tests.zig");
     _ = @import("threading_tests.zig");
     _ = @import("puffystep_golden_tests.zig");
 }

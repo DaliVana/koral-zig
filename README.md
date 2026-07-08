@@ -21,7 +21,7 @@ Requires Zig 0.16.x.
 ```bash
 zig build test                     # library unit tests (theory + golden)
 zig build                          # build all problem executables
-./zig-out/bin/puffy PROBLEMS/puffy/puffy.toml
+./zig-out/bin/puffy koral/problems/puffy/puffy.toml
 ```
 
 ## Testing strategy
@@ -247,7 +247,7 @@ natural conserved scale.
       floor), while ν, R^i_j and the dynamo B inherit C's qags kink error
       through calc_chi / Ê (~1e-3, the M11 keystone story; a bug would show
       far above it), under -Dslow-tests
-- [x] M13 — full PUFFY. **Wiring** (PROBLEMS/puffy/main.zig): the complete
+- [x] M13 — full PUFFY. **Wiring** (koral/problems/puffy/main.zig): the complete
       driver — the ko.c init sequence (limotorus + calc_BfromA + β-norm) then
       the CFL-driven RK2IMEX time loop, writing the scalar diagnostics time
       series and periodic binary primitive dumps, and printing NaN / fixup /

@@ -1,14 +1,23 @@
 //! PUFFY — radiative MHD limotorus around a Schwarzschild BH (a = 0)
 //! (port of koral_lite/PROBLEMS/PUFFY). MASS defaults to 10 M☉ but is set
 //! from the params file, so presets can retarget the scale (e.g. the
-//! Sagittarius A* preset at ~4.3e6 M☉ — see PROBLEMS/puffy/puffy3d_sgra.toml).
+//! Sagittarius A* preset at ~4.3e6 M☉ — see koral/problems/puffy/puffy3d_sgra.toml).
 //!
 //! M13: the full driver. Runs the ko.c init sequence (limotorus + calc_BfromA
-//! + β-normalization), then the RK2IMEX time loop (radiation implicit source,
-//! radiative shear viscosity, mean-field dynamo, polar-axis correction), and
-//! writes the scalar diagnostics time series (Ṁ, luminosity, H/R, held β) plus
-//! periodic binary primitive dumps. Serial by default; -D…/nthreads drives an
-//! optional std.Thread.Pool over the per-cell inversions.
+//! + β-normalization) — or, with `--restart <file|dir>`, continues from a KDMP
+//! checkpoint (C: fread_restartfile_bin) — then the RK2IMEX time loop
+//! (radiation implicit source, radiative shear viscosity, mean-field dynamo,
+//! polar-axis correction), and writes the scalar diagnostics time series (Ṁ,
+//! luminosity, H/R, held β) plus periodic KDMP primitive checkpoints (each a
+//! complete restart point). Serial by default; nthreads drives the persistent
+//! worker team over the per-cell inversions.
+//!
+//! CLI:  puffy [params.toml] [--restart <file|dir>]
+//!   --restart FILE  continue from that checkpoint;
+//!   --restart DIR   continue from the newest prims#####.kdmp in DIR;
+//!   (omitted)       start from scratch (C: NORESTART).
+//! Bridge a C serial restart (res####.head/.dat) into a KDMP with the
+//! `res2kdmp` tool (tools/res2kdmp.zig).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -127,15 +136,49 @@ fn writeScalars(io: std.Io, out_dir: []const u8, allocator: std.mem.Allocator, l
     };
 }
 
-fn writePrimDump(io: std.Io, out_dir: []const u8, allocator: std.mem.Allocator, s: *const SimT, idx: usize) void {
+/// Write a numbered KDMP checkpoint (`prims#####.kdmp`). Each such file is a
+/// complete restart point (its header carries t/nstep/out_idx), so a later run
+/// can continue from it via `--restart <file|dir>`.
+fn writePrimDump(io: std.Io, out_dir: []const u8, allocator: std.mem.Allocator, s: *const SimT, idx: u32) void {
     const bytes = allocator.alloc(u8, dump.primDumpSize(SimT, s)) catch return;
     defer allocator.free(bytes);
-    const n = dump.serializePrimDump(SimT, s, bytes);
+    const n = dump.serializePrimDump(SimT, s, idx, bytes);
     var buf: [1024]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "{s}/prims{d:0>5}.kdmp", .{ out_dir, idx }) catch return;
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes[0..n] }) catch |err| {
         std.debug.print("puffy: cannot write {s}: {s}\n", .{ path, @errorName(err) });
     };
+}
+
+/// Resolve the `--restart` argument to a concrete KDMP file path (caller owns
+/// the result and must free it). A directory selects its highest-numbered
+/// `*.kdmp` entry — the zero-padded `prims#####.kdmp` names sort lexically by
+/// index, so the lexical maximum is the latest checkpoint. A plain file is
+/// returned as-is. Errors if a directory holds no `.kdmp` file.
+fn resolveRestartPath(io: std.Io, allocator: std.mem.Allocator, arg: []const u8) ![]u8 {
+    var d = std.Io.Dir.cwd().openDir(io, arg, .{ .iterate = true }) catch |err| switch (err) {
+        error.NotDir => return allocator.dupe(u8, arg), // a plain file
+        else => return err,
+    };
+    defer d.close(io);
+
+    var best: ?[]u8 = null;
+    errdefer if (best) |b| allocator.free(b);
+    var it = d.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".kdmp")) continue;
+        if (best == null or std.mem.order(u8, entry.name, best.?) == .gt) {
+            if (best) |b| allocator.free(b);
+            best = try allocator.dupe(u8, entry.name);
+        }
+    }
+    const name = best orelse {
+        std.debug.print("puffy: no .kdmp checkpoint found in directory '{s}'\n", .{arg});
+        return error.NoRestartFile;
+    };
+    defer allocator.free(name);
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ arg, name });
 }
 
 /// Write a VisIt-openable `.silo` snapshot (koral/io/silo.zig). No-op unless
@@ -219,10 +262,33 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
 
+    // CLI: `puffy [params.toml] [--restart <file|dir>]`. The first positional
+    // is the params file; `--restart` (or `-r`) points at a KDMP checkpoint to
+    // continue from — a file restarts from it directly, a directory continues
+    // from its latest `prims#####.kdmp`. With no `--restart`, the run starts
+    // from scratch (the C `NORESTART` behavior).
     var args = std.process.Args.Iterator.init(init.minimal.args);
     defer args.deinit();
     _ = args.next(); // program name
-    const params_path = args.next() orelse "PROBLEMS/puffy/puffy.toml";
+    var params_path: []const u8 = "koral/problems/puffy/puffy.toml";
+    var restart_arg: ?[]const u8 = null;
+    var have_params = false;
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--restart") or std.mem.eql(u8, arg, "-r")) {
+            restart_arg = args.next() orelse {
+                std.debug.print("puffy: --restart needs a file or directory argument\n", .{});
+                return error.MissingRestartArg;
+            };
+        } else if (std.mem.startsWith(u8, arg, "--restart=")) {
+            restart_arg = arg["--restart=".len..];
+        } else if (!have_params) {
+            params_path = arg;
+            have_params = true;
+        } else {
+            std.debug.print("puffy: unexpected extra argument '{s}'\n", .{arg});
+            return error.BadArgs;
+        }
+    }
 
     var p = koral.Params.load(allocator, io, params_path) catch |err| {
         std.debug.print("puffy: cannot load params from '{s}': {s}\n", .{ params_path, @errorName(err) });
@@ -240,11 +306,23 @@ pub fn main(init: std.process.Init) !void {
     // must be set first. RMIN is recomputed from the spin BEFORE makeGridNz so
     // the inner radial boundary stays inside the shrinking Kerr horizon (a
     // params `rmin > 0` is an explicit override; otherwise rminForSpin keeps
-    // the fiducial fractional excision depth — bit-exactly 1.85 at a = 0).
-    // RMAX/MKSR0/MKSH0 stay fixed PUFFY constants, independent of mass/spin.
+    // the fiducial fractional excision depth — bit-exactly 1.85 at a = 0). RMAX
+    // is NOT auto-derived (the torus extent is dimensionless in GM units and
+    // only weakly, inward, spin-dependent, so 500 M always contains it); it is
+    // just an optional `rmax > 0` override to enlarge the domain for a long
+    // outflow/wind run. MKSR0/MKSH0 stay fixed PUFFY constants.
     puffy.mass = p.mass;
     puffy.mp.a = p.bhspin;
     puffy.rmin = if (p.rmin > 0.0) p.rmin else puffy.rminForSpin(p.bhspin);
+    if (p.rmax > 0.0) puffy.rmax = p.rmax; // else keep the fiducial 500 M
+
+    if (puffy.rmax <= puffy.rmin) {
+        std.debug.print(
+            "puffy: invalid domain — RMAX ({d}) must exceed RMIN ({d}).\n",
+            .{ puffy.rmax, puffy.rmin },
+        );
+        return error.InvalidDomain;
+    }
 
     var s = try SimT.init(allocator, puffy.makeGridNz(p.nx, p.ny, p.nz), options(&p));
     defer s.deinit();
@@ -257,8 +335,8 @@ pub fn main(init: std.process.Init) !void {
     else
         0.0;
     std.debug.print(
-        "puffy: NV={d} grid {d}×{d}×{d} (+{d} ghosts) | M={d} M☉ (GM/c³={e:.4}s) a={d} r_h={d:.4} RMIN={d:.4} (~{d:.1} cells inside) | threads={d} | build={s}\n",
-        .{ L.count, s.grid.nx, s.grid.ny, s.grid.nz, s.grid.ng, p.mass, u.gmc3(), p.bhspin, r_hor, puffy.rmin, cells_inside, p.nthreads, @tagName(builtin.mode) },
+        "puffy: NV={d} grid {d}×{d}×{d} (+{d} ghosts) | M={d} M☉ (GM/c³={e:.4}s) a={d} r_h={d:.4} RMIN={d:.4} (~{d:.1} cells inside) RMAX={d:.1} | threads={d} | build={s}\n",
+        .{ L.count, s.grid.nx, s.grid.ny, s.grid.nz, s.grid.ng, p.mass, u.gmc3(), p.bhspin, r_hor, puffy.rmin, cells_inside, puffy.rmax, p.nthreads, @tagName(builtin.mode) },
     );
     if (puffy.rmin >= r_hor) {
         std.debug.print(
@@ -288,10 +366,41 @@ pub fn main(init: std.process.Init) !void {
         );
     }
 
-    // ---- initialization (ko.c:140-263 + the solve preamble dt guess) ----
-    const fac = try puffy.initAll(SimT, &s);
-    s.initTimestepGuess();
-    std.debug.print("puffy: init done — β-normalization fac = {e:.6}\n", .{fac});
+    // ---- initialization or restart ----------------------------------------
+    // Fresh start: build the torus (ko.c:140-263). Restart/continue: load a
+    // KDMP checkpoint (C: fread_restartfile_bin) — p stored verbatim, u = p2u
+    // with no re-flooring — then rebuild ghosts + the dt guess (C: set_bc +
+    // the problem.c dt preamble). Everything else (u, wavespeeds, flags) is
+    // derived from p, so the primitives + t are the whole restart state.
+    var out_idx: u32 = 0;
+    var restarted = false;
+    if (restart_arg) |arg| {
+        const file = try resolveRestartPath(io, allocator, arg);
+        defer allocator.free(file);
+        const bytes = std.Io.Dir.cwd().readFileAlloc(io, file, allocator, .limited(1 << 30)) catch |err| {
+            std.debug.print("puffy: cannot read restart file '{s}': {s}\n", .{ file, @errorName(err) });
+            return err;
+        };
+        defer allocator.free(bytes);
+        const h = dump.loadPrimDump(SimT, &s, bytes) catch |err| {
+            std.debug.print("puffy: cannot load restart '{s}': {s}\n", .{ file, @errorName(err) });
+            return err;
+        };
+        s.t = h.t;
+        s.nstep = h.nstep;
+        out_idx = h.out_idx;
+        restarted = true;
+        try s.setBc(s.t, true);
+        s.initTimestepGuess();
+        std.debug.print(
+            "puffy: RESTARTED from {s} — t={e:.6}, nstep={d}, continuing from frame #{d}\n",
+            .{ file, h.t, h.nstep, h.out_idx },
+        );
+    } else {
+        const fac = try puffy.initAll(SimT, &s);
+        s.initTimestepGuess();
+        std.debug.print("puffy: init done — β-normalization fac = {e:.6}\n", .{fac});
+    }
 
     // scalars.dat log + output cadence (DTOUT1 in code time)
     std.Io.Dir.cwd().createDirPath(io, p.out_dir) catch {};
@@ -299,14 +408,23 @@ pub fn main(init: std.process.Init) !void {
     defer log.deinit(allocator);
     try log.appendSlice(allocator, dump.scalar_header);
 
-    var out_idx: usize = 0;
-    var next_out: f64 = p.tstart + p.dtout1;
+    // On restart, advance next_out to the next DTOUT1 boundary past the resumed
+    // time (mirroring C's floor(t/dtout) trigger) so we don't immediately
+    // re-emit a frame; on a fresh start the first frame is at tstart+dtout1.
+    var next_out: f64 = if (restarted and p.dtout1 > 0)
+        (@floor(s.t / p.dtout1) + 1.0) * p.dtout1
+    else
+        p.tstart + p.dtout1;
     {
         const row = try scalarRow(&s, 0.0);
         try dump.appendScalarLine(&log, allocator, row);
         writeScalars(io, p.out_dir, allocator, log.items);
-        writePrimDump(io, p.out_dir, allocator, &s, out_idx);
-        writeSiloDump(io, p.out_dir, allocator, &s, out_idx);
+        // A fresh run writes frame 0 as its first checkpoint; a restart already
+        // has frame out_idx on disk, so it only re-seeds the diagnostics.
+        if (!restarted) {
+            writePrimDump(io, p.out_dir, allocator, &s, out_idx);
+            writeSiloDump(io, p.out_dir, allocator, &s, out_idx);
+        }
     }
 
     // ---- RK2IMEX time loop -------------------------------------------------
@@ -339,7 +457,10 @@ pub fn main(init: std.process.Init) !void {
             const row = try scalarRow(&s, dt);
             try dump.appendScalarLine(&log, allocator, row);
             writeScalars(io, p.out_dir, allocator, log.items);
-            if (p.dtout2 > 0) writePrimDump(io, p.out_dir, allocator, &s, out_idx);
+            // The KDMP dump is the restart checkpoint (C writes it every
+            // DTOUT1), so emit it on every output frame — a `--restart` on this
+            // out_dir then continues from the newest one.
+            writePrimDump(io, p.out_dir, allocator, &s, out_idx);
             writeSiloDump(io, p.out_dir, allocator, &s, out_idx);
             std.debug.print(
                 "puffy: t={d:.2} nstep={d} dt={e:.3} | Ṁ={e:.3} L={e:.3} H/R={d:.3} β⁻¹={e:.3} | nan={d} hdfix={d} radimpfail={d}\n",

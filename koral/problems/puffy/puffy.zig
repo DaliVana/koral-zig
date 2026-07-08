@@ -25,25 +25,25 @@
 //! them once (TorusConsts) — bitwise the same values.
 
 const std = @import("std");
-const config = @import("../config.zig");
-const layout = @import("../layout.zig");
-const grid_mod = @import("../grid.zig");
-const geometry = @import("../geometry.zig");
-const relele = @import("../relele.zig");
-const frames = @import("../frames.zig");
-const p2u_mod = @import("../p2u.zig");
-const hydro = @import("../physics/hydro.zig");
-const mhd = @import("../physics/bfield.zig");
-const thermo = @import("../physics/thermo.zig");
-const radiation = @import("../physics/radiation.zig");
-const invert_rad = @import("../solve/invert_rad.zig");
-const units_mod = @import("../units.zig");
-const metric = @import("../metric/metric.zig");
-const coco = @import("../metric/coco.zig");
-const precompute = @import("../metric/precompute.zig");
-const quad = @import("../math/quad.zig");
-const ct = @import("../magn/ct.zig");
-const sim_mod = @import("../sim.zig");
+const config = @import("../../config.zig");
+const layout = @import("../../layout.zig");
+const grid_mod = @import("../../grid.zig");
+const geometry = @import("../../geometry.zig");
+const relele = @import("../../relele.zig");
+const frames = @import("../../frames.zig");
+const p2u_mod = @import("../../p2u.zig");
+const hydro = @import("../../physics/hydro.zig");
+const mhd = @import("../../physics/bfield.zig");
+const thermo = @import("../../physics/thermo.zig");
+const radiation = @import("../../physics/radiation.zig");
+const invert_rad = @import("../../solve/invert_rad.zig");
+const units_mod = @import("../../units.zig");
+const metric = @import("../../metric/metric.zig");
+const coco = @import("../../metric/coco.zig");
+const precompute = @import("../../metric/precompute.zig");
+const quad = @import("../../math/quad.zig");
+const ct = @import("../../magn/ct.zig");
+const sim_mod = @import("../../sim.zig");
 
 const Grid = grid_mod.Grid;
 const Geometry = geometry.Geometry;
@@ -92,7 +92,15 @@ pub fn rminForSpin(a: f64) f64 {
     return rmin_ref * metric.rHorizonBL(a) / metric.rHorizonBL(0.0);
 }
 
-pub const rmax: f64 = 500.0; // RMAX
+/// RMAX — the outer radial boundary read by `makeGridNz`. A module global (like
+/// `rmin`): the driver may overwrite it from a params `rmax > 0` override, e.g.
+/// to extend the domain for a long outflow/wind run. Default 500 M snugly
+/// contains the initial torus (midplane edge ≈ 499 M at a = 0; the torus
+/// shrinks inward with spin), which is the C-validated PUFFY value. Unlike
+/// `rmin` it is NOT derived from mass/spin — the torus extent is dimensionless
+/// in GM units and only weakly (inward) spin-dependent, so 500 always contains
+/// it; enlarging RMAX is a modeling choice, not an auto-tracked scale.
+pub var rmax: f64 = 500.0; // RMAX
 pub const rhoatmmin: f64 = 1.0e-24; // RHOATMMIN
 pub const maxbeta: f64 = 1.0 / 20.0; // MAXBETA (after #undef, BETANORMFULL)
 

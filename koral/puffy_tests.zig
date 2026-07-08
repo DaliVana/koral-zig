@@ -1,4 +1,4 @@
-//! M11 theory gates for the PUFFY problem code (problems/puffy.zig):
+//! M11 theory gates for the PUFFY problem code (problems/puffy/puffy.zig):
 //!
 //!   * the GK21 ln f quadrature against a test-local tanh-sinh integrator
 //!   * lamBL / findRml bisection residuals at the 5ε target
@@ -21,7 +21,7 @@ const sim_mod = @import("sim.zig");
 const relele = @import("relele.zig");
 const frames = @import("frames.zig");
 const quad = @import("math/quad.zig");
-const puffy = @import("problems/puffy.zig");
+const puffy = @import("problems/puffy/puffy.zig");
 const thermo = @import("physics/thermo.zig");
 const mhd = @import("physics/bfield.zig");
 const radiation = @import("physics/radiation.zig");

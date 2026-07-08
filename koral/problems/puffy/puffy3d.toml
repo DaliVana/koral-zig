@@ -2,7 +2,7 @@
 # Validated bit-for-bit against C KORAL (M14; see docs/M14_3D_PLAN_2026-07-07.md).
 #
 # Run:  zig build puffy -Doptimize=ReleaseFast
-#       ./zig-out/bin/puffy PROBLEMS/puffy/puffy3d.toml
+#       ./zig-out/bin/puffy koral/problems/puffy/puffy3d.toml
 #
 # COST: ~nz× the 2D step cost. This moderate 128×120×16 grid is meant to be
 # watchable on a workstation; the production science grid (384×360×32) is an

@@ -1,7 +1,7 @@
 # PUFFY 3D — SAGITTARIUS A* preset (copy of puffy3d.toml, retargeted mass).
 #
 # Run:  zig build puffy -Doptimize=ReleaseFast
-#       ./zig-out/bin/puffy PROBLEMS/puffy/puffy3d_sgra.toml
+#       ./zig-out/bin/puffy koral/problems/puffy/puffy3d_sgra.toml
 #
 # ============================================================================
 # WHAT THIS PRESET IS  (read before trusting the output as "Sgr A*")
