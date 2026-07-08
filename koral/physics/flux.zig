@@ -62,9 +62,11 @@ pub fn fFluxPrime(
         bsq = b.bsq;
     }
 
-    // T^μν → T^μ_ν (reusing the u/b just computed)
+    // T^μν → T^μ_ν, but only the row this face flux consumes (idim+1):
+    // ff[vx/vy/vz] read tij_ud[idim+1][1..3]. Row-restricted lowering is
+    // bit-identical to indices2221(...)[idim+1] at ¼ the madds (P2 #7).
     const tij_uu = hydro.calcTijFromState(cfg, pp, geom, gamma_adiab, u, bcon, bsq);
-    const tij_ud = relele.indices2221(tij_uu, &geom.gg);
+    const tij_ud_row = relele.indices2221Row(tij_uu, &geom.gg, idim + 1);
 
     const pre = (gamma_adiab - 1.0) * ugas;
     const etap = ugas + pre + bsq; // eta - rho
@@ -81,9 +83,9 @@ pub fn fFluxPrime(
         ff[L.index(.uu)] += -gdetu * bcon[idim + 1] * bcov[0];
     }
 
-    ff[L.index(.vx)] = gdetu * tij_ud[idim + 1][1];
-    ff[L.index(.vy)] = gdetu * tij_ud[idim + 1][2];
-    ff[L.index(.vz)] = gdetu * tij_ud[idim + 1][3];
+    ff[L.index(.vx)] = gdetu * tij_ud_row[1];
+    ff[L.index(.vy)] = gdetu * tij_ud_row[2];
+    ff[L.index(.vz)] = gdetu * tij_ud_row[3];
 
     // magnetic rows: induction-equation fluxes b^i u^d − b^d u^i
     if (comptime L.hasVar(.b1)) {
@@ -92,12 +94,13 @@ pub fn fFluxPrime(
         ff[L.index(.b3)] = gdetu * (bcon[3] * u.con[idim + 1] - bcon[idim + 1] * u.con[3]);
     }
 
-    // radiative rows: R^d_ν (pure M1; + Rijvisc in M12)
+    // radiative rows: R^d_ν (pure M1; + Rijvisc in M12) — only row idim+1 is
+    // read, so lower just that row (bit-identical to indices2221(...)[idim+1]).
     if (comptime L.hasVar(.ee)) {
         const rij_uu = try radiation.calcRij(cfg, pp, geom);
-        const rij_ud = relele.indices2221(rij_uu, &geom.gg);
+        const rij_ud_row = relele.indices2221Row(rij_uu, &geom.gg, idim + 1);
         for (0..4) |nu| {
-            ff[L.index(.ee) + nu] = gdetu * rij_ud[idim + 1][nu];
+            ff[L.index(.ee) + nu] = gdetu * rij_ud_row[nu];
         }
     }
 

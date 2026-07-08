@@ -374,9 +374,11 @@ transcribed Mathematica export.
 `metric.compute` at the center, then `applyKrisCorrection` — the `GDETIN==1`/
 `MODYFIKUJKRZYSIE` branch that rewrites the Christoffel trace Γ^μ_{κμ} so it equals the
 *finite-difference* √-g gradient across the cell. This makes the geometric source terms
-telescope against the discrete flux divergence so uniform states stay uniform. It costs two
-extra `metric.compute` evaluations per cell (at the two faces), so the cache build is ~3×
-the naive center-only cost.
+telescope against the discrete flux divergence so uniform states stay uniform. It needs √-g at
+the two faces per direction, but *only* √-g — so it calls `metric.gdetAt` (just `gcovDual` +
+`det4` + `@sqrt(-det.v)`, bitwise-identical to `compute().gdet`) rather than a full `metric.compute`,
+skipping the dual inverse and the 64-entry Christoffel assembly at those samples. The cache build is
+still center-`compute`-dominated but no longer pays two extra full inversions per cell.
 
 Faces store metric blocks at all x/y/z **left** faces. Read accessors:
 
@@ -563,6 +565,17 @@ opExplicit(dt):
   6. calcU2p()               invert u → p, run fixups, refresh ghosts.
 ```
 
+`sweep(dim)` and `fluxesAtFaces` are band-parallel over `cross[0]` and iterate with the
+**contiguous x index innermost**: for `dim==0` that is the sweep direction itself; for `dim!=0`,
+x is `cross[0]` — the band range each worker owns — so the worker keeps x as its band dimension but
+iterates it innermost, with the sweep direction in the middle (`c1 outer → i middle → x inner`),
+turning the five-point stencil into contiguous x streams instead of `iy`/`iz` strides. The per-face
+work lives in `inline fn sweepFace`/`fluxFace`; `dx5` (function of `(i,dim)`) is hoisted out of the
+inner loop. Because every `(i,c0,c1)` writes only its own face slots, the loop order is free and
+bit-identical. The per-cell inner loops (`updateRows`, the stage arithmetic, `fluxFace`'s combine)
+`load` each accessed cell/face into an `[NV]f64` buffer once and index the buffer per component,
+rather than recomputing the flat offset `NV` times.
+
 The **metric source** (`metricSource`, C `f_metric_source_term_arb`, GDETIN==1) only the
 Christoffel-contraction rows survive: it builds T^μν via `hydro.calcTij`, lowers one index
 via `relele.indices2221`, and accumulates `ss[row] += gdet · T^k_l · Γ^l_{ν k}` (and the
@@ -573,18 +586,22 @@ S_ν = √-g T^k_l Γ^l_{νk}.
 
 `opImplicit(t, dtin)` is a no-op unless the layout has `.ee` and `opt.opac != null`.
 Otherwise it sets `impl_dt = dtin` and dispatches `implicitRowsWorker` over rows (via
-`parallelRows`), each cell calling `ImplT.solveImplicitLab` (the 6-rung Newton ladder,
+`parallelRange` on the persistent team, [§10](#10-the-threading-model)), each cell calling
+`ImplT.solveImplicitLab` (the 6-rung Newton ladder,
 [§6](#6-the-solver-stack-p2u-u2p-the-implicit-ladder-fixups)). It sets the
 `radimp_fixup` flag (0 ok / −1 fail), tallies iteration/failure counters, then runs
 `cellFixup(.radimp_fixup)`.
 
 ### 5.6 `calcU2p` — the inversion sweep
 
-`calcU2p` (C `calc_u2p`) runs `parallelRows(u2pRowsWorker)` — the per-cell conserved→
+`calcU2p` (C `calc_u2p`) runs `parallelRange(u2pRowsWorker)` — the per-cell conserved→
 primitive inversion (`invert.u2pMhd` then, if radiation, `invert_rad.u2pRad`, then floor
-checks) — followed serially by `cellFixup(.hd_fixup)`, `cellFixup(.rad_fixup)` (if
-radiation), and `setBc(time, false)`. The inversion is row-parallel; the fixup and BC
-passes are serial because they read across rows.
+checks) — followed by `cellFixup(.hd_fixup)`, `cellFixup(.rad_fixup)` (if radiation), and
+`setBc(time, false)`. All three also run on the team ([§10](#10-the-threading-model)): the
+fixup averaging reads the *frozen* pre-pass `p` and writes only `_bak`, and `setBc` fills
+disjoint ghost faces — so both stay bit-identical to serial. `cellFixup` first scans the flag
+column (`anyFlagSet`) and returns before any copy when nothing is flagged, which is the common
+case.
 
 ---
 
@@ -674,7 +691,9 @@ switches (`start_with_bisect`, `scale_jacobian`, `allow_rad_ceiling`,
 the whole-grid `u_bak`/`p_bak` backups. `hd_fixup` never averages ρ or B; `rad_fixup`
 averages only the radiation slots; `radimp_fixup` averages both fluids but never ρ/B. The
 "enough neighbours" threshold scales with dimensionality (1D≥1, 2D≥2, 3D≥3). Corrected
-polar-axis cells are skipped.
+polar-axis cells are skipped. It first scans the flag column (`anyFlagSet`) and returns
+immediately when nothing carries `which` — the common case — skipping the four full-grid
+`u`↔`u_bak`/`p`↔`p_bak` copies that would otherwise run every call.
 
 ---
 
@@ -797,20 +816,35 @@ The z faces are `unreachable` (TNZ=1).
 
 ## 10. The threading model
 
-`parallelRows(worker)` splits the θ-index range `[0, ny)` across `max(1, nthreads)` threads
-(inline/serial when `nt ≤ 1` or `ny ≤ 1`), spawning up to `min(nt, 64, ny)` `std.Thread`s
-(spawn failure falls back to inline), joining them, summing the per-worker integer counters
-(`ChunkResult { err, n_fail, n_iters }`), and returning the first error.
+Threading is a persistent **worker team** (`sim/threading.zig::Team`), created once in
+`Sim.init` and owned for the run. `Team.init(nthreads)` spawns `nthreads−1` helper OS threads that
+park on a hand-rolled futex (atomic wait/wake — Zig 0.16 moved `Mutex`/`Condition` behind the
+`std.Io` event loop, so the team uses the same primitive `std.Io.Threaded` would use internally);
+the main thread participates in every region. `nthreads ≤ 1` leaves `team = null` and every
+dispatch runs inline — the bit-identical serial path. (Spawn failure just yields a narrower team,
+never an error.)
 
-Two passes are parallelised: the inversion sweep (`u2pRows` via `u2pRowsWorker`) and the
-implicit source solve (`implicitRows` via `implicitRowsWorker`). Both are **cell-local** —
-each cell reads and writes only its own state — and the row ranges are **disjoint**, so
-there are no cross-row data races. The only reductions are integer counters, summed *after*
-the join in a fixed order, which is order-independent. Therefore the parallel result is
-**bit-identical to serial**. Anything that reads across rows — `cellFixup`, `setBc`,
-`doCorrect` — is deliberately kept *outside* the parallel region and runs serially.
+`parallelRange(Ctx, ctx, team, lo, hi, worker)` runs one **region**: it splits `[lo, hi)` into
+tiles (~8 per worker) and workers claim contiguous tiles through a single atomic ticket counter, so
+cheap tiles fly and expensive tiles straggle-balance (the implicit solver's per-cell cost varies by
+orders of magnitude between the disk body and the polar funnel — a static split would let the
+slowest chunk gate the whole pass). Each worker accumulates a stack-local `ChunkResult`
+(`{ err, n_fail, n_iters, tsd_max, tsd_min }`) across its tiles; after the region these merge
+order-insensitively — integer counters sum, `tsd_max`/`tsd_min` reduce by max/min, `err` takes the
+first — so the merged result does **not** depend on how tiles fell to workers.
 
-`threading_tests.zig` pins this bit-identity.
+Effectively the whole step runs on the team: `calcWavespeeds`, the three `sweep`s and
+`fluxesAtFaces`, the conserved update (`updateRows`), the RK stage arithmetic
+(`stageDeriv`/`stageCombine`, with `parallelCopy` for whole-field copies and `parallelZero` for the
+flux clears), the `u2p` inversion (`u2pRows`), the implicit source solve (`implicitRows`), the
+`cellFixup` neighbour-averaging (flags frozen during the pass; reads the pre-pass `p`, writes only
+the `_bak` slots), the boundary fills (`setBc`), and the polar-axis correction (`doCorrect`). Every
+one writes only its own cell/row/band's output slots (disjoint), and the only cross-tile reductions
+are the order-insensitive `ChunkResult` merges — so **the parallel result is bit-identical to
+serial at any thread count**. That bit-identity is what lets the goldens be diffed bit-for-bit
+regardless of `nthreads`.
+
+`threading_tests.zig` pins this bit-identity across thread counts.
 
 ---
 

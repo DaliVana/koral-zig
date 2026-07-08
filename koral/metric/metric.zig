@@ -135,6 +135,17 @@ pub fn compute(coords: Coords, mp: MetricParams, x: [4]f64) CoordData {
     return out;
 }
 
+/// Just √−g at a point: gcovDual + det4, skipping the 16-cofactor dual
+/// inversion and the Christoffel assembly that compute() also performs. The FP
+/// operations are exactly compute()'s gdet path (`@sqrt(-det4(gcovDual).v)`),
+/// so the result is bitwise-identical to `compute(...).gdet`. Used where only
+/// gdet is needed — the face samples in applyKrisCorrection, which discarded
+/// everything else compute() built (P2 #9).
+pub fn gdetAt(coords: Coords, mp: MetricParams, x: [4]f64) f64 {
+    const g = gcovDual(coords, mp, x);
+    return @sqrt(-det4(g).v);
+}
+
 /// ∂_m g_ab from the dual derivatives (∂_t = 0).
 inline fn dpart(g: [4][4]Dual3, a: usize, b: usize, m: usize) f64 {
     return if (m == 0) 0.0 else g[a][b].d[m - 1];

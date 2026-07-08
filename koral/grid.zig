@@ -84,24 +84,28 @@ pub const Grid = struct {
     /// x(i) = ½(xb(i) + xb(i+1)) — for irrational bounds this differs from
     /// min + (i+½)dx by an ulp, and everything downstream (metric cache,
     /// sweeps) must see C's bits.
-    pub fn xc(g: Grid, ix: i64) f64 {
+    // xc/yc/zc/xl/yl/zl/cellSize are leaf coordinate helpers hit
+    // O(cells × passes)/step in the sweep and metric loops; `inline` so
+    // Debug/ReleaseSafe do not pay a call per access. No FP change → golden-safe
+    // (P2 #10).
+    pub inline fn xc(g: Grid, ix: i64) f64 {
         return 0.5 * (g.xl(ix) + g.xl(ix + 1));
     }
-    pub fn yc(g: Grid, iy: i64) f64 {
+    pub inline fn yc(g: Grid, iy: i64) f64 {
         return 0.5 * (g.yl(iy) + g.yl(iy + 1));
     }
-    pub fn zc(g: Grid, iz: i64) f64 {
+    pub inline fn zc(g: Grid, iz: i64) f64 {
         return 0.5 * (g.zl(iz) + g.zl(iz + 1));
     }
 
     /// Left-face internal coordinate of cell ix (C: get_xb).
-    pub fn xl(g: Grid, ix: i64) f64 {
+    pub inline fn xl(g: Grid, ix: i64) f64 {
         return g.minx + @as(f64, @floatFromInt(ix)) * g.dx;
     }
-    pub fn yl(g: Grid, iy: i64) f64 {
+    pub inline fn yl(g: Grid, iy: i64) f64 {
         return g.miny + @as(f64, @floatFromInt(iy)) * g.dy;
     }
-    pub fn zl(g: Grid, iz: i64) f64 {
+    pub inline fn zl(g: Grid, iz: i64) f64 {
         return g.minz + @as(f64, @floatFromInt(iz)) * g.dz;
     }
 
@@ -109,7 +113,7 @@ pub const Grid = struct {
     /// (finite.c:2457). For irrational bounds this can differ from the
     /// nominal spacing by an ulp *per cell*, and the C evolution uses this
     /// per-cell value everywhere, so step-level diffing requires it.
-    pub fn cellSize(g: Grid, i: i64, dim: usize) f64 {
+    pub inline fn cellSize(g: Grid, i: i64, dim: usize) f64 {
         return switch (dim) {
             0 => g.xl(i + 1) - g.xl(i),
             1 => g.yl(i + 1) - g.yl(i),

@@ -56,8 +56,11 @@ pub fn applyKrisCorrection(coords: Coords, mp: MetricParams, g: *const Grid, d: 
             },
             else => unreachable,
         }
-        const gdet_hi = metric.compute(coords, mp, x_hi).gdet;
-        const gdet_lo = metric.compute(coords, mp, x_lo).gdet;
+        // Only gdet at the two faces is needed; gdetAt runs gcovDual + det4
+        // and skips the inversion + Christoffels compute() would also build
+        // (bit-identical to compute().gdet — P2 #9).
+        const gdet_hi = metric.gdetAt(coords, mp, x_hi);
+        const gdet_lo = metric.gdetAt(coords, mp, x_lo);
         const dk = (gdet_hi - gdet_lo) / (dxs[kappa - 1] * gdet_c);
 
         for (0..4) |mu| {

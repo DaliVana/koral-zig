@@ -287,3 +287,21 @@ propagate instead of `catch unreachable`; `fFluxPrime` refuses a non-finite flux
 CFL dt and exits non-zero on a NaN/blow-up; and the metric cache zeroes its previously-
 undefined `gcon` column-4 slots (deterministic `Geometry`). All golden batteries remain
 byte-for-byte identical (`-Dslow-tests`: 215/216).
+
+**Post-M13 performance (2026-07-08):** priority tier P2 of the same review — all
+golden-safe-by-construction. The threading rewrite (persistent worker team + dynamic-tile
+dispatch, whole explicit path parallelised) had already landed; this pass added: `cellFixup`
+early-outs the four full-grid copies when no cell is flagged (the common case); the `sweep`/flux
+loops iterate the contiguous x index innermost so the stencil streams instead of striding `iy`/`iz`;
+the per-component update/stage/flux-combine loops stack-buffer each cell once instead of recomputing
+the offset `NV` times; `fFluxPrime` lowers only the stress-tensor row it uses and drops a dead
+`Qdotnp` chain (a division/u2p); the metric cache reads face √-g via `metric.gdetAt` instead of a
+full inverse+Christoffel `compute`; and the hot leaf accessors are `inline`. Bit-identical
+(`-Dslow-tests`: 215/216). A/B-measured on the PUFFY 384×360 problem in ReleaseFast (25 steps,
+`/usr/bin/time -l`): **−7% instructions retired** (deterministic), **−3.7% stepping wall
+single-thread / −6.1% at nthreads=12**, total wall −4%; per-phase `fixup` −96%, `stage` −80%,
+`fluxes` −41%, `update` −22%, `sweep` −9%, init −4.7%. The implicit radiation solver (~60% of the
+step) was deliberately left untouched (deferred review item), which bounds the whole-step figure.
+Two review items were consciously deferred (the sweep face-geometry carry — marginal, the geometry is
+a cache read; and the wavespeed/implicit state-sharing — invasive with an FP-shape trap the review
+itself flags); see the P2 tier notes.

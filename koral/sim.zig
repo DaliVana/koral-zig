@@ -405,20 +405,23 @@ pub fn Sim(comptime cfg: config.Config) type {
             };
         }
 
-        fn flagIdx(self: *const Self, f: Flag, ix: i64, iy: i64, iz: i64) usize {
+        // flagIdx/getFlag/setFlag/scGet/scSet are leaf accessors hit
+        // O(cells × passes)/step; `inline` for Debug/ReleaseSafe (no FP change,
+        // golden-safe — P2 #10).
+        inline fn flagIdx(self: *const Self, f: Flag, ix: i64, iy: i64, iz: i64) usize {
             return (self.p.cellOffset(ix, iy, iz) / NV) * n_flags + @intFromEnum(f);
         }
-        pub fn getFlag(self: *const Self, f: Flag, ix: i64, iy: i64, iz: i64) i32 {
+        pub inline fn getFlag(self: *const Self, f: Flag, ix: i64, iy: i64, iz: i64) i32 {
             return self.flags[self.flagIdx(f, ix, iy, iz)];
         }
-        pub fn setFlag(self: *Self, f: Flag, ix: i64, iy: i64, iz: i64, v: i32) void {
+        pub inline fn setFlag(self: *Self, f: Flag, ix: i64, iy: i64, iz: i64, v: i32) void {
             self.flags[self.flagIdx(f, ix, iy, iz)] = v;
         }
 
-        fn scGet(self: *const Self, s: Scal, ix: i64, iy: i64, iz: i64) f64 {
+        inline fn scGet(self: *const Self, s: Scal, ix: i64, iy: i64, iz: i64) f64 {
             return self.scal.get(@intFromEnum(s), ix, iy, iz);
         }
-        fn scSet(self: *Self, s: Scal, ix: i64, iy: i64, iz: i64, v: f64) void {
+        inline fn scSet(self: *Self, s: Scal, ix: i64, iy: i64, iz: i64, v: f64) void {
             self.scal.set(@intFromEnum(s), ix, iy, iz, v);
         }
 
@@ -773,6 +776,27 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// Averages flagged cells from their non-flagged in-domain neighbors.
         /// U2PMHD never averages rho or the magnetic field (iv != RHO &&
         /// iv < B1); U2PRAD averages only the radiative block (EE..FZ).
+        /// True if any domain cell carries flag `which`. Early-out scan for
+        /// cellFixup — reads one i32/cell (getFlag is inline) and returns on the
+        /// first hit. Serial: the scan is ~NV× cheaper than the copies it may
+        /// save, and short-circuits (P2 #3).
+        fn anyFlagSet(self: *const Self, comptime which: Flag) bool {
+            const nx = self.nxi();
+            const ny = self.nyi();
+            const nz = self.nzi();
+            var iz: i64 = 0;
+            while (iz < nz) : (iz += 1) {
+                var iy: i64 = 0;
+                while (iy < ny) : (iy += 1) {
+                    var ix: i64 = 0;
+                    while (ix < nx) : (ix += 1) {
+                        if (self.getFlag(which, ix, iy, iz) != 0) return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         pub fn cellFixup(self: *Self, comptime which: Flag) Error!void {
             const enabled = switch (which) {
                 // C: DOFIXUPS && DOU2PMHDFIXUPS / DOU2PRADFIXUPS / DORADIMPFIXUPS
@@ -784,6 +808,16 @@ pub fn Sim(comptime cfg: config.Config) type {
             if (!enabled) return;
             self.timers.begin(.fixup);
             defer self.timers.end();
+
+            // Common case: no cell carries `which` this pass. Then fixupRows
+            // writes nothing (every cell hits `getFlag == 0 → continue`), so the
+            // four full-grid copies below (u↔u_bak, p↔p_bak — ~4×NV×cells×8 B,
+            // ~350 MB/step at production size across the ~6 hd + radimp calls)
+            // are pure churn. Scan the flag column first — one i32/cell, ~100×
+            // less traffic than the copies — and skip the whole staging dance.
+            // Bit-identical: with nothing flagged, u/p are unchanged either way
+            // (P2 #3).
+            if (!self.anyFlagSet(which)) return;
 
             threading.parallelCopy(self.team, self.u_bak.data, self.u.data);
             threading.parallelCopy(self.team, self.p_bak.data, self.p.data);
@@ -985,95 +1019,132 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
 
         /// One direction of the interpolation sweep for cross[0] ∈
-        /// [c0_lo, c0_hi): every (c0, c1) line's faces are written only by
-        /// its own band, so the banding is bit-identical to serial.
+        /// [c0_lo, c0_hi): every (c0, c1) line's faces are written only by its
+        /// own band, so the banding is bit-identical to serial. Loop order keeps
+        /// the contiguous x index innermost — for dim==0 that is the sweep
+        /// direction itself; for dim!=0 x is cross[0] (the band range this
+        /// worker owns), so we iterate it innermost with the sweep direction in
+        /// the middle, turning the five-point stencil into contiguous x streams
+        /// instead of iy/iz strides (out of L2 on the 2D grid, a DRAM/TLB cliff
+        /// in 3D). Each (i,c0,c1) writes only its own face slots, so reordering
+        /// the iterations is bit-identical (P2 #5).
         fn sweepBand(self: *Self, comptime dim: usize, c0_lo: i64, c0_hi: i64) Error!void {
             const n = self.nDim(dim);
             const cross = comptime crossDims(dim);
+            const c1_lo = self.crossLo(cross[1]);
+            const c1_hi = self.crossHi(cross[1]);
 
-            var c0 = c0_lo;
-            while (c0 < c0_hi) : (c0 += 1) {
-                var c1 = self.crossLo(cross[1]);
-                while (c1 < self.crossHi(cross[1])) : (c1 += 1) {
+            if (comptime dim == 0) {
+                var c0 = c0_lo;
+                while (c0 < c0_hi) : (c0 += 1) {
+                    var c1 = c1_lo;
+                    while (c1 < c1_hi) : (c1 += 1) {
+                        var i: i64 = -1;
+                        while (i < n + 1) : (i += 1) {
+                            try self.sweepFace(dim, i, c0, c1, self.dx5At(dim, i));
+                        }
+                    }
+                }
+            } else {
+                var c1 = c1_lo;
+                while (c1 < c1_hi) : (c1 += 1) {
                     var i: i64 = -1;
                     while (i < n + 1) : (i += 1) {
-                        var cell = [3]i64{ 0, 0, 0 };
-                        cell[dim] = i;
-                        cell[cross[0]] = c0;
-                        cell[cross[1]] = c1;
-
-                        const dol = i >= 0;
-                        const dor = i < n;
-
-                        const dx5 = [5]f64{
-                            self.grid.cellSize(i - 2, dim),
-                            self.grid.cellSize(i - 1, dim),
-                            self.grid.cellSize(i, dim),
-                            self.grid.cellSize(i + 1, dim),
-                            self.grid.cellSize(i + 2, dim),
-                        };
-
-                        var pm2: [NV]f64 = @splat(0);
-                        var pm1: [NV]f64 = undefined;
-                        var p0: [NV]f64 = undefined;
-                        var pp1: [NV]f64 = undefined;
-                        var pp2: [NV]f64 = @splat(0);
-                        var c = cell;
-                        c[dim] = i - 1;
-                        self.p.load(c[0], c[1], c[2], &pm1);
-                        c[dim] = i;
-                        self.p.load(c[0], c[1], c[2], &p0);
-                        c[dim] = i + 1;
-                        self.p.load(c[0], c[1], c[2], &pp1);
-                        // C guards the ±2 stencil with INT_ORDER>1 — with
-                        // linear reconstruction there are only 2 ghost cells.
-                        if (comptime base_order > 1) {
-                            c[dim] = i - 2;
-                            self.p.load(c[0], c[1], c[2], &pm2);
-                            c[dim] = i + 2;
-                            self.p.load(c[0], c[1], c[2], &pp2);
+                        const dx5 = self.dx5At(dim, i); // invariant over the inner (x) loop — hoisted (#6)
+                        var c0 = c0_lo;
+                        while (c0 < c0_hi) : (c0 += 1) {
+                            try self.sweepFace(dim, i, c0, c1, dx5);
                         }
-
-                        // REDUCEORDERWHENNEEDED / REDUCEMINMODTHETA are off
-                        const f = recon.avg2point(NV, pm2, pm1, p0, pp1, pp2, dx5, base_order, 0, self.opt.minmod_theta);
-                        var pl = f.ul;
-                        var pr = f.ur;
-
-                        var ffl: [NV]f64 = undefined;
-                        var ffr: [NV]f64 = undefined;
-                        if (dol) {
-                            const geom = self.cache.fillGeometryFace(cell[0], cell[1], cell[2], dim);
-                            _ = try invert.checkFloorsMhd(cfg, &pl, &geom, self.opt.gam, self.opt.floors);
-                            ffl = try flux_mod.fFluxPrime(cfg, pl, dim, &geom, self.opt.gam);
-                            // radiative viscosity: face i is between cells i−1 and i
-                            if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
-                                const rv = self.rijviscFace(dim, cell[0], cell[1], cell[2]);
-                                try radvisc_mod.addRadViscFlux(Self, self, &ffl, &pl, &geom, dim, &rv);
-                            }
-                        }
-                        if (dor) {
-                            var cp = cell;
-                            cp[dim] = i + 1;
-                            const geom = self.cache.fillGeometryFace(cp[0], cp[1], cp[2], dim);
-                            _ = try invert.checkFloorsMhd(cfg, &pr, &geom, self.opt.gam, self.opt.floors);
-                            ffr = try flux_mod.fFluxPrime(cfg, pr, dim, &geom, self.opt.gam);
-                            // radiative viscosity: face i+1 is between cells i and i+1
-                            if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
-                                const rv = self.rijviscFace(dim, cp[0], cp[1], cp[2]);
-                                try radvisc_mod.addRadViscFlux(Self, self, &ffr, &pr, &geom, dim, &rv);
-                            }
-                        }
-
-                        // pbR[dim] at face i ← pl; pbL[dim] at face i+1 ← pr
-                        var cp = cell;
-                        self.pb_r[dim].store(cp[0], cp[1], cp[2], &pl);
-                        if (dol) self.fl_r[dim].store(cp[0], cp[1], cp[2], &ffl);
-                        cp[dim] = i + 1;
-                        self.pb_l[dim].store(cp[0], cp[1], cp[2], &pr);
-                        if (dor) self.fl_l[dim].store(cp[0], cp[1], cp[2], &ffr);
                     }
                 }
             }
+        }
+
+        /// The ±2 sweep-direction cell sizes at slot i (C: get_size_x). Function
+        /// of (i,dim) only, so it lifts out of the cross loops.
+        inline fn dx5At(self: *const Self, comptime dim: usize, i: i64) [5]f64 {
+            return .{
+                self.grid.cellSize(i - 2, dim),
+                self.grid.cellSize(i - 1, dim),
+                self.grid.cellSize(i, dim),
+                self.grid.cellSize(i + 1, dim),
+                self.grid.cellSize(i + 2, dim),
+            };
+        }
+
+        /// Reconstruct + one-sided fluxes for the face pair bracketing the cell
+        /// at (i along dim, c0=cross[0], c1=cross[1]); dx5 is the sweep-direction
+        /// stencil spacing. `inline` so the body stays fused into sweepBand's
+        /// loops (Debug too). All writes land in this cell's own face slots.
+        inline fn sweepFace(self: *Self, comptime dim: usize, i: i64, c0: i64, c1: i64, dx5: [5]f64) Error!void {
+            const n = self.nDim(dim);
+            const cross = comptime crossDims(dim);
+            var cell = [3]i64{ 0, 0, 0 };
+            cell[dim] = i;
+            cell[cross[0]] = c0;
+            cell[cross[1]] = c1;
+
+            const dol = i >= 0;
+            const dor = i < n;
+
+            var pm2: [NV]f64 = @splat(0);
+            var pm1: [NV]f64 = undefined;
+            var p0: [NV]f64 = undefined;
+            var pp1: [NV]f64 = undefined;
+            var pp2: [NV]f64 = @splat(0);
+            var c = cell;
+            c[dim] = i - 1;
+            self.p.load(c[0], c[1], c[2], &pm1);
+            c[dim] = i;
+            self.p.load(c[0], c[1], c[2], &p0);
+            c[dim] = i + 1;
+            self.p.load(c[0], c[1], c[2], &pp1);
+            // C guards the ±2 stencil with INT_ORDER>1 — with
+            // linear reconstruction there are only 2 ghost cells.
+            if (comptime base_order > 1) {
+                c[dim] = i - 2;
+                self.p.load(c[0], c[1], c[2], &pm2);
+                c[dim] = i + 2;
+                self.p.load(c[0], c[1], c[2], &pp2);
+            }
+
+            // REDUCEORDERWHENNEEDED / REDUCEMINMODTHETA are off
+            const f = recon.avg2point(NV, pm2, pm1, p0, pp1, pp2, dx5, base_order, 0, self.opt.minmod_theta);
+            var pl = f.ul;
+            var pr = f.ur;
+
+            var ffl: [NV]f64 = undefined;
+            var ffr: [NV]f64 = undefined;
+            if (dol) {
+                const geom = self.cache.fillGeometryFace(cell[0], cell[1], cell[2], dim);
+                _ = try invert.checkFloorsMhd(cfg, &pl, &geom, self.opt.gam, self.opt.floors);
+                ffl = try flux_mod.fFluxPrime(cfg, pl, dim, &geom, self.opt.gam);
+                // radiative viscosity: face i is between cells i−1 and i
+                if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
+                    const rv = self.rijviscFace(dim, cell[0], cell[1], cell[2]);
+                    try radvisc_mod.addRadViscFlux(Self, self, &ffl, &pl, &geom, dim, &rv);
+                }
+            }
+            if (dor) {
+                var cp = cell;
+                cp[dim] = i + 1;
+                const geom = self.cache.fillGeometryFace(cp[0], cp[1], cp[2], dim);
+                _ = try invert.checkFloorsMhd(cfg, &pr, &geom, self.opt.gam, self.opt.floors);
+                ffr = try flux_mod.fFluxPrime(cfg, pr, dim, &geom, self.opt.gam);
+                // radiative viscosity: face i+1 is between cells i and i+1
+                if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
+                    const rv = self.rijviscFace(dim, cp[0], cp[1], cp[2]);
+                    try radvisc_mod.addRadViscFlux(Self, self, &ffr, &pr, &geom, dim, &rv);
+                }
+            }
+
+            // pbR[dim] at face i ← pl; pbL[dim] at face i+1 ← pr
+            var cp = cell;
+            self.pb_r[dim].store(cp[0], cp[1], cp[2], &pl);
+            if (dol) self.fl_r[dim].store(cp[0], cp[1], cp[2], &ffl);
+            cp[dim] = i + 1;
+            self.pb_l[dim].store(cp[0], cp[1], cp[2], &pr);
+            if (dor) self.fl_l[dim].store(cp[0], cp[1], cp[2], &ffr);
         }
 
         /// C: f_calc_fluxes_at_faces (finite.c:1461) — for every face,
@@ -1104,78 +1175,108 @@ pub fn Sim(comptime cfg: config.Config) type {
             }.w;
         }
 
+        /// Band-parallel flux combination over cross[0] ∈ [c0_lo, c0_hi). Same
+        /// x-innermost loop order as sweepBand (P2 #5): dim==0 has the face index
+        /// i=x innermost already; for dim!=0 the band range x=cross[0] iterates
+        /// innermost with the face index in the middle, so the per-face reads and
+        /// the flb store stream x. Each face writes only its own flb[dim] slot →
+        /// order-independent, bit-identical.
         fn fluxesBand(self: *Self, comptime dim: usize, c0_lo: i64, c0_hi: i64) Error!void {
             const n = self.nDim(dim);
             const cross = comptime crossDims(dim);
-            {
+            const c1_lo = self.crossLo(cross[1]);
+            const c1_hi = self.crossHi(cross[1]);
+
+            if (comptime dim == 0) {
                 var c0 = c0_lo;
                 while (c0 < c0_hi) : (c0 += 1) {
-                    var c1 = self.crossLo(cross[1]);
-                    while (c1 < self.crossHi(cross[1])) : (c1 += 1) {
+                    var c1 = c1_lo;
+                    while (c1 < c1_hi) : (c1 += 1) {
                         var i: i64 = 0;
-                        while (i <= n) : (i += 1) {
-                            var cf = [3]i64{ 0, 0, 0 };
-                            cf[dim] = i;
-                            cf[cross[0]] = c0;
-                            cf[cross[1]] = c1;
-                            var cm = cf;
-                            cm[dim] = i - 1;
-
-                            const ap1l = self.scGet(ahd_l[dim], cf[0], cf[1], cf[2]);
-                            const ap1r = self.scGet(ahd_r[dim], cf[0], cf[1], cf[2]);
-                            const ap1 = self.scGet(ahd_m[dim], cf[0], cf[1], cf[2]);
-                            const am1l = self.scGet(ahd_l[dim], cm[0], cm[1], cm[2]);
-                            const am1r = self.scGet(ahd_r[dim], cm[0], cm[1], cm[2]);
-                            const am1 = self.scGet(ahd_m[dim], cm[0], cm[1], cm[2]);
-
-                            var pLl: [NV]f64 = undefined;
-                            var pRl: [NV]f64 = undefined;
-                            self.pb_l[dim].load(cf[0], cf[1], cf[2], &pLl);
-                            self.pb_r[dim].load(cf[0], cf[1], cf[2], &pRl);
-
-                            const geom = self.cache.fillGeometryFace(cf[0], cf[1], cf[2], dim);
-                            const uLl = try p2u_mod.p2u(cfg, pLl, &geom, self.opt.gam);
-                            const uRl = try p2u_mod.p2u(cfg, pRl, &geom, self.opt.gam);
-
-                            // hydro and radiation are two separate systems,
-                            // each combined with its own speeds (finite.c:1549)
-                            const ag = @max(ap1, am1);
-                            const al = @min(ap1l, am1l);
-                            const ar = @max(ap1r, am1r);
-
-                            var agr: f64 = 0;
-                            var alr: f64 = 0;
-                            var arr: f64 = 0;
-                            if (comptime L.hasVar(.ee)) {
-                                const rp1l = self.scGet(arad_l[dim], cf[0], cf[1], cf[2]);
-                                const rp1r = self.scGet(arad_r[dim], cf[0], cf[1], cf[2]);
-                                const rp1 = self.scGet(arad_m[dim], cf[0], cf[1], cf[2]);
-                                const rm1l = self.scGet(arad_l[dim], cm[0], cm[1], cm[2]);
-                                const rm1r = self.scGet(arad_r[dim], cm[0], cm[1], cm[2]);
-                                const rm1 = self.scGet(arad_m[dim], cm[0], cm[1], cm[2]);
-                                agr = @max(rp1, rm1);
-                                alr = @min(rp1l, rm1l);
-                                arr = @max(rp1r, rm1r);
-                            }
-
-                            for (0..NV) |iv| {
-                                // C: i < NVMHD → hydro block, else radiation
-                                const is_rad = if (comptime L.hasVar(.ee)) iv >= L.index(.ee) else false;
-                                const ag_sel = if (is_rad) agr else ag;
-                                const al_sel = if (is_rad) alr else al;
-                                const ar_sel = if (is_rad) arr else ar;
-                                const fl = self.fl_l[dim].get(iv, cf[0], cf[1], cf[2]);
-                                const fr = self.fl_r[dim].get(iv, cf[0], cf[1], cf[2]);
-                                const fstar = switch (comptime cfg.flux) {
-                                    .laxf => laxf_mod.laxf(fl, fr, uLl[iv], uRl[iv], ag_sel),
-                                    .hll => laxf_mod.hll(fl, fr, uLl[iv], uRl[iv], al_sel, ar_sel),
-                                };
-                                self.flb[dim].set(iv, cf[0], cf[1], cf[2], fstar);
-                            }
-                        }
+                        while (i <= n) : (i += 1) try self.fluxFace(dim, i, c0, c1);
+                    }
+                }
+            } else {
+                var c1 = c1_lo;
+                while (c1 < c1_hi) : (c1 += 1) {
+                    var i: i64 = 0;
+                    while (i <= n) : (i += 1) {
+                        var c0 = c0_lo;
+                        while (c0 < c0_hi) : (c0 += 1) try self.fluxFace(dim, i, c0, c1);
                     }
                 }
             }
+        }
+
+        /// Combine the one-sided fluxes at the single face (i along dim,
+        /// c0=cross[0], c1=cross[1]) into flb[dim] via LAXF/HLL. `inline` to stay
+        /// fused into fluxesBand's loops; writes only this face's own flb slot.
+        inline fn fluxFace(self: *Self, comptime dim: usize, i: i64, c0: i64, c1: i64) Error!void {
+            const cross = comptime crossDims(dim);
+            var cf = [3]i64{ 0, 0, 0 };
+            cf[dim] = i;
+            cf[cross[0]] = c0;
+            cf[cross[1]] = c1;
+            var cm = cf;
+            cm[dim] = i - 1;
+
+            const ap1l = self.scGet(ahd_l[dim], cf[0], cf[1], cf[2]);
+            const ap1r = self.scGet(ahd_r[dim], cf[0], cf[1], cf[2]);
+            const ap1 = self.scGet(ahd_m[dim], cf[0], cf[1], cf[2]);
+            const am1l = self.scGet(ahd_l[dim], cm[0], cm[1], cm[2]);
+            const am1r = self.scGet(ahd_r[dim], cm[0], cm[1], cm[2]);
+            const am1 = self.scGet(ahd_m[dim], cm[0], cm[1], cm[2]);
+
+            var pLl: [NV]f64 = undefined;
+            var pRl: [NV]f64 = undefined;
+            self.pb_l[dim].load(cf[0], cf[1], cf[2], &pLl);
+            self.pb_r[dim].load(cf[0], cf[1], cf[2], &pRl);
+
+            const geom = self.cache.fillGeometryFace(cf[0], cf[1], cf[2], dim);
+            const uLl = try p2u_mod.p2u(cfg, pLl, &geom, self.opt.gam);
+            const uRl = try p2u_mod.p2u(cfg, pRl, &geom, self.opt.gam);
+
+            // hydro and radiation are two separate systems,
+            // each combined with its own speeds (finite.c:1549)
+            const ag = @max(ap1, am1);
+            const al = @min(ap1l, am1l);
+            const ar = @max(ap1r, am1r);
+
+            var agr: f64 = 0;
+            var alr: f64 = 0;
+            var arr: f64 = 0;
+            if (comptime L.hasVar(.ee)) {
+                const rp1l = self.scGet(arad_l[dim], cf[0], cf[1], cf[2]);
+                const rp1r = self.scGet(arad_r[dim], cf[0], cf[1], cf[2]);
+                const rp1 = self.scGet(arad_m[dim], cf[0], cf[1], cf[2]);
+                const rm1l = self.scGet(arad_l[dim], cm[0], cm[1], cm[2]);
+                const rm1r = self.scGet(arad_r[dim], cm[0], cm[1], cm[2]);
+                const rm1 = self.scGet(arad_m[dim], cm[0], cm[1], cm[2]);
+                agr = @max(rp1, rm1);
+                alr = @min(rp1l, rm1l);
+                arr = @max(rp1r, rm1r);
+            }
+
+            // load the two one-sided flux vectors once, combine into a stack
+            // buffer, store the face once — vs per-iv get/set offset recompute
+            // (P2 #4). uLl/uRl are already whole-cell arrays.
+            var fll: [NV]f64 = undefined;
+            var flr: [NV]f64 = undefined;
+            self.fl_l[dim].load(cf[0], cf[1], cf[2], &fll);
+            self.fl_r[dim].load(cf[0], cf[1], cf[2], &flr);
+            var fstar: [NV]f64 = undefined;
+            for (0..NV) |iv| {
+                // C: i < NVMHD → hydro block, else radiation
+                const is_rad = if (comptime L.hasVar(.ee)) iv >= L.index(.ee) else false;
+                const ag_sel = if (is_rad) agr else ag;
+                const al_sel = if (is_rad) alr else al;
+                const ar_sel = if (is_rad) arr else ar;
+                fstar[iv] = switch (comptime cfg.flux) {
+                    .laxf => laxf_mod.laxf(fll[iv], flr[iv], uLl[iv], uRl[iv], ag_sel),
+                    .hll => laxf_mod.hll(fll[iv], flr[iv], uLl[iv], uRl[iv], al_sel, ar_sel),
+                };
+            }
+            self.flb[dim].store(cf[0], cf[1], cf[2], &fstar);
         }
 
         /// C: op_explicit (finite.c:633).
@@ -1232,18 +1333,30 @@ pub fn Sim(comptime cfg: config.Config) type {
                         const dz = self.grid.cellSize(iz, 2);
                         const dt = dtin;
 
-                        for (0..NV) |iv| {
-                            const flxl = self.flb[0].get(iv, ix, iy, iz);
-                            const flxr = self.flb[0].get(iv, ix + 1, iy, iz);
-                            const flyl = self.flb[1].get(iv, ix, iy, iz);
-                            const flyr = self.flb[1].get(iv, ix, iy + 1, iz);
-                            const flzl = self.flb[2].get(iv, ix, iy, iz);
-                            const flzr = self.flb[2].get(iv, ix, iy, iz + 1);
+                        // Load each accessed face/cell vector once into a stack
+                        // buffer (single offset per cell) and index the buffers
+                        // per iv — vs re-deriving the offset NV× per FaceStore.get
+                        // (P2 #4). Per-component arithmetic unchanged → bit-identical.
+                        var flxl: [NV]f64 = undefined;
+                        var flxr: [NV]f64 = undefined;
+                        var flyl: [NV]f64 = undefined;
+                        var flyr: [NV]f64 = undefined;
+                        var flzl: [NV]f64 = undefined;
+                        var flzr: [NV]f64 = undefined;
+                        self.flb[0].load(ix, iy, iz, &flxl);
+                        self.flb[0].load(ix + 1, iy, iz, &flxr);
+                        self.flb[1].load(ix, iy, iz, &flyl);
+                        self.flb[1].load(ix, iy + 1, iz, &flyr);
+                        self.flb[2].load(ix, iy, iz, &flzl);
+                        self.flb[2].load(ix, iy, iz + 1, &flzr);
+                        var uu: [NV]f64 = undefined;
+                        self.u.load(ix, iy, iz, &uu);
 
-                            const du = -(flxr - flxl) * dt / dx - (flyr - flyl) * dt / dy - (flzr - flzl) * dt / dz;
-                            const val = self.u.get(iv, ix, iy, iz) + du + ms[iv] * dt;
-                            self.u.set(iv, ix, iy, iz, val);
+                        for (0..NV) |iv| {
+                            const du = -(flxr[iv] - flxl[iv]) * dt / dx - (flyr[iv] - flyl[iv]) * dt / dy - (flzr[iv] - flzl[iv]) * dt / dz;
+                            uu[iv] = uu[iv] + du + ms[iv] * dt;
                         }
+                        self.u.store(ix, iy, iz, &uu);
                     }
                 }
             }
@@ -1287,9 +1400,14 @@ pub fn Sim(comptime cfg: config.Config) type {
                 while (iy < iy1) : (iy += 1) {
                     var ix: i64 = 0;
                     while (ix < self.nxi()) : (ix += 1) {
-                        for (0..NV) |iv| {
-                            ctx.dst.set(iv, ix, iy, iz, ctx.f1 * ctx.a_f.get(iv, ix, iy, iz) + ctx.f2 * ctx.b_f.get(iv, ix, iy, iz));
-                        }
+                        // one offset per cell, index the stack buffers per iv (P2 #4)
+                        var a_v: [NV]f64 = undefined;
+                        var b_v: [NV]f64 = undefined;
+                        ctx.a_f.load(ix, iy, iz, &a_v);
+                        ctx.b_f.load(ix, iy, iz, &b_v);
+                        var d_v: [NV]f64 = undefined;
+                        for (0..NV) |iv| d_v[iv] = ctx.f1 * a_v[iv] + ctx.f2 * b_v[iv];
+                        ctx.dst.store(ix, iy, iz, &d_v);
                     }
                 }
             }
@@ -1312,10 +1430,16 @@ pub fn Sim(comptime cfg: config.Config) type {
                 while (iy < iy1) : (iy += 1) {
                     var ix: i64 = 0;
                     while (ix < self.nxi()) : (ix += 1) {
-                        for (0..NV) |iv| {
-                            ctx.dst.set(iv, ix, iy, iz, ctx.a_f.get(iv, ix, iy, iz) +
-                                ctx.f1 * ctx.b_f.get(iv, ix, iy, iz) + ctx.f2 * ctx.c_f.get(iv, ix, iy, iz));
-                        }
+                        // one offset per cell, index the stack buffers per iv (P2 #4)
+                        var a_v: [NV]f64 = undefined;
+                        var b_v: [NV]f64 = undefined;
+                        var c_v: [NV]f64 = undefined;
+                        ctx.a_f.load(ix, iy, iz, &a_v);
+                        ctx.b_f.load(ix, iy, iz, &b_v);
+                        ctx.c_f.load(ix, iy, iz, &c_v);
+                        var d_v: [NV]f64 = undefined;
+                        for (0..NV) |iv| d_v[iv] = a_v[iv] + ctx.f1 * b_v[iv] + ctx.f2 * c_v[iv];
+                        ctx.dst.store(ix, iy, iz, &d_v);
                     }
                 }
             }

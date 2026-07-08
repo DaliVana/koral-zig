@@ -143,6 +143,21 @@ pub fn indices2221(t1: [4][4]f64, gg: *const [4][5]f64) [4][4]f64 {
     return t2;
 }
 
+/// A single row of indices2221: T^row_j = Σ_k T^{row k} g_{kj}, for j=0..3.
+/// Same inner k-summation as indices2221, so the result is bitwise-identical to
+/// `indices2221(t1, gg)[row]` — 16 madds instead of 64 when a caller reads only
+/// one lowered row (flux.fFluxPrime consumes row idim+1 of both stress tensors,
+/// P2 #7).
+pub fn indices2221Row(t1: [4][4]f64, gg: *const [4][5]f64, row: usize) [4]f64 {
+    var out: [4]f64 = @splat(0);
+    for (0..4) |j| {
+        for (0..4) |k| {
+            out[j] += t1[row][k] * gg[k][j];
+        }
+    }
+    return out;
+}
+
 /// uout^μ = A^μ_ν uin^ν (C: frames.c multiply2). Alias-safe.
 pub fn multiply2(uin: [4]f64, a: [4][4]f64) [4]f64 {
     return multiply2G(f64, uin, a);

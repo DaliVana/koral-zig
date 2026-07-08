@@ -32,7 +32,10 @@ pub fn Field(comptime NV: usize) type {
         }
 
         /// Flat offset of (ix,iy,iz), C's get_u index arithmetic.
-        pub fn cellOffset(self: *const Self, ix: i64, iy: i64, iz: i64) usize {
+        /// `inline`: O(NV × cells × passes)/step leaf on every hot loop — the
+        /// win is Debug/ReleaseSafe (ReleaseFast already inlines it). No FP
+        /// change → golden-safe (P2 #10).
+        pub inline fn cellOffset(self: *const Self, ix: i64, iy: i64, iz: i64) usize {
             const g = &self.grid;
             const jx: usize = @intCast(ix + @as(i64, @intCast(g.ngx)));
             const jy: usize = @intCast(iy + @as(i64, @intCast(g.ngy)));
@@ -41,24 +44,24 @@ pub fn Field(comptime NV: usize) type {
             return (jx + jy * g.sx() + jz * g.sy() * g.sx()) * NV;
         }
 
-        pub fn get(self: *const Self, iv: usize, ix: i64, iy: i64, iz: i64) f64 {
+        pub inline fn get(self: *const Self, iv: usize, ix: i64, iy: i64, iz: i64) f64 {
             std.debug.assert(iv < NV);
             return self.data[self.cellOffset(ix, iy, iz) + iv];
         }
 
-        pub fn set(self: *Self, iv: usize, ix: i64, iy: i64, iz: i64, v: f64) void {
+        pub inline fn set(self: *Self, iv: usize, ix: i64, iy: i64, iz: i64, v: f64) void {
             std.debug.assert(iv < NV);
             self.data[self.cellOffset(ix, iy, iz) + iv] = v;
         }
 
         /// Copy one cell's variables into a stack buffer.
-        pub fn load(self: *const Self, ix: i64, iy: i64, iz: i64, out: *[NV]f64) void {
+        pub inline fn load(self: *const Self, ix: i64, iy: i64, iz: i64, out: *[NV]f64) void {
             const off = self.cellOffset(ix, iy, iz);
             @memcpy(out, self.data[off..][0..NV]);
         }
 
         /// Write one cell's variables from a stack buffer.
-        pub fn store(self: *Self, ix: i64, iy: i64, iz: i64, pp: *const [NV]f64) void {
+        pub inline fn store(self: *Self, ix: i64, iy: i64, iz: i64, pp: *const [NV]f64) void {
             const off = self.cellOffset(ix, iy, iz);
             @memcpy(self.data[off..][0..NV], pp);
         }

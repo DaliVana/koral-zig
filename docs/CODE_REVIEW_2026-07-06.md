@@ -4,8 +4,9 @@ This is the pruned + re-prioritized survivor of the full-codebase review (origin
 medium / 72 low across naming, structure, purity, hot-path/inlining, data-oriented design,
 idiomatic Zig, best-practices, test hygiene). Findings fixed in earlier passes were removed; what
 remains is the open work, re-ordered by *actionability now* rather than by the original per-dimension
-grouping. **Exception:** the just-completed **P1 tier is kept in place with `Fixed` annotations**
-(2026-07-08) so the record of what changed stays visible — prune it once it's old news. Line numbers
+grouping. **Exception:** the just-completed **P1 and P2 tiers are kept in place with
+`Fixed`/`Done`/`Deferred` annotations** (2026-07-08) so the record of what changed stays visible —
+prune them once they're old news. Line numbers
 are from the pre-fix tree and may have drifted under the applied renames/extractions — re-grep the
 named symbol before editing.
 
@@ -17,6 +18,11 @@ named symbol before editing.
   it's old news. Covers: gcon col-4 zeroing, driver dt-guard + non-zero NaN exit, radviscosity⇒opac
   reject, `Sim.init` precondition validation, `cflDt()` + seeded-CFL assert, `SpecificBc` widened to
   `relele.Error!`, and the `fFluxPrime` `NanInFlux` guard.
+- **P2 — Performance** ✅ **2026-07-08** — done (#3/#4/#5/#7/#9/#10; #1/#2 pre-done by the perf-plan;
+  #6/#8 partly-done/deferred with rationale). Verified byte-for-byte (`-Dslow-tests` 215/216) and
+  A/B-measured in ReleaseFast: −7% instructions retired, −3.7%/−6.1% stepping wall (1/12 threads).
+  Kept **annotated in place** in the P2 tier below (each finding has a `Fixed`/`Done`/`Deferred`
+  note); prune when old news.
 
 The rest below were removed (fixed in earlier passes):
 
@@ -236,11 +242,24 @@ header. Healthy states never trip it, so the f_flux_prime and all step goldens a
 
 ---
 
-# P2 — Performance
+# P2 — Performance ✅ DONE (2026-07-08)
 
 Threading (`sim.zig:959`, `:1402`) is the highest-leverage item and directly on the active P1 perf
 plan (persistent pool / parallel explicit path). The memory-traffic and hot-loop items are all
 bit-identical refactors pinned by the existing golden + threading determinism gates.
+
+**Status (2026-07-08).** #1/#2 (threading) were already done by the perf-plan pass; #3, #4, #5, #7,
+#9, #10 applied this pass; #6 (partly — dx5 hoist landed with #5) and #8 (fFluxPrime sub-part only)
+consciously deferred with rationale in place. **Verified byte-for-byte:** `zig build test
+-Dslow-tests` → **215/216** (1 skip), the 384×360 PUFFY / M11 keystone / M12–M13 goldens all
+unchanged (every change is golden-safe by construction). **Measured (ReleaseFast, PUFFY 384×360, 25
+steps, `/usr/bin/time -l`):** instructions retired **−7%** (deterministic, contention-free); stepping
+wall **−3.7% single-thread / −6.1% at nthreads=12**; total wall **−4%**. Per-phase (single-thread):
+`fixup` −96% (#3), `stage` −80% (#4), `fluxes` −41% (#5+#4), `update` −22% (#4), `sweep` −9% (#5);
+init −4.7% (#9). `implicit` (≈60% of the step, deliberately untouched — see #8) is flat, which caps
+the whole-step figure. `wavespeeds`/`dynamo` showed a reproducible +35–40% that isolation pinned to
+**code-layout/i-cache perturbation** (not extra work — aggregate instructions fell; and it persists
+with #10's `inline` reverted, so #10 is not the cause and is ReleaseFast-neutral as designed).
 
 #### `koral/sim.zig:959` — parallelRows spawns and joins fresh OS threads on every pass (~10/step) with a static row partition *(high)*
 
@@ -257,6 +276,10 @@ on a condvar) and dispatch all ~10 passes to it. (main.zig:9 already documents n
 static split with dynamic chunking (atomic row counter, 1-4 rows/grab) so expensive rows load-balance;
 the implicit worker cannot error and ChunkResult counters are order-independent integer sums, so the
 result stays bit-identical and the threading determinism gate still holds.
+
+**Done (pre-P2, perf-plan P1):** a persistent worker *team* + dynamic-tile dispatch now lives in
+`sim/threading.zig` (`parallelRange` + `ChunkResult`); all ~10 passes/step dispatch on `self.team`
+instead of spawning/joining threads. ✔
 
 #### `koral/sim.zig:1402` — Entire explicit operator is serial; only the u2p/implicit inversions use parallelRows *(high)*
 
@@ -275,6 +298,10 @@ absorb ghost rows); and the dim=1 sweep splits along the sweep direction itself 
 face k gets pb_l from k-1 and pb_r from k, disjoint slots) but needs its own worker shape rather than
 the iy-row one. Move tstepdenmax/tstepdenmin into ChunkResult as per-chunk max/min combined after join.
 
+**Done (pre-P2, perf-plan P1):** the whole explicit path (`calcWavespeeds`, `sweep`, `fluxesAtFaces`,
+`updateRows`, `stageDeriv`/`stageCombine`) routes through `parallelRange`; `tstepdenmax`/`tstepdenmin`
+are merged from each worker's `ChunkResult.tsd_max`/`tsd_min` after join (order-independent). ✔
+
 #### `koral/sim.zig:1072` — cellFixup performs four full-grid memcpys even when no cell is flagged *(high, DoD)*
 
 cellFixup unconditionally copies u→u_bak and p→p_bak (1072-1073) and back (1138-1139) before/after
@@ -288,6 +315,12 @@ per-chunk tallies in ChunkResult, so a count slots in naturally). Removes ~350 M
 traffic at production size while preserving the C cell_fixup structure. (Optionally collect fixed
 cells into a small (index,pp,uu) list instead of full-array staging — bit-for-bit equivalent since
 scan reads come from live self.p — but the early-out captures nearly all the win.)
+
+**Fixed (2026-07-08):** `cellFixup` now calls `anyFlagSet(which)` — a short-circuiting one-i32/cell
+scan of the flag column — and returns before any copy when nothing is flagged (the common case). The
+four `parallelCopy`s and the averaging pass are skipped entirely; bit-identical because with no flags
+set `fixupRows` writes nothing. Chose the scan over threading a count through u2pRows/implicitRowsWorker
+(decoupled from whoever set the flags; the scan is ~NV× cheaper than the copies it avoids). ✔
 
 #### `koral/sim.zig:1430` — Per-component Field/FaceStore get/set loops recompute the cell offset NV times per cell *(medium)*
 
@@ -306,6 +339,11 @@ header already mandates, and sweep/u2pRows/fluxesAtFaces' pb_l/pb_r already use)
 Per-component arithmetic unchanged → bit-identical. Leave ct.zig's EMF gather as-is (single components
 from flPin-varied neighbors; whole-cell loads wouldn't help).
 
+**Fixed (2026-07-08):** `updateRows`, `stageDerivWorker`, `stageCombineWorker`, and the flux-combine
+loop (now `fluxFace`) each `load` the accessed cells/faces into `[NV]f64` stack buffers once and index
+the buffers in the iv loop, storing the result cell once. Per-component arithmetic verbatim →
+bit-identical. ct.zig EMF gather left as-is per the note. ✔
+
 #### `koral/sim.zig:1234` — y- and z-sweeps iterate the strided direction innermost; x is never inner for dim!=0 *(medium, DoD)*
 
 sweep() (1230-1235) and fluxesAtFaces() (1331-1336) nest c1→c0→i (sweep dim innermost). Field storage
@@ -321,6 +359,16 @@ arrays and all per-iteration inputs are read-only → traversal order is bit-ide
 become inner-loop invariants; the 5-point stencil becomes five contiguous row streams. Add a comment
 that the iterations are order-independent so the order stays free.
 
+**Fixed (2026-07-08):** `sweepBand`/`fluxesBand` now comptime-branch on `dim`. For `dim!=0`, x is
+`cross[0]` — the *band-partitioned* range each worker owns — so rather than banding over `iz`
+(which the suggested `c1=iz outer` nest implies, and which would collapse to a single band and kill
+2D threading where `nz=1`), the worker keeps x as its band dimension but iterates it **innermost**,
+with the sweep direction in the middle: `c1 outer → i (sweep) middle → c0=x inner`. Disjoint x-ranges
+keep it thread-safe, and the five-point stencil now streams contiguous x. The per-face body was pulled
+into `inline fn sweepFace`/`fluxFace` (single-sourced, still fused). `dx5` (function of `(i,dim)`) is
+hoisted out of the inner x loop — closing the #6 dx5 sub-part. Pure reorder of independent iterations
+with disjoint writes → bit-identical. ✔
+
 #### `koral/sim.zig:1281` — Sweep refills identical face geometry twice per face and recomputes loop-invariant dx5/stencil loads *(low)*
 
 Inside sweep's innermost i-loop: (a) the `dor` branch fills face geometry at i+1 (:1293), byte-identical
@@ -334,6 +382,13 @@ next iteration as the dol-branch geometry (seed at i=-1), halving fillGeometryFa
 bit-identical (pure cache read). dx5 hoist and stencil rolling-window are optional micro-polish
 (p.load is a single ~104-byte L1-hot memcpy, marginal). The third fill in fluxesAtFaces is a separate
 pass, fine to leave.
+
+**Partly done / deferred (2026-07-08):** the **dx5 hoist** landed as part of #5 (dx5 is now computed
+once per `i` and reused across the inner x loop). The **face-geometry carry** was *deferred*:
+`fillGeometryFace` reads the precomputed metric cache (a ~104-byte L1-hot memcpy + one sqrt), not a
+recompute, so the win is small; and with the #5 reorder the "carry face i+1 into next i" seam now
+crosses the middle loop, so a correct carry would add state/complexity out of proportion to the gain.
+Left as-is.
 
 #### `koral/physics/flux.zig:35` — Hot functions compute values no caller consumes: full-tensor lowering for one row, dead Qdotnp chain, eager sgas *(medium, DoD)*
 
@@ -349,6 +404,13 @@ call. (Sub-parts on the always-boost Gi and eager RadState.sgas were closed by t
 fFluxPrime; keep the full-tensor versions for metricSource/fillRadState/scalars. (2) In u2pSolverW,
 guard the Qcovp/... block behind the (absent) U2P_EQS_JON path with a comment (preserving C
 diffability) or delete it. Each tensor entry is computed independently → bit-identical.
+
+**Fixed (2026-07-08):** (1) added `relele.indices2221Row(t, gg, row) -> [4]f64` (same inner
+k-summation → bitwise-identical to `indices2221(...)[row]`); `fFluxPrime` now lowers only row `idim+1`
+of both the gas and radiation stress tensors (16 madds each vs 64). (2) deleted the dead
+`Qcovp`/`Qconp`/`betasqoalphasq`/`Dfactor`/`Qdotnp` chain in `u2pSolverW` — verified `residual`
+reads only `cons[0..5]`, so `cons[6]` was never observed; kept the 7-slot `cons` shape (`cons[6]=0`)
+with a comment noting C's U2P_EQS_JON path, removing a division + ~24 flops per u2p call. ✔
 
 #### `koral/physics/flux.zig:42` — Hot per-cell chains re-derive bit-identical kinematic state up to 3× because APIs cannot accept precomputed pieces *(medium, DoD; fFluxPrime sub-part already done)*
 
@@ -369,6 +431,14 @@ tensor between p2u, calcFfRtt, and fillRadState — but do NOT substitute state0
 value (they contract Rij in different FP shapes and the result decides the startwith rung at
 implicit.zig:731); pass calcFfRtt the precomputed u and rij instead. All reused values are bit-identical.
 
+**fFluxPrime sub-part done (pre-P2); wavespeeds/implicit remainder deferred (2026-07-08):** the
+`fFluxPrime` double-eval was already closed by `calcTijFromState`. The remaining (a) `calcWavespeeds`
+and (b/c) `solveImplicitLab`/`applyConstraints` re-derivations were *deferred*: they need new
+state-threading APIs through the Newton entry points, the finding itself flags an FP-shape trap (must
+**not** substitute `state00.ehat` for `calcFfRtt`'s Rij contraction — it picks the `startwith` rung),
+and this is the highest-risk item for a byte-for-byte contract at a modest per-cell saving. Revisit as
+its own change with a dedicated diff, not folded into a broad perf sweep.
+
 #### `koral/metric/precompute.zig:59` — applyKrisCorrection computes the full CoordData (inverse + 64 Christoffels) at six face points per cell just to read gdet *(low)*
 
 Lines 59-60 call `metric.compute()` at the hi/lo face for each direction (6/cell during fillCenters),
@@ -383,6 +453,12 @@ construction. Optionally, when `InitOpts.faces` is true, run fillFaces first and
 `gb[d]` at offset 3*5+4 to eliminate the 6 recomputes (needs a cache-aware variant since
 applyKrisCorrection is also used standalone by computeCorrected/tests and gb is zeroed when faces=false).
 
+**Fixed (2026-07-08):** added `metric.gdetAt(coords, mp, x)` — `gcovDual` + `det4` + `@sqrt(-det.v)`
+only, the exact FP ops of `compute()`'s gdet path → bitwise-identical to `compute(...).gdet`, skipping
+the dual inverse and the 64-entry Christoffel assembly. `applyKrisCorrection` calls it at the two face
+samples. (The optional `fillFaces`-first cache-aware variant was left as future work — the standalone
+`gdetAt` already removes the bulk of the discarded work.) ✔
+
 #### `koral/field.zig:35` — Tiny per-cell index/getter leaf helpers on the hot path are not `inline fn` (Debug/ReleaseSafe only) *(low; partially done)*
 
 The `krBlock`/`cellIndex`/`faceIndex`/`kr` accessors were marked `inline` in the kr fix, but the
@@ -395,6 +471,11 @@ Grid.xl/yl/zl/xc/yc/zc (grid.zig:87-119), Sim.flagIdx/scGet/scSet (sim.zig:440-4
 **Fix:** Mark those leaf helpers `inline fn`. Debug-only effect, no FP change → golden-safe. Measure
 one slow golden test before/after; running `zig build test -Doptimize=ReleaseSafe` may make it moot.
 Do NOT add `inline` to mid-size kernels (fFluxPrime, p2u, u2pSolverW, avg2point).
+
+**Fixed (2026-07-08):** marked `inline` — `Field.cellOffset/get/set/load/store`,
+`FaceStore.offset/get/set/load/store`, `Grid.xc/yc/zc/xl/yl/zl/cellSize`, `Sim.flagIdx/getFlag/setFlag/
+scGet/scSet`, and `laxf`/`hll`. Left the mid-size kernels (fFluxPrime/p2u/u2pSolverW/avg2point)
+un-inlined per the note. Debug/ReleaseSafe-only effect, no FP change → golden-safe. ✔
 
 ---
 

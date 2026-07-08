@@ -215,13 +215,6 @@ pub fn u2pSolverW(
         uu[L.index(.vy)] * gdetu_inv * alpha,
         uu[L.index(.vz)] * gdetu_inv * alpha,
     };
-    const Qcovp = [4]f64{
-        uu[L.index(.uu)] * gdetu_inv * alpha,
-        uu[L.index(.vx)] * gdetu_inv * alpha,
-        uu[L.index(.vy)] * gdetu_inv * alpha,
-        uu[L.index(.vz)] * gdetu_inv * alpha,
-    };
-    const Qconp = relele.indices12(Qcovp, GG);
     const Qcon = relele.indices12(Qcov, GG);
 
     var Bcon: [4]f64 = @splat(0);
@@ -256,11 +249,6 @@ pub fn u2pSolverW(
     const Qt2 = relele.dot(Qtcon, Qtcov);
     const Qtsq = Qt2;
 
-    const betasqoalphasq = gg[0][1] * GG[0][1] + gg[0][2] * GG[0][2] + gg[0][3] * GG[0][3];
-    const alphasq = alpha * alpha;
-    const Dfactor = (-geom.gttpert + alphasq * betasqoalphasq) / (alphasq + alpha);
-    const Qdotnp = Qconp[0] * ncov[0] + D * Dfactor;
-
     // initial guess from current primitives (VELPRIM == VELR: no conversion)
     var rho = pp[L.index(.rho)];
     var uint = pp[L.index(.uu)];
@@ -274,7 +262,13 @@ pub fn u2pSolverW(
     var gamma2 = 1.0 + qsq;
     var W = (rho + pgamma * uint) * gamma2;
 
-    const cons = [7]f64{ Qn, Qt2, D, QdotBsq, Bsq, Sc, Qdotnp };
+    // cons[6] is C's Qdotnp slot, read only by the U2P_EQS_JON residual path;
+    // this build hardwires U2P_EQS_NOBLE (fU2pHot/fU2pEntropy never read
+    // cons[6]), so the Qcovp/Qconp/betasqoalphasq/Dfactor/Qdotnp chain that
+    // filled it was pure dead work (a division + ~24 flops per u2p call) and is
+    // dropped. Keep the 7-slot shape to match C's conserved vector; 0 is never
+    // observed (P2 #7).
+    const cons = [7]f64{ Qn, Qt2, D, QdotBsq, Bsq, Sc, 0 };
     const conv = u2pconv;
 
     // make sure the initial W gives v² < 1
