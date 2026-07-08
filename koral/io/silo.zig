@@ -1,7 +1,9 @@
 //! Silo (`.silo`) export for VisIt — a port of the PUFFY-relevant subset of
 //! KORAL's `silo.c`. Writes a `DB_PDB` non-collinear quad mesh (`mesh1`) plus
-//! zone-centered fields, linking LLNL Silo directly (VisIt's bundled
-//! `libsiloh5`) so the files are byte-compatible with what VisIt 3.5 reads.
+//! zone-centered fields through the `silo` wrapper package (silo-zig), which
+//! builds LLNL Silo 4.12 from source (PDB driver only, no HDF5) and links it
+//! statically — so there is no dependency on a VisIt/Silo install, and the
+//! files are the same `DB_PDB` format VisIt reads.
 //!
 //! Field names / centering mirror `silo.c` so existing VisIt sessions and
 //! expressions carry over — including PUFFY's two silo.c additions over the
@@ -16,12 +18,14 @@
 //!
 //! Gated by the `-Dsilo` build flag (`build_options.silo`). When it is off,
 //! `enabled == false` and `write()` is a comptime no-op whose body is never
-//! analyzed — so no Silo symbols are referenced and `zig build test` plus any
-//! Silo-less machine keep building. Only the `-Dsilo` problem executables link
-//! `libsiloh5`.
+//! analyzed — so no Silo symbols are referenced, the `silo` import resolves to
+//! a tiny stub (koral/io/silo_disabled.zig), and `zig build test` plus any
+//! Silo-less machine keep building. Only the `-Dsilo` problem executables
+//! compile and link the from-source Silo.
 
 const std = @import("std");
 const build_options = @import("build_options");
+const silo = @import("silo"); // the from-source Silo wrapper (silo-zig package)
 const geometry = @import("../geometry.zig");
 const coco = @import("../metric/coco.zig");
 const precompute = @import("../metric/precompute.zig");
@@ -46,35 +50,10 @@ pub const Options = struct {
     coordscale: f64 = 1.0,
 };
 
-// ---------------------------------------------------------------------------
-// LLNL Silo C API (v4.x) — hand-declared so no silo.h include is needed at
-// build time. Constant values and prototypes are from VisIt 3.5's bundled
-// silo.h; the ABI is plain C pointers/ints. These declarations emit no symbols
-// unless referenced, which only happens inside the `if (comptime enabled)`
-// branch below.
-const DBfile = opaque {};
-const DBoptlist = opaque {};
-
-const DB_PDB: c_int = 2;
-const DB_CLOBBER: c_int = 0;
-const DB_LOCAL: c_int = 0;
-const DB_DOUBLE: c_int = 20;
-const DB_NONCOLLINEAR: c_int = 131;
-const DB_ZONECENT: c_int = 111;
-const DBOPT_CYCLE: c_int = 263;
-const DBOPT_TIME: c_int = 275; // float*
-const DBOPT_DTIME: c_int = 280; // double*
-
-// `DBCreate` is a version-checking macro around `DBCreateReal` (same
-// signature); the plain symbol is not exported, so we call Real directly.
-extern fn DBCreateReal(name: [*:0]const u8, mode: c_int, target: c_int, finfo: ?[*:0]const u8, ftype: c_int) ?*DBfile;
-extern fn DBClose(f: *DBfile) c_int;
-extern fn DBMakeOptlist(maxopts: c_int) ?*DBoptlist;
-extern fn DBFreeOptlist(ol: *DBoptlist) c_int;
-extern fn DBAddOption(ol: *DBoptlist, opt: c_int, val: *const anyopaque) c_int;
-extern fn DBPutQuadmesh(f: *DBfile, name: [*:0]const u8, coordnames: [*]const [*:0]const u8, coords: [*]const [*]const f64, dims: [*]const c_int, ndims: c_int, datatype: c_int, coordtype: c_int, ol: ?*DBoptlist) c_int;
-extern fn DBPutQuadvar1(f: *DBfile, name: [*:0]const u8, meshname: [*:0]const u8, v: *const anyopaque, dims: [*]const c_int, ndims: c_int, mixvar: ?*const anyopaque, mixlen: c_int, datatype: c_int, centering: c_int, ol: ?*DBoptlist) c_int;
-extern fn DBPutQuadvar(f: *DBfile, name: [*:0]const u8, meshname: [*:0]const u8, nvars: c_int, varnames: [*]const [*:0]const u8, vars: [*]const *const anyopaque, dims: [*]const c_int, ndims: c_int, mixvars: ?*const anyopaque, mixlen: c_int, datatype: c_int, centering: c_int, ol: ?*DBoptlist) c_int;
+// The Silo C API (constants, `DBfile`/`DBoptlist`, and the `Writer` helper)
+// comes from the `silo` wrapper package. All references live inside the
+// `if (comptime enabled)` branch below, so nothing here is analyzed — and the
+// wrapper's C library is only linked — when `-Dsilo` is off.
 
 /// Project a spherical-basis vector `(vr, vth, vph)` (θ,φ components already
 /// scaled to orthonormal) at direction `(r,θ,φ)` onto Cartesian axes — the
@@ -398,20 +377,11 @@ fn writeImpl(
         }
     }
 
-    // ---- write the Silo file ----------------------------------------------
-    const file = DBCreateReal(path.ptr, DB_CLOBBER, DB_LOCAL, null, DB_PDB) orelse
-        return error.SiloCreateFailed;
-    defer _ = DBClose(file);
-
-    // time / cycle metadata for VisIt's time slider
-    var dtime: f64 = time;
-    var ftime: f32 = @floatCast(time);
-    var ncycle: c_int = cycle;
-    const optlist = DBMakeOptlist(3) orelse return error.SiloCreateFailed;
-    defer _ = DBFreeOptlist(optlist);
-    _ = DBAddOption(optlist, DBOPT_DTIME, &dtime);
-    _ = DBAddOption(optlist, DBOPT_TIME, &ftime);
-    _ = DBAddOption(optlist, DBOPT_CYCLE, &ncycle);
+    // ---- write the Silo file (through the wrapper's Writer) ---------------
+    // Writer.create opens a DB_PDB file and stores the time/cycle metadata
+    // VisIt's time slider reads; close() frees the optlist and the file.
+    var writer = try silo.Writer.create(path.ptr, time, cycle);
+    defer writer.close();
 
     // node + zone dimension arrays (silo.c switches x/y for the ny==1 2D case;
     // PUFFY is ny>1 so the natural order holds)
@@ -425,6 +395,8 @@ fn writeImpl(
         ndims_node = .{ @intCast(nnx), @intCast(nnz), 1 };
         zdims = .{ @intCast(nx), @intCast(nz), 1 };
     }
+    const nd: usize = @intCast(ndim);
+    const zd = zdims[0..nd]; // active zone dims (Writer reads its .len as ndims)
 
     const coordnames = [3][*:0]const u8{ "X", "Y", "Z" };
     // For a 2D meridional (XZ) run the mesh's 2nd axis is z (silo.c:
@@ -435,79 +407,70 @@ fn writeImpl(
         if (ny == 1) nodez.ptr else y_or_z,
         nodez.ptr,
     };
-    if (DBPutQuadmesh(file, "mesh1", &coordnames, &coord_ptrs, &ndims_node, ndim, DB_DOUBLE, DB_NONCOLLINEAR, optlist) != 0)
-        return error.SiloWriteFailed;
+    try writer.putQuadmesh("mesh1", coordnames[0..nd], coord_ptrs[0..nd], ndims_node[0..nd]);
 
-    const putScalar = struct {
-        fn f(fl: *DBfile, name: [*:0]const u8, data: []const f64, d: *const [3]c_int, nd: c_int, ol: *DBoptlist) !void {
-            if (DBPutQuadvar1(fl, name, "mesh1", data.ptr, d, nd, null, 0, DB_DOUBLE, DB_ZONECENT, ol) != 0)
-                return error.SiloWriteFailed;
-        }
-    }.f;
-
-    try putScalar(file, "rho", rho, &zdims, ndim, optlist);
-    try putScalar(file, "uint", uint, &zdims, ndim, optlist);
-    try putScalar(file, "entr", entr, &zdims, ndim, optlist);
-    try putScalar(file, "temp", temp, &zdims, ndim, optlist);
-    try putScalar(file, "gammagas", gammag, &zdims, ndim, optlist);
-    try putScalar(file, "u0", uc0, &zdims, ndim, optlist);
-    try putScalar(file, "u1", uc1, &zdims, ndim, optlist);
-    try putScalar(file, "u2", uc2, &zdims, ndim, optlist);
-    try putScalar(file, "u3", uc3, &zdims, ndim, optlist);
-    try putScalar(file, "lorentz", lorentz, &zdims, ndim, optlist);
+    try writer.putScalar("rho", "mesh1", rho, zd);
+    try writer.putScalar("uint", "mesh1", uint, zd);
+    try writer.putScalar("entr", "mesh1", entr, zd);
+    try writer.putScalar("temp", "mesh1", temp, zd);
+    try writer.putScalar("gammagas", "mesh1", gammag, zd);
+    try writer.putScalar("u0", "mesh1", uc0, zd);
+    try writer.putScalar("u1", "mesh1", uc1, zd);
+    try writer.putScalar("u2", "mesh1", uc2, zd);
+    try writer.putScalar("u3", "mesh1", uc3, zd);
+    try writer.putScalar("lorentz", "mesh1", lorentz, zd);
 
     if (has_b) {
-        try putScalar(file, "bsq", bsq, &zdims, ndim, optlist);
-        try putScalar(file, "B1", b1c, &zdims, ndim, optlist);
-        try putScalar(file, "B2", b2c, &zdims, ndim, optlist);
-        try putScalar(file, "B3", b3c, &zdims, ndim, optlist);
-        try putScalar(file, "beta", beta, &zdims, ndim, optlist);
-        try putScalar(file, "betainv", betainv, &zdims, ndim, optlist);
-        try putScalar(file, "sigma", sigma, &zdims, ndim, optlist);
-        try putScalar(file, "divB", divb, &zdims, ndim, optlist);
+        try writer.putScalar("bsq", "mesh1", bsq, zd);
+        try writer.putScalar("B1", "mesh1", b1c, zd);
+        try writer.putScalar("B2", "mesh1", b2c, zd);
+        try writer.putScalar("B3", "mesh1", b3c, zd);
+        try writer.putScalar("beta", "mesh1", beta, zd);
+        try writer.putScalar("betainv", "mesh1", betainv, zd);
+        try writer.putScalar("sigma", "mesh1", sigma, zd);
+        try writer.putScalar("divB", "mesh1", divb, zd);
     }
     if (has_rad) {
-        try putScalar(file, "ehat", ehat, &zdims, ndim, optlist);
-        try putScalar(file, "erad", erad, &zdims, ndim, optlist);
-        try putScalar(file, "trad", trad, &zdims, ndim, optlist);
+        try writer.putScalar("ehat", "mesh1", ehat, zd);
+        try writer.putScalar("erad", "mesh1", erad, zd);
+        try writer.putScalar("trad", "mesh1", trad, zd);
 
         // PRINTKAPPASTOSILO
-        try putScalar(file, "kappa_gas_abs", kgasabs, &zdims, ndim, optlist);
-        try putScalar(file, "kappa_rad_abs", kradabs, &zdims, ndim, optlist);
-        try putScalar(file, "kappa_gas_num", kgasnum, &zdims, ndim, optlist);
-        try putScalar(file, "kappa_rad_num", kradnum, &zdims, ndim, optlist);
-        try putScalar(file, "kappa_gas_ross", kgasross, &zdims, ndim, optlist);
-        try putScalar(file, "kappa_rad_ross", kradross, &zdims, ndim, optlist);
-        try putScalar(file, "tot_emissivity", totemiss, &zdims, ndim, optlist);
-        try putScalar(file, "kappa_es", kes, &zdims, ndim, optlist);
+        try writer.putScalar("kappa_gas_abs", "mesh1", kgasabs, zd);
+        try writer.putScalar("kappa_rad_abs", "mesh1", kradabs, zd);
+        try writer.putScalar("kappa_gas_num", "mesh1", kgasnum, zd);
+        try writer.putScalar("kappa_rad_num", "mesh1", kradnum, zd);
+        try writer.putScalar("kappa_gas_ross", "mesh1", kgasross, zd);
+        try writer.putScalar("kappa_rad_ross", "mesh1", kradross, zd);
+        try writer.putScalar("tot_emissivity", "mesh1", totemiss, zd);
+        try writer.putScalar("kappa_es", "mesh1", kes, zd);
     }
 
     // PRINT_FIXUPS_TO_SILO (independent of RADIATION in puffy silo.c)
-    try putScalar(file, "fixups_u2pmhd", fixups_mhd, &zdims, ndim, optlist);
-    try putScalar(file, "fixups_u2prad", fixups_rad, &zdims, ndim, optlist);
-    try putScalar(file, "fixups_radimp", fixups_imp, &zdims, ndim, optlist);
-    try putScalar(file, "fixups", fixups_all, &zdims, ndim, optlist);
-
-    const putVec = struct {
-        fn f(fl: *DBfile, name: [*:0]const u8, n0: [*:0]const u8, n1: [*:0]const u8, n2: [*:0]const u8, c0: []const f64, c1: []const f64, c2: []const f64, d: *const [3]c_int, nd: c_int, ol: *DBoptlist) !void {
-            const vnames = [3][*:0]const u8{ n0, n1, n2 };
-            const vptrs = [3]*const anyopaque{ c0.ptr, c1.ptr, c2.ptr };
-            if (DBPutQuadvar(fl, name, "mesh1", 3, &vnames, &vptrs, d, nd, null, 0, DB_DOUBLE, DB_ZONECENT, ol) != 0)
-                return error.SiloWriteFailed;
-        }
-    }.f;
+    try writer.putScalar("fixups_u2pmhd", "mesh1", fixups_mhd, zd);
+    try writer.putScalar("fixups_u2prad", "mesh1", fixups_rad, zd);
+    try writer.putScalar("fixups_radimp", "mesh1", fixups_imp, zd);
+    try writer.putScalar("fixups", "mesh1", fixups_all, zd);
 
     // silo.c SILO2D_XZPLANE: the in-plane 2nd component is the physical z-part
     // so VisIt vector glyphs lie in the meridional plane.
     const v_mid = if (xz) vz else vy;
-    try putVec(file, "velocity", "vel1", "vel2", "vel3", vx, v_mid, vz, &zdims, ndim, optlist);
+    {
+        const names = [3][*:0]const u8{ "vel1", "vel2", "vel3" };
+        const comps = [3]*const anyopaque{ vx.ptr, v_mid.ptr, vz.ptr };
+        try writer.putVector("velocity", "mesh1", &names, &comps, zd);
+    }
     if (has_b) {
         const b_mid = if (xz) bz else by;
-        try putVec(file, "magn_field", "B1", "B2", "B3", bx, b_mid, bz, &zdims, ndim, optlist);
+        const names = [3][*:0]const u8{ "B1", "B2", "B3" };
+        const comps = [3]*const anyopaque{ bx.ptr, b_mid.ptr, bz.ptr };
+        try writer.putVector("magn_field", "mesh1", &names, &comps, zd);
     }
     if (has_rad) {
         const f_mid = if (xz) fz else fy;
-        try putVec(file, "rad_flux", "F1", "F2", "F3", fx, f_mid, fz, &zdims, ndim, optlist);
+        const names = [3][*:0]const u8{ "F1", "F2", "F3" };
+        const comps = [3]*const anyopaque{ fx.ptr, f_mid.ptr, fz.ptr };
+        try writer.putVector("rad_flux", "mesh1", &names, &comps, zd);
     }
 }
 

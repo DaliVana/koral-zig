@@ -6,17 +6,27 @@ pub fn build(b: *std.Build) !void {
     const use_mpi = b.option(bool, "mpi", "link system MPI (not yet implemented)") orelse false;
     const slow_tests = b.option(bool, "slow-tests", "run slow tests (convergence studies, soaks)") orelse false;
 
-    // `-Dsilo` links LLNL Silo into the built problem executables so they can
+    // `-Dsilo` builds LLNL Silo 4.12 from source (PDB driver, no HDF5) via the
+    // silo-zig package and links it into the problem executables so they can
     // export VisIt-openable `.silo` files (koral/io/silo.zig). Default off so
-    // `zig build test` and Silo-less machines keep building. `-Dsilo-prefix`
-    // points at the Silo install root; the default is VisIt 3.5's bundled Silo
-    // (its `libsiloh5` — guaranteeing the files match what VisIt 3.5 reads).
-    const enable_silo = b.option(bool, "silo", "link Silo for .silo export (needs VisIt / a Silo install)") orelse false;
-    const silo_prefix = b.option(
-        []const u8,
-        "silo-prefix",
-        "Silo install root (contains lib/libsiloh5.dylib)",
-    ) orelse "/Applications/VisIt.app/Contents/Resources/3.5.0/darwin-arm64";
+    // `zig build test` and Silo-less checkouts keep building — no external Silo
+    // or VisIt install is needed.
+    const enable_silo = b.option(bool, "silo", "build .silo export by compiling Silo from source (silo-zig)") orelse false;
+
+    // The `silo` import wired into the koral module: the real from-source
+    // wrapper when -Dsilo, else a tiny stub so `@import("silo")` resolves
+    // without linking Silo or libc. The wrapper is a lazy dependency, so
+    // `lazyDependency` triggers its (hash-pinned) Silo-source fetch only here
+    // under -Dsilo; if it isn't cached yet it returns null and Zig fetches +
+    // re-runs this build.
+    const silo_module = if (enable_silo)
+        (b.lazyDependency("silo", .{ .target = target, .optimize = optimize }) orelse return).module("silo")
+    else
+        b.createModule(.{
+            .root_source_file = b.path("koral/io/silo_disabled.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
 
     const build_opts = b.addOptions();
     build_opts.addOption(bool, "mpi", use_mpi);
@@ -30,6 +40,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     koral.addOptions("build_options", build_opts);
+    koral.addImport("silo", silo_module);
 
     // Library unit tests: `zig build test` (-Dtest-filter=... to select)
     const test_filters = b.option(
@@ -51,6 +62,7 @@ pub fn build(b: *std.Build) !void {
         .link_libc = true,
     });
     koral_fast.addOptions("build_options", build_opts);
+    koral_fast.addImport("silo", silo_module);
     const bench = b.addExecutable(.{
         .name = "bench_implicit",
         .root_module = b.createModule(.{
@@ -101,16 +113,10 @@ pub fn build(b: *std.Build) !void {
                 .imports = &.{.{ .name = "koral", .module = koral }},
             }),
         });
-        if (enable_silo) {
-            const m = exe.root_module;
-            m.link_libc = true;
-            m.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{silo_prefix}) });
-            // Silo's install name is `@rpath/lib/libsiloh5.dylib` (and its
-            // hdf5/mpi/z deps are `@rpath/lib/...`), so a single rpath at the
-            // prefix resolves the whole chain at load time.
-            m.addRPath(.{ .cwd_relative = silo_prefix });
-            m.linkSystemLibrary("siloh5", .{});
-        }
+        // Silo is linked transitively: the koral module imports the `silo`
+        // wrapper module (real when -Dsilo), which links the from-source
+        // libsilo.a and libc into whatever imports it — no per-exe wiring.
+
         // One InstallArtifact shared by the default `install` step and the
         // per-problem `build <name>` step (two separate ones would silently
         // diverge if install options ever differ).

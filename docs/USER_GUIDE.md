@@ -95,6 +95,7 @@ defaults to `koral/problems/puffy/puffy.toml` if none is given (see `main` in
 | `-Doptimize=Debug\|ReleaseSafe\|ReleaseFast\|ReleaseSmall` | Standard Zig optimize mode. Debug builds enable the many `std.debug.assert` bounds checks in `Field.cellOffset` etc. |
 | `-Dtarget=...` | Standard Zig cross-compile target. |
 | `-Dmpi=true` | Threads an MPI build option through; **not yet implemented** (the numerics only see the serial `comm` interface). |
+| `-Dsilo=true` | Build the optional `.silo` field export (`koral/io/silo.zig`, §4). Compiles LLNL Silo 4.12 from source (PDB driver, no HDF5) via the sibling `silo-zig` package and links it statically — **no VisIt or Silo install needed**. Default off; the Silo source is a lazy, hash-pinned fetch, so a build *without* `-Dsilo` never touches it. |
 | `-Dslow-tests=true` | Enables the slow test bodies (convergence studies, soaks, the full-grid PUFFY t=0 keystone). See §5. |
 | `-Dtest-filter=<substr>` | Passed to `addTest` `.filters`; restrict the single test artifact to tests whose name contains the substring. Repeatable. |
 
@@ -312,6 +313,42 @@ f64 p[nz][ny][nx][nv]   iv fastest, then ix, then iy, then iz (AoS, matches C ge
 `sx()=nx+2*ngx`), and `writePrimDump` loops over exactly those interior cells, so
 allocate `primDumpSize` and use the returned count. The `iv`-fastest AoS order
 matches KORAL's `get_u`/`set_u` and the KSTP/KINI golden byte order.
+
+### `.silo` — VisIt field dumps *(optional, `-Dsilo`)*
+
+Written by `koral/io/silo.zig` when the executable is built with `-Dsilo`
+(otherwise `silo.write` is a comptime no-op and nothing Silo-related is compiled
+or linked). One file per output frame at `{out_dir}/silo/puffyNNNN.silo`, in
+Silo's `DB_PDB` format — openable directly in VisIt.
+
+Each file holds a single non-collinear quad mesh `mesh1` (cell-boundary nodes
+transformed to Cartesian via the BL spherical coordinates; a 2D `nz==1` run is
+laid out in the meridional x–z plane, mirroring `silo.c`'s `SILO2D_XZPLANE`)
+plus zone-centered fields: `rho`, `uint`, `entr`, `temp`, `gammagas`, the
+four-velocity `u0..u3` / `lorentz`, the MHD set (`bsq`, `B1..B3`, `beta`,
+`betainv`, `sigma`, `divB`), the radiation set (`ehat`, `erad`, `trad`), the
+opacity channels (`kappa_*`, `tot_emissivity`), the per-cell fixup flags, and
+the `velocity` / `magn_field` / `rad_flux` vectors. Field names and centering
+mirror KORAL's `silo.c` so existing VisIt sessions and expressions carry over.
+The frame's time/cycle are written as Silo `DTIME`/`TIME`/`CYCLE` metadata for
+VisIt's time slider.
+
+**No external dependency.** Silo is not linked from a system install or from
+VisIt — it is compiled from source (LLNL Silo 4.12, PDB driver only, no HDF5)
+and linked statically through the sibling [`silo-zig`](../../silo-zig) wrapper
+package (`@import("silo")`, `silo.Writer`). The Silo source is a hash-pinned
+`build.zig.zon` fetch, and the dependency is *lazy*, so a build without `-Dsilo`
+never fetches or compiles it. This means `.silo` output works on machines with
+no VisIt — e.g. HPC compute nodes — provided you build there (the build compiles
+and runs Silo's `detect.c` to describe the host's native binary layout, which is
+correct for a native build; a true cross-compile would need a target-generated
+`pdform.h`). See `silo-zig/README.md` for the wrapper internals.
+
+Inspect a `.silo` file without VisIt using the wrapper's bundled reader:
+
+```sh
+cd ../silo-zig && zig build readsilo -- /path/to/dumps/puffy/silo/puffy0000.silo
+```
 
 ---
 

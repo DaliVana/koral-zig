@@ -148,7 +148,9 @@ Written into the config's `out_dir`:
 - **`prims#####.kdmp`** — little-endian binary snapshots of all primitives
   (enabled when `dtout2 > 0`). Each is also a complete restart checkpoint.
 - **`.silo`** *(optional)* — VisIt-openable field dumps, when built with
-  `-Dsilo` (needs a Silo/VisIt install; point `-Dsilo-prefix` at it).
+  `-Dsilo`. Silo is compiled from source (LLNL Silo 4.12, PDB driver, no HDF5)
+  and linked statically via the sibling [`silo-zig`](../silo-zig) wrapper — **no
+  VisIt or Silo install required**.
 
 See the [User Guide](docs/USER_GUIDE.md#4-output-formats) for exact byte layouts
 and column definitions.
