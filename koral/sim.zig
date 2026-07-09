@@ -34,6 +34,7 @@ const grid_mod = @import("grid.zig");
 const field_mod = @import("field.zig");
 const geometry = @import("geometry.zig");
 const metric = @import("metric/metric.zig");
+const coco = @import("metric/coco.zig");
 const precompute = @import("metric/precompute.zig");
 const relele = @import("relele.zig");
 const hydro = @import("physics/hydro.zig");
@@ -137,7 +138,14 @@ pub fn Sim(comptime cfg: config.Config) type {
             implicit: implicit.ImplicitParams = implicit.ImplicitParams.cdefault,
             do_fixups: bool = true, // C: DOFIXUPS && DOU2PMHDFIXUPS
             do_u2prad_fixups: bool = false, // C: DOU2PRADFIXUPS (0 everywhere)
-            do_radimp_fixups: bool = false, // C: DORADIMPFIXUPS (0 everywhere)
+            do_radimp_fixups: bool = false, // C: DORADIMPFIXUPS (off in the validated build; on in koral_lite_puffy)
+            /// C: REDUCEORDERATBH — drop the reconstruction order by one for
+            /// cells whose center is inside the BL horizon (PPM→linear there).
+            reduceorderatbh: bool = false,
+            /// C: DAMPRADWAVESPEEDNEARAXIS + …NCELLS — within this many cells of
+            /// each pole, force the radiative wavespeed to the undamped 1/3.
+            /// 0 = off.
+            dampradwavespeednearaxis: usize = 0,
             /// C: CORRECT_POLARAXIS (PUFFY define.h:107) — do_correct
             /// overwrites the most-polar rows and u2p/implicit/fixups skip
             /// them. Only meaningful on spherical-like coordinates.
@@ -229,6 +237,12 @@ pub fn Sim(comptime cfg: config.Config) type {
         min_dy: f64 = 0,
         min_dz: f64 = 0,
         nstep: u64 = 0,
+        /// C: REDUCEORDERATBH — the largest radial cell index whose center is
+        /// inside the BL horizon (reconstruction order is dropped by one for
+        /// cell[0] ≤ this). std.math.minInt when disabled / no cell is inside,
+        /// so the `cell[0] <= …` test is always false. Set once in init (r is
+        /// monotonic in the radial index, so a single threshold suffices).
+        reduce_order_ix_max: i64 = std.math.minInt(i64),
         /// implicit-solver diagnostics (C: global_int_slot counters), all
         /// run-cumulative — the driver deltas them for the per-step heartbeat.
         n_radimp_failures: u64 = 0,
@@ -361,6 +375,23 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.min_dx = mdx;
             self.min_dy = mdy;
             self.min_dz = mdz;
+
+            // C: REDUCEORDERATBH threshold. The BL radius depends only on the
+            // radial internal coordinate and increases monotonically with the
+            // radial index, so the "inside the horizon" set is a prefix
+            // [−ng, k) — record the largest such index once. Scan the full
+            // radial extent incl. ghosts (the reconstruction stencil reads
+            // them). θ is arbitrary for the r transform; use the domain mid-row.
+            if (opt.reduceorderatbh) {
+                const r_h = metric.rHorizonBL(opt.mp.a);
+                const y_mid = g.yc(@intCast(g.ny / 2));
+                var jx: i64 = -@as(i64, @intCast(g.ng));
+                while (jx < @as(i64, @intCast(g.nx + g.ng))) : (jx += 1) {
+                    const xx = [4]f64{ 0, g.xc(jx), y_mid, 0 };
+                    const rbl = coco.cocoN(xx, opt.coords, .bl, opt.mp)[1];
+                    if (rbl < r_h) self.reduce_order_ix_max = jx;
+                }
+            }
 
             return self;
         }
@@ -593,6 +624,17 @@ pub fn Sim(comptime cfg: config.Config) type {
                                     );
                                     tautot[d] = chi * dxp;
                                 }
+                            }
+                            // C: DAMPRADWAVESPEEDNEARAXIS (rad.c:3690) — within N
+                            // cells of either pole, discard the optical-depth
+                            // damping so the radiative wavespeed keeps its
+                            // undamped value 1/3 (raising near-axis diffusion for
+                            // stability). Zeroing tautot is equivalent: it drives
+                            // calcRadWavespeeds' tautot≤0 branch → rv²=1/3.
+                            if (self.opt.dampradwavespeednearaxis > 0) {
+                                const nc: i64 = @intCast(self.opt.dampradwavespeednearaxis);
+                                const ny: i64 = @intCast(self.grid.ny);
+                                if (iy < nc or iy >= ny - nc) tautot = @splat(0);
                             }
                             const aval = try radiation.calcRadWavespeeds(cfg, pp, &geom, tautot, active_dims);
                             for (0..6) |i| {
@@ -1112,8 +1154,12 @@ pub fn Sim(comptime cfg: config.Config) type {
                 self.p.load(c[0], c[1], c[2], &pp2);
             }
 
-            // REDUCEORDERWHENNEEDED / REDUCEMINMODTHETA are off
-            const f = recon.avg2point(NV, pm2, pm1, p0, pp1, pp2, dx5, base_order, 0, self.opt.minmod_theta);
+            // C: REDUCEORDERWHENNEEDED + REDUCEORDERATBH — drop the order by one
+            // for cells whose center is inside the BL horizon (reduce_order_check,
+            // finite.c:14). cell[0] is the radial index. REDUCEMINMODTHETA is
+            // still off.
+            const reconstr_par: u8 = if (cell[0] <= self.reduce_order_ix_max) 1 else 0;
+            const f = recon.avg2point(NV, pm2, pm1, p0, pp1, pp2, dx5, base_order, reconstr_par, self.opt.minmod_theta);
             var pl = f.ul;
             var pr = f.ur;
 

@@ -23,6 +23,7 @@ const std = @import("std");
 const simd = @import("../math/simd.zig");
 const thermo = @import("thermo.zig");
 const units_mod = @import("../units.zig");
+const mesa = @import("mesa.zig");
 
 /// C: struct opacities (the fields the M8 path fills), over lane type T —
 /// the `<name>G` functions below are the comptime-T-generic cores of the
@@ -48,6 +49,16 @@ pub const Channels = struct {
     synchrotron: bool = true,
     kleinnishina: bool = true,
     comptonization: bool = true, // used by radforce.calcGi
+    /// C: USE_SYNCHROTRON_BRIDGE_FUNCTIONS — the Ramesh NR bridge. Off = the
+    /// Terelfactor suppression (the validated build); on = clamp Trad, add the
+    /// NR synchrotron component, apply the number-opacity crossover, and drop
+    /// the Terelfactor entirely (koral_lite_puffy).
+    synchrotron_bridge: bool = false,
+    /// C: MESA_KAPPA — when non-null, the free-free *Rosseland* opacity is
+    /// replaced by this table's lookup (minus electron scattering); the
+    /// free-free *Planck* absorption is still computed (as bremsstrahlung),
+    /// regardless of the `bremsstrahlung` toggle, exactly as C's MESA branch.
+    mesa: ?*const mesa.MesaTable = null,
 
     pub const puffy = Channels{};
 };
@@ -126,7 +137,13 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
     var kapparadsynross: T = sp(T, 0);
     var kappagassynross: T = sp(T, 0);
 
-    if (ch.bremsstrahlung) {
+    // Free-free (bremsstrahlung) Planck absorption + its Rosseland. C computes
+    // the FF Planck terms in the plain BREMSSTRAHLUNG path AND, identically,
+    // inside the MESA_KAPPA branch (opacities.c:308-316) — so MESA_KAPPA implies
+    // the FF Planck absorption is on regardless of the BREMSSTRAHLUNG macro.
+    // Only the FF *Rosseland* differs: with MESA it becomes a table lookup at
+    // Trad (rad) / Te (gas), minus electron scattering, floored at 0.
+    if (ch.bremsstrahlung or ch.mesa != null) {
         // free-free emissivity with Gaunt factor 1.2 and a relativistic
         // correction; n_avg = (X + Y + <Z²/A>·Z)·ρ/mp
         const emis_ff = sp(T, 1.4e-27) * nethcgs *
@@ -134,26 +151,58 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
             rt_te * sp(T, 1.2) * (sp(T, 1.0) + sp(T, 4.4e-10) * te);
         kappagasff = sp(T, c.kappacgs2gu) * (emis_ff / bbenergy) * rho;
 
+        // electron-scattering opacity subtracted from the MESA Rosseland
+        // (opacities.c:302, 0.2·(1+X)); only referenced on the MESA path.
+        const kes_cgs = sp(T, 0.2 * (1.0 + c.comp.hfrac));
+
         // Trad-frame free-free absorption / Rosseland — dropped on the χ path
         // (κ = gas_abs carries no Trad term); the zeta ratios live only here.
         if (comptime want_rad) {
             const zeta = s.trad / te;
             const zeta_inv = sp(T, 1.0) / zeta;
             const zeta_inv_3 = zeta_inv * zeta_inv * zeta_inv;
-            const zeta_root5 = simd.pow(T, zeta, 0.2);
-            const zeta_root5_inv_4 = sp(T, 1.0) / (zeta_root5 * zeta_root5 * zeta_root5 * zeta_root5);
-            const zeta_root5_inv_3 = zeta_root5 * zeta_root5_inv_4;
-            const scale_pla_ros_ff = sp(T, 14.12) / (sp(T, 432.7) - sp(T, 106.8) * zeta_root5_inv_3 +
-                sp(T, 43.17) * zeta_root5_inv_4 + sp(T, 57.88) * zeta_inv);
             // no GRAY_BREMSS
             kapparadff = kappagasff * simd.log1p(T, sp(T, 1.6) * zeta) * sp(T, c.one_over_log_2p6) * zeta_inv_3;
-            kapparadffross = kappagasff * scale_pla_ros_ff * zeta_inv_3;
+            if (ch.mesa) |tab| {
+                // MESA Rosseland at Trad (opacities.c:314-316)
+                const k_rad_cgs = tab.lookupG(T, s.trad, rhocgs);
+                kapparadffross = sp(T, c.kappacgs2gu) * @max(k_rad_cgs - kes_cgs, sp(T, 0.0)) * rho;
+            } else {
+                const zeta_root5 = simd.pow(T, zeta, 0.2);
+                const zeta_root5_inv_4 = sp(T, 1.0) / (zeta_root5 * zeta_root5 * zeta_root5 * zeta_root5);
+                const zeta_root5_inv_3 = zeta_root5 * zeta_root5_inv_4;
+                const scale_pla_ros_ff = sp(T, 14.12) / (sp(T, 432.7) - sp(T, 106.8) * zeta_root5_inv_3 +
+                    sp(T, 43.17) * zeta_root5_inv_4 + sp(T, 57.88) * zeta_inv);
+                kapparadffross = kappagasff * scale_pla_ros_ff * zeta_inv_3;
+            }
         }
 
-        if (comptime want_full) kappagasffross = kappagasff * sp(T, 0.0330); // gas_ross only
+        if (comptime want_full) {
+            if (ch.mesa) |tab| {
+                // MESA Rosseland at Te (opacities.c:305-307)
+                const k_gas_cgs = tab.lookupG(T, te, rhocgs);
+                kappagasffross = sp(T, c.kappacgs2gu) * @max(k_gas_cgs - kes_cgs, sp(T, 0.0)) * rho;
+            } else {
+                kappagasffross = kappagasff * sp(T, 0.0330); // gas_ross only
+            }
+        }
     }
 
     if (ch.synchrotron) {
+        // C: USE_SYNCHROTRON_BRIDGE_FUNCTIONS (opacities.c:621-711). The Ramesh
+        // NR bridge replaces the Terelfactor suppression with: (1) clamp the
+        // synchrotron Trad up to Trad_lim = TradBB^(4/3)/Te^(1/3); (2) add an NR
+        // component to the gas/rad synchrotron absorption; (3) apply a crossover
+        // factor to the number opacity. Off ⇒ the validated Terelfactor path.
+        const bridge = ch.synchrotron_bridge;
+        const tc_n = sp(T, 5.07783e9); // number-opacity crossover temperature
+        // Trad clamp (bridge only) — feeds every Trad-dependent synchrotron
+        // channel (zbr). Non-bridge keeps s.trad, so zbr is bit-identical.
+        const trad_syn: T = if (bridge) blk: {
+            const trad_lim = simd.pow(T, s.tradbb, 4.0 / 3.0) / simd.pow(T, te, 1.0 / 3.0);
+            break :blk simd.select(T, s.trad < trad_lim, trad_lim, s.trad);
+        } else s.trad;
+
         const emis_synchro = sp(T, 3.61e-34) * (nethcgs / rhocgs) * te * te * bmagcgs * bmagcgs;
         kappagassyn = sp(T, c.kappacgs2gu) * (emis_synchro / bbenergy) * rho;
 
@@ -161,7 +210,7 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
         // are dropped on the χ path; only kappagassyn survives there.
         if (comptime want_rad) {
             const nu_mbsyn = sp(T, 1.19e-13) * te * te;
-            const zbr = sp(T, c.k_boltz_cgs) * s.trad / sp(T, c.h_cgs) / nu_mbsyn;
+            const zbr = sp(T, c.k_boltz_cgs) * trad_syn / sp(T, c.h_cgs) / nu_mbsyn;
 
             const zeta_a_denom_rad =
                 sp(T, 1.79) * simd.cbrt(T, zbr * zbr * zbr * zbr * zbr * bmagcgs * bmagcgs * bmagcgs * bmagcgs) +
@@ -172,6 +221,12 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
             const te5 = te * te * te * te * te;
             kapparadsyn = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_rad) * rho;
 
+            // Bridge: NR component added to the rad synchrotron absorption
+            // (opacities.c:665), Trad-based; dominant for Te ≲ 1e9 K.
+            if (bridge) kapparadsyn += sp(T, c.kappacgs2gu) *
+                (sp(T, 2.35869e-21) * (nethcgs / rhocgs) * (bmagcgs * bmagcgs) /
+                    (trad_syn * trad_syn * trad_syn)) * rho;
+
             // number-of-photons averaged opacity (rad_num) — dead on the
             // implicit-residual / χ path (radforce.zig:264); full only.
             if (comptime want_full) {
@@ -181,6 +236,9 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
                         sp(T, 0.287) * zbr * zbr);
                 const ia_by_b_num = bmagcgs / zeta_a_denom_num;
                 kapparadnumsyn = sp(T, c.kappacgs2gu) * (sp(T, 2.13e39) * (nethcgs / rhocgs) / te5 * ia_by_b_num) * rho;
+
+                // Bridge: number-opacity crossover factor (opacities.c:680)
+                if (bridge) kapparadnumsyn *= (te / tc_n) / (sp(T, 1.0) + te / tc_n);
             }
 
             // Rosseland; Bmb guards B = 0
@@ -199,17 +257,29 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
             }
         }
 
-        // suppress synchrotron at nonrelativistic temperatures
-        // (no USE_SYNCHROTRON_BRIDGE_FUNCTIONS) — gas_syn always needs this
-        const terel = te * sp(T, c.k_over_mecsq);
-        const terelfactor = (terel * terel) / (sp(T, 1.0) + terel * terel);
-        kappagassyn *= terelfactor;
-        if (comptime want_rad) {
-            kapparadsyn *= terelfactor;
-            kapparadsynross *= terelfactor;
-            if (comptime want_full) {
-                kapparadnumsyn *= terelfactor;
-                kappagassynross *= terelfactor;
+        // Bridge: NR component added to the gas synchrotron absorption
+        // (opacities.c:666), Te-based. Feeds gas_abs, so it applies on every
+        // level (including the χ path — the only synchrotron term that survives
+        // there). Placed after the Trad block; kappagassyn is otherwise untouched
+        // by it, so the value matches C's earlier in-block add.
+        if (bridge) kappagassyn += sp(T, c.kappacgs2gu) *
+            (sp(T, 2.35869e-21) * (nethcgs / rhocgs) * (bmagcgs * bmagcgs) /
+                (te * te * te)) * rho;
+
+        // suppress synchrotron at nonrelativistic temperatures — the Terelfactor
+        // path (opacities.c:700), used ONLY when the bridge is off. The bridge
+        // replaces it with the NR adds / clamp / crossover above.
+        if (!bridge) {
+            const terel = te * sp(T, c.k_over_mecsq);
+            const terelfactor = (terel * terel) / (sp(T, 1.0) + terel * terel);
+            kappagassyn *= terelfactor;
+            if (comptime want_rad) {
+                kapparadsyn *= terelfactor;
+                kapparadsynross *= terelfactor;
+                if (comptime want_full) {
+                    kapparadnumsyn *= terelfactor;
+                    kappagassynross *= terelfactor;
+                }
             }
         }
     }

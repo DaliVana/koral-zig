@@ -50,6 +50,13 @@ fn options(p: *const koral.Params) SimT.Options {
     // The physics param sets come from the puffy module's overridable state
     // (defaults = the validated `.puffy` constants; `applyPhysicsOverrides`
     // below may retarget them from the params file — the puffy_agn.toml preset).
+    // `puffy.channels` already carries the synchrotron-bridge flag and the MESA
+    // table pointer (set by applyPhysicsOverrides / main).
+    var opac = koral.physics.radforce.Params.puffyMassChan(p.mass, puffy.composition, puffy.channels);
+    // koral_lite_puffy leaves PR_KAPPAES undefined ⇒ calc_kappaes ≡ 0. The AGN
+    // preset turns scattering off (puffy.scattering=false), zeroing both the
+    // scattering opacity and the Compton four-force term (∝ κ_es).
+    if (!puffy.scattering) opac.kappaes = .none;
     return .{
         .coords = .mks2,
         .mp = puffy.mp,
@@ -57,12 +64,17 @@ fn options(p: *const koral.Params) SimT.Options {
         .tsteplim = p.tsteplim,
         .floors = puffy.floor_params,
         .rad = puffy.rad_params,
-        .opac = koral.physics.radforce.Params.puffyMassChan(p.mass, puffy.composition, puffy.channels),
+        .opac = opac,
         .implicit = puffy.impl_params,
         .correct_polaraxis = true,
         .nccorrectpolar = 2,
         .radviscosity = true,
         .dynamo = true,
+        // C: DORADIMPFIXUPS / REDUCEORDERATBH / DAMPRADWAVESPEEDNEARAXIS — off
+        // in the validated build, retargeted by the AGN preset (null = off).
+        .do_radimp_fixups = p.doradimpfixups orelse false,
+        .reduceorderatbh = p.reduceorderatbh orelse false,
+        .dampradwavespeednearaxis = p.dampradwavespeednearaxis orelse 0,
         .bc_x = .specific,
         .bc_y = .specific,
         .specific_bc = &puffy.Bc(SimT).calc,
@@ -95,6 +107,13 @@ fn applyPhysicsOverrides(p: *const koral.Params) void {
     // opacity channels
     if (p.bremsstrahlung) |b| puffy.channels.bremsstrahlung = b;
     if (p.kleinnishina) |b| puffy.channels.kleinnishina = b;
+    if (p.synchrotron_bridge) |b| puffy.channels.synchrotron_bridge = b;
+    if (p.scattering) |s| puffy.scattering = s;
+    // magnetic floor frame (C: B2RHOFLOORFRAME)
+    if (p.zamo_floor_frame) |z| puffy.floor_params.b2rhofloorframe = if (z) .zamoframe else .driftframe;
+    // implicit opacity-damping ladder (C: OPDAMPINIMPLICIT / OPDAMPMAXLEVELS / OPDAMPFACTOR)
+    if (p.opdamp_maxlevels) |n| puffy.impl_params.opdamp_maxlevels = n;
+    if (p.opdamp_factor) |v| puffy.impl_params.opdamp_factor = v;
     // rmhd floors / ceilings
     if (p.rhofloor) |v| puffy.floor_params.rhofloor = v;
     if (p.uurhoratiomin) |v| puffy.floor_params.uurhoratiomin = v;
@@ -363,6 +382,22 @@ pub fn main(init: std.process.Init) !void {
     applyPhysicsOverrides(&p);
     puffy.rmin = if (p.rmin > 0.0) p.rmin else puffy.rminForSpin(p.bhspin);
     if (p.rmax > 0.0) puffy.rmax = p.rmax; // else keep the fiducial 500 M
+
+    // Load the MESA Rosseland opacity table (C: MESA_KAPPA) and point the
+    // opacity channels at it BEFORE options()/init read `puffy.channels`. Owned
+    // here for the whole run; freed on return. The file is chosen to match the
+    // gas composition (hfrac→X, mfrac→Z) — see koral_lite_puffy's exact-match
+    // get_MESA_opacity_filename; here it is given explicitly in the toml.
+    var mtab: ?koral.physics.mesa.MesaTable = null;
+    defer if (mtab) |*t| t.deinit();
+    if (p.mesa_table.len > 0) {
+        mtab = koral.physics.mesa.MesaTable.load(allocator, io, p.mesa_table) catch |err| {
+            std.debug.print("puffy: cannot load MESA table '{s}': {s}\n", .{ p.mesa_table, @errorName(err) });
+            return err;
+        };
+        puffy.channels.mesa = &mtab.?;
+        std.debug.print("puffy: MESA opacity table loaded from '{s}'\n", .{p.mesa_table});
+    }
 
     if (puffy.rmax <= puffy.rmin) {
         std.debug.print(

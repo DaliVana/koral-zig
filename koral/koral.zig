@@ -67,6 +67,7 @@ pub const physics = struct {
     pub const flux = @import("physics/flux.zig");
     pub const thermo = @import("physics/thermo.zig");
     pub const opacities = @import("physics/opacities.zig");
+    pub const mesa = @import("physics/mesa.zig");
     pub const radforce = @import("physics/radforce.zig");
     pub const radvisc = @import("physics/radvisc.zig");
 };
@@ -144,6 +145,7 @@ test {
     _ = physics.flux;
     _ = physics.thermo;
     _ = physics.opacities;
+    _ = physics.mesa;
     _ = physics.radforce;
     _ = physics.radvisc;
     _ = recon;

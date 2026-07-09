@@ -21,6 +21,7 @@ const mhd = @import("../physics/bfield.zig");
 const hydro = @import("../physics/hydro.zig");
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
+const p2u_mod = @import("../p2u.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 /// C: U2PCONV (PUFFY define.h:27).
@@ -30,6 +31,9 @@ const big: f64 = 1.0 / 1.0e-80;
 
 pub const Etype = enum { hot, entropy };
 
+/// C: B2RHOFLOORFRAME — the frame the b²/ρ magnetic floor injects new mass in.
+pub const B2FloorFrame = enum { driftframe, zamoframe };
+
 /// Floor thresholds (C: choices.h defaults, overridden by PROBLEMS/*/define.h).
 pub const FloorParams = struct {
     rhofloor: f64 = 1.0e-50,
@@ -38,6 +42,10 @@ pub const FloorParams = struct {
     b2rhoratiomax: f64 = 100.0,
     b2uuratiomax: f64 = 100.0,
     gammamaxhd: f64 = 100.0,
+    /// C: B2RHOFLOORFRAME. DRIFTFRAME (Ressler+2017) is the validated build;
+    /// ZAMOFRAME (koral_lite_puffy) injects the new mass in the normal-observer
+    /// frame, isentropically, with a fluid-frame backup on u2p failure.
+    b2rhofloorframe: B2FloorFrame = .driftframe,
 
     /// The bare choices.h defaults (what a define.h without floor overrides
     /// gets) — used by the M5/M6 oracle problems, whose define.h sets only
@@ -424,8 +432,9 @@ pub fn u2pMhd(
 }
 
 /// C: check_floors_mhd (u2p.c:416) with PUFFY's build: no RHOFLOOR_BH/INIT,
-/// B2RHOFLOORFRAME == DRIFTFRAME (Ressler+2017), VELPRIM == VELR,
-/// no electron/relel species. Returns -1 if anything was floored, else 0;
+/// VELPRIM == VELR, no electron/relel species. The b²/ρ magnetic floor injects
+/// new mass in `floors.b2rhofloorframe` — DRIFTFRAME (Ressler+2017, validated)
+/// or ZAMOFRAME (koral_lite_puffy). Returns -1 if anything was floored, else 0;
 /// pp is modified in place and ENTR re-synced after a floor hits.
 pub fn checkFloorsMhd(
     comptime cfg: config.Config,
@@ -438,6 +447,16 @@ pub fn checkFloorsMhd(
     const gg = &geom.gg;
     const GG = &geom.GG;
     var ret: i32 = 0;
+
+    // C computes the conserved vector once at entry (u2p.c:433) — the ZAMO
+    // magnetic floor adds a delta to *these* (pre-floor) conserveds. Only
+    // needed on the ZAMO path; skipped otherwise so DRIFTFRAME is untouched.
+    var uu_entry: [L.count]f64 = undefined;
+    if (comptime L.hasVar(.b1)) {
+        if (floors.b2rhofloorframe == .zamoframe) {
+            try p2u_mod.p2uMhd(cfg, pp.*, &uu_entry, geom, pgamma);
+        }
+    }
 
     // rho too small
     if (pp[L.index(.rho)] < floors.rhofloor) {
@@ -477,46 +496,91 @@ pub fn checkFloorsMhd(
             f = b.bsq / (floors.b2rhoratiomax * pp[L.index(.rho)]);
             floored = true;
         }
-        if (b.bsq > floors.b2uuratiomax * pp[L.index(.uu)]) {
+        // koral_lite_puffy's ZAMO build comments out the b²/uu (CASE 2) floor,
+        // so only b²/ρ triggers there; the validated DRIFTFRAME build keeps it.
+        if (floors.b2rhofloorframe == .driftframe and b.bsq > floors.b2uuratiomax * pp[L.index(.uu)]) {
             fuu = b.bsq / (floors.b2uuratiomax * pp[L.index(.uu)]);
             floored = true;
         }
 
         if (floored) {
-            const wold = pp[L.index(.rho)] + pp[L.index(.uu)] * pgamma;
-            pp[L.index(.rho)] *= f;
-            pp[L.index(.uu)] *= fuu;
-            const wnew = pp[L.index(.rho)] + pp[L.index(.uu)] * pgamma;
+            switch (floors.b2rhofloorframe) {
+                .driftframe => {
+                    // new mass/energy in the drift frame (Ressler+2017)
+                    const wold = pp[L.index(.rho)] + pp[L.index(.uu)] * pgamma;
+                    pp[L.index(.rho)] *= f;
+                    pp[L.index(.uu)] *= fuu;
+                    const wnew = pp[L.index(.rho)] + pp[L.index(.uu)] * pgamma;
 
-            const betapar = -b.bcon[0] / (b.bsq * u.con[0]);
-            var betasq = betapar * betapar * b.bsq;
-            const betasqmax = 1.0 - 1.0 / (floors.gammamaxhd * floors.gammamaxhd);
-            if (betasq > betasqmax) betasq = betasqmax;
-            const gammapar = 1.0 / @sqrt(1.0 - betasq);
+                    const betapar = -b.bcon[0] / (b.bsq * u.con[0]);
+                    var betasq = betapar * betapar * b.bsq;
+                    const betasqmax = 1.0 - 1.0 / (floors.gammamaxhd * floors.gammamaxhd);
+                    if (betasq > betasqmax) betasq = betasqmax;
+                    const gammapar = 1.0 / @sqrt(1.0 - betasq);
 
-            var ucondr: [4]f64 = undefined;
-            for (0..4) |iv| ucondr[iv] = gammapar * (u.con[iv] + betapar * b.bcon[iv]);
+                    var ucondr: [4]f64 = undefined;
+                    for (0..4) |iv| ucondr[iv] = gammapar * (u.con[iv] + betapar * b.bcon[iv]);
 
-            const Bcon = [4]f64{ 0, pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] };
-            const Bcov = relele.indices21(Bcon, gg);
-            const Bmag = @sqrt(relele.dot(Bcon, Bcov));
+                    const Bcon = [4]f64{ 0, pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] };
+                    const Bcov = relele.indices21(Bcon, gg);
+                    const Bmag = @sqrt(relele.dot(Bcon, Bcov));
 
-            const udotB = relele.dot(u.con, Bcov);
-            const QdotB = udotB * wold * u.con[0];
+                    const udotB = relele.dot(u.con, Bcov);
+                    const QdotB = udotB * wold * u.con[0];
 
-            const xx = 2.0 * QdotB / (Bmag * wnew * ucondr[0]);
-            const vpar = xx / (ucondr[0] * (1.0 + @sqrt(1.0 + xx * xx)));
+                    const xx = 2.0 * QdotB / (Bmag * wnew * ucondr[0]);
+                    const vpar = xx / (ucondr[0] * (1.0 + @sqrt(1.0 + xx * xx)));
 
-            var vcon: [4]f64 = undefined;
-            vcon[0] = 1.0;
-            for (1..4) |iv| {
-                vcon[iv] = vpar * Bcon[iv] / Bmag + ucondr[iv] / ucondr[0];
+                    var vcon: [4]f64 = undefined;
+                    vcon[0] = 1.0;
+                    for (1..4) |iv| {
+                        vcon[iv] = vpar * Bcon[iv] / Bmag + ucondr[iv] / ucondr[0];
+                    }
+
+                    const ucont = try relele.convVels(vcon, .vel3, .velr, gg, GG);
+                    pp[L.index(.vx)] = ucont[1];
+                    pp[L.index(.vy)] = ucont[2];
+                    pp[L.index(.vz)] = ucont[3];
+                },
+                .zamoframe => {
+                    // C: u2p.c:693-758 (B2RHOFLOORFRAME==ZAMOFRAME). Inject the
+                    // new mass in the ZAMO (normal-observer) frame as a delta
+                    // conserved added to the entry conserveds, then recover the
+                    // primitives. ISENTROPIC_B2RHOFLOORS ⇒ no internal energy is
+                    // injected (dUU=0). On u2p failure fall back to the fluid
+                    // frame (B2RHOFLOOR_BACKUP_FFFRAME).
+                    const pporg = pp.*;
+                    const drho = pp[L.index(.rho)] * (f - 1.0);
+
+                    // ZAMO 4-velocity = normal observer n^μ = −α g^{μ0}, → VELR
+                    const etacon = relele.normalObsNcon(GG, geom.alpha);
+                    const etarel = try relele.convVelsUt(etacon, .vel4, .velr, gg, GG);
+
+                    var dpp: [L.count]f64 = @splat(0);
+                    dpp[L.index(.rho)] = drho;
+                    dpp[L.index(.vx)] = etarel[1];
+                    dpp[L.index(.vy)] = etarel[2];
+                    dpp[L.index(.vz)] = etarel[3];
+
+                    var duu: [L.count]f64 = undefined;
+                    try p2u_mod.p2uMhd(cfg, dpp, &duu, geom, pgamma);
+
+                    // add the ZAMO delta to the MHD conserveds (through B3;
+                    // the radiation conserveds are untouched by the MHD floor)
+                    const nmhd = comptime L.index(.b3) + 1;
+                    var uu = uu_entry;
+                    for (0..nmhd) |iv| uu[iv] += duu[iv];
+
+                    var rettemp = u2pSolverW(cfg, uu, pp, geom, .hot, pgamma);
+                    if (rettemp < 0) rettemp = u2pSolverW(cfg, uu, pp, geom, .entropy, pgamma);
+                    if (rettemp < 0) {
+                        // fluid-frame backup, isentropic (pp[UU] *= f, not fuu)
+                        pp.* = pporg;
+                        pp[L.index(.rho)] *= f;
+                        pp[L.index(.uu)] *= f;
+                    }
+                },
             }
-
-            const ucont = try relele.convVels(vcon, .vel3, .velr, gg, GG);
-            pp[L.index(.vx)] = ucont[1];
-            pp[L.index(.vy)] = ucont[2];
-            pp[L.index(.vz)] = ucont[3];
             ret = -1;
         }
     }

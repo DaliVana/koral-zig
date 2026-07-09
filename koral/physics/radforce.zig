@@ -63,6 +63,12 @@ pub const Params = struct {
     /// PUFFY's Klein–Nishina scattering is opt-in via `Params.puffy()`, so a
     /// non-PUFFY problem never silently inherits PUFFY scattering physics.
     kappaes: KappaesMode = .none,
+    /// C: OPDAMPINIMPLICIT opacity damping (rad.c:1488). Scales the thermal
+    /// four-force Ĝ (both frames, incl. the Comptonization term) inside the
+    /// implicit solver's residual. 1.0 = no damping (the value everywhere
+    /// except the implicit ladder's damped retries). Multiplying by 1.0 is
+    /// exact, so every non-damped path stays bit-identical.
+    opdamp: f64 = 1.0,
 
     pub fn init(units: units_mod.Units, comp: thermo.Composition) Params {
         return .{ .consts = thermo.Consts.init(units, comp) };
@@ -455,6 +461,17 @@ fn calcGiFromStateCoreG(
         // lab: coeff·u^μ; ff: coeff·(1,0,0,0)
         for (0..4) |i| gi_lab[i] += coeff * st.ucon[i];
         gi_ff[0] += coeff;
+    }
+
+    // C: OPDAMPINIMPLICIT — scale the whole four-force (both frames, after the
+    // Comptonization add) by opdamp (rad.c:1488-1494). 1.0 elsewhere ⇒ ×1.0 is
+    // exact and every non-damped path is bit-identical.
+    if (par.opdamp != 1.0) {
+        const od = sp(T, par.opdamp);
+        for (0..4) |i| {
+            gi_ff[i] *= od;
+            gi_lab[i] *= od;
+        }
     }
 
     return .{ .ff = gi_ff, .lab = gi_lab };

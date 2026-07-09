@@ -40,6 +40,7 @@ const invert_rad = @import("../../solve/invert_rad.zig");
 const invert = @import("../../solve/invert.zig");
 const implicit = @import("../../solve/implicit.zig");
 const opacities = @import("../../physics/opacities.zig");
+const mesa = @import("../../physics/mesa.zig");
 const radforce = @import("../../physics/radforce.zig");
 const units_mod = @import("../../units.zig");
 const metric = @import("../../metric/metric.zig");
@@ -141,8 +142,17 @@ pub var impl_params: implicit.ImplicitParams = implicit.ImplicitParams.puffy;
 /// Gas composition (C: MU_* or HFRAC/HEFRAC/MFRAC). Feeds `consts()` and the
 /// stepping opacity params — one source keeps them consistent.
 pub var composition: thermo.Composition = thermo.Composition.puffy;
-/// Opacity channels (C: BREMSSTRAHLUNG/SYNCHROTRON/KLEINNISHINA/COMPTONIZATION).
+/// Opacity channels (C: BREMSSTRAHLUNG/SYNCHROTRON/KLEINNISHINA/COMPTONIZATION
+/// + USE_SYNCHROTRON_BRIDGE_FUNCTIONS + the MESA table pointer).
 pub var channels: opacities.Channels = opacities.Channels.puffy;
+/// Electron-scattering opacity on/off. Default on = the validated PUFFY
+/// Klein–Nishina hook; the AGN preset turns it OFF (koral_lite_puffy leaves
+/// PR_KAPPAES undefined, so calc_kappaes ≡ 0 — no scattering, and the Compton
+/// four-force term, which is ∝ κ_es, also vanishes). Consumed by `options()`.
+pub var scattering: bool = true;
+/// MESA Rosseland opacity table (C: MESA_KAPPA). null = off. Owned by the
+/// driver (`main.zig` loads it and points `channels.mesa` at it).
+pub var mesa_table: ?mesa.MesaTable = null;
 
 pub const lt = struct {
     pub const xi: f64 = 0.995; // LT_XI

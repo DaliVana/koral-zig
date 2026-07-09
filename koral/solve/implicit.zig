@@ -92,6 +92,12 @@ pub const ImplicitParams = struct {
     allow_rad_ceiling: bool = false, // ALLOWRADCEILINGINIMPLICIT
     allow_entr_in_4dprim: bool = false, // ALLOWFORENTRINF4DPRIM
 
+    /// C: OPDAMPINIMPLICIT / OPDAMPMAXLEVELS — if a whole rung ladder fails,
+    /// retry it with the four-force scaled by opdamp_factor⁻ˡᵉᵛᵉˡ, level =
+    /// 1..opdamp_maxlevels. 0 = off (single pass; the validated behavior).
+    opdamp_maxlevels: usize = 0, // OPDAMPMAXLEVELS (0 when OPDAMPINIMPLICIT off)
+    opdamp_factor: f64 = 3.0, // OPDAMPFACTOR
+
     /// Zig-only, no C counterpart (parallelization plan §2.3 rank 1):
     /// evaluate the FD Jacobian's 4 perturbed residuals as lanes of one
     /// @Vector(4, f64) batch. Bit-identical to the scalar loop (gated in
@@ -904,8 +910,8 @@ pub fn Solver(comptime cfg: config.Config) type {
             const startwith: WhichPrim = if (ehat < ip.threshold * pp00[i_uu]) .rad else .mhd;
             const swapped: WhichPrim = if (startwith == .rad) .mhd else .rad;
 
-            // BASICRADIMPLICIT off, OPDAMPINIMPLICIT 0: the full 6-rung
-            // ladder at a single opacity damping level
+            // BASICRADIMPLICIT off: the full 6-rung ladder. C: solve_implicit_lab
+            // (rad.c:73) runs this ladder at a single opacity-damping level.
             const rungs = [6]struct { p: WhichPrim, e: WhichEq, fr: WhichFrame }{
                 .{ .p = startwith, .e = .energy, .fr = .lab },
                 .{ .p = startwith, .e = .energy, .fr = .ff },
@@ -915,20 +921,37 @@ pub fn Solver(comptime cfg: config.Config) type {
                 .{ .p = swapped, .e = .entropy, .fr = .ff },
             };
 
-            for (rungs, 0..) |rung, ir| {
-                var ppw = pp.*;
-                const r4 = solve4dPrimCore(&uu00, &state00, &pp0, geom, dt, gamma_adiab, rad, opac, ip, rung.p, rung.e, rung.fr, &ppw);
-                if (r4.ok) {
-                    pp.* = ppw;
-                    uu.* = p2u_mod.p2u(cfg, ppw, geom, gamma_adiab) catch return failres;
-                    return .{
-                        .ok = true,
-                        .rung = @intCast(ir),
-                        .iters = r4.iters,
-                        .whichprim = rung.p,
-                        .whicheq = rung.e,
-                        .whichframe = rung.fr,
-                    };
+            // C: OPDAMPINIMPLICIT (rad.c:139) — wrap the whole rung ladder in a
+            // damping loop. Level 0 is the undamped pass (bit-identical to the
+            // validated single-pass when opdamp_maxlevels == 0, since opdamp = 1
+            // skips all four-force scaling). If every rung fails, retry with the
+            // four-force scaled by opdamp = opdamp_factor⁻ˡᵉᵛᵉˡ (repeated
+            // division, matching C's loop). state00 and the bisect guess are
+            // opdamp-independent (the bisect uses the undamped opac, as in C).
+            var opdamplevel: usize = 0;
+            while (opdamplevel <= ip.opdamp_maxlevels) : (opdamplevel += 1) {
+                var opac_l = opac.*;
+                {
+                    var od: f64 = 1.0;
+                    var i: usize = 0;
+                    while (i < opdamplevel) : (i += 1) od /= ip.opdamp_factor;
+                    opac_l.opdamp = od;
+                }
+                for (rungs, 0..) |rung, ir| {
+                    var ppw = pp.*;
+                    const r4 = solve4dPrimCore(&uu00, &state00, &pp0, geom, dt, gamma_adiab, rad, &opac_l, ip, rung.p, rung.e, rung.fr, &ppw);
+                    if (r4.ok) {
+                        pp.* = ppw;
+                        uu.* = p2u_mod.p2u(cfg, ppw, geom, gamma_adiab) catch return failres;
+                        return .{
+                            .ok = true,
+                            .rung = @intCast(ir),
+                            .iters = r4.iters,
+                            .whichprim = rung.p,
+                            .whicheq = rung.e,
+                            .whichframe = rung.fr,
+                        };
+                    }
                 }
             }
             return failres;

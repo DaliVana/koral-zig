@@ -75,10 +75,55 @@ pub const Params = struct {
     // implicit rad–gas solver (C: RADIMP*)
     radimpeps: ?f64 = null,
     radimpmaxiter: ?usize = null,
+    /// C: OPDAMPINIMPLICIT / OPDAMPMAXLEVELS — opacity-damping ladder. If a whole
+    /// implicit solve (all rungs) fails, retry with the radiation four-force
+    /// scaled by opdamp_factor⁻ˡᵉᵛᵉˡ (level = 1..opdamp_maxlevels). null/0 = off
+    /// (single pass, the validated behavior). koral_lite_puffy: 3.
+    opdamp_maxlevels: ?usize = null,
+    /// C: OPDAMPFACTOR — per-level opacity/four-force damping divisor.
+    /// koral_lite_puffy: 10. Only used when opdamp_maxlevels > 0.
+    opdamp_factor: ?f64 = null,
+    /// C: DORADIMPFIXUPS — neighbour-average failed-implicit cells (both MHD and
+    /// radiation prims, never ρ/B). The pass exists; this toggles it on.
+    /// null = keep the built-in (off). koral_lite_puffy: on.
+    doradimpfixups: ?bool = null,
+
+    // reconstruction / wavespeed near-boundary tweaks (C: define.h)
+    /// C: REDUCEORDERATBH — drop the reconstruction order by one inside the BH
+    /// horizon (PPM→linear there). null = keep the built-in (off).
+    reduceorderatbh: ?bool = null,
+    /// C: DAMPRADWAVESPEEDNEARAXIS + …NCELLS — within this many cells of each
+    /// pole, force the radiative wavespeed back to the undamped value 1/3
+    /// (raises numerical diffusion near the axis for stability). null/0 = off.
+    /// koral_lite_puffy: 2.
+    dampradwavespeednearaxis: ?usize = null,
 
     // opacity channels (C: BREMSSTRAHLUNG / KLEINNISHINA on/off)
     bremsstrahlung: ?bool = null,
     kleinnishina: ?bool = null,
+    /// C: USE_SYNCHROTRON_BRIDGE_FUNCTIONS — replace the Ramesh Terelfactor
+    /// non-relativistic suppression with the Ramesh NR bridge (a Trad clamp, an
+    /// NR component added to the synchrotron absorption opacity, and a crossover
+    /// factor on the number opacity). null = keep the built-in (off).
+    synchrotron_bridge: ?bool = null,
+    /// Electron scattering opacity on/off. koral_lite_puffy (PROBLEM 147) leaves
+    /// PR_KAPPAES undefined, so `calc_kappaes` returns 0 — scattering AND the
+    /// Comptonization four-force term (∝ κ_es) both vanish. Set `false` to match
+    /// that (kappaes → .none). null = keep the built-in PUFFY Klein–Nishina hook.
+    scattering: ?bool = null,
+    /// Path to a MESA Rosseland opacity table (`a09_z<Z>_x<X>.data`). Non-empty
+    /// enables C's MESA_KAPPA: the free-free *Rosseland* opacity is replaced by
+    /// the table lookup (minus electron scattering), while the free-free *Planck*
+    /// absorption stays the bremsstrahlung formula (computed regardless of the
+    /// `bremsstrahlung` toggle, exactly as C's MESA branch does). "" = off.
+    /// The file must match the gas composition (hfrac→X, mfrac→Z).
+    mesa_table: []const u8 = "",
+
+    // magnetic floor frame (C: B2RHOFLOORFRAME). null/false = DRIFTFRAME
+    // (Ressler+2017, the validated build); true = ZAMOFRAME (koral_lite_puffy):
+    // the b²/ρ floor injects new mass in the ZAMO (normal-observer) frame,
+    // isentropically (ISENTROPIC_B2RHOFLOORS), with a fluid-frame backup.
+    zamo_floor_frame: ?bool = null,
 
     // gas composition (C: HFRAC/HEFRAC; MFRAC is derived = 1−hfrac−hefrac).
     // When hfrac is set the μ's come from the composition formula (no MU_*

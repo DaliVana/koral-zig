@@ -11,23 +11,26 @@
 #   zig build -Doptimize=ReleaseFast
 #   ./zig-out/bin/puffy koral/problems/puffy/puffy_agn.toml
 #
-# !!! NOT BIT-COMPARABLE TO koral_lite_puffy !!!
+# WHAT IS NOW PORTED (as of 2026-07-09)
 # ----------------------------------------------------------------------------
-# Several koral_lite_puffy settings are physics features that are NOT ported to
-# koral-zig and CANNOT be reproduced by any toml value. The headline one:
+# The physics features that used to be unportable are now implemented and wired
+# through this preset: MESA_KAPPA (Rosseland opacity table), the synchrotron NR
+# bridge, the ZAMO b^2/rho floor frame, the implicit opacity-damping ladder
+# (OPDAMPINIMPLICIT), near-axis radiative-wavespeed damping, the post-implicit
+# radiation fixups (DORADIMPFIXUPS), and reduce-order-inside-the-horizon. Two
+# claimed divergences turned out to be non-divergences and were NOT implemented
+# (doing so would DIVERGE from C): MAXDIFFTRADS is compiled out (EVOLVEPHOTONNUMBER
+# off) and UUEERATIOMAX is a dead macro. One correction the old ledger MISSED:
+# scattering is zero in koral_lite_puffy (PR_KAPPAES undefined) — set here via
+# scattering=false — which also zeroes the Comptonization four-force term.
 #
-#   * MESA_KAPPA — koral_lite_puffy gets its ABSORPTION opacity from the MESA
-#     tables and has BREMSSTRAHLUNG switched OFF. koral-zig has no MESA loader,
-#     so with bremsstrahlung off (as set below, to match the define.h) the only
-#     absorption left is SYNCHROTRON. Free-free / bound-free / line absorption
-#     from MESA are simply ABSENT. This materially changes the radiation–matter
-#     coupling of the run.
-#
-# The full list of unported / divergent settings — MESA, the synchrotron bridge
-# functions, ZAMO b^2/rho floor frame, MAXDIFFTRADS, opacity damping in the
-# implicit solver, UUEERATIOMAX, near-axis rad-wavespeed damping, radimp
-# fixups, u2pconv — is in docs/PUFFY_AGN_DIVERGENCES.md. Read it before treating
-# any output as "the koral_lite_puffy run."
+# !!! STILL NOT BIT-COMPARABLE TO koral_lite_puffy !!!
+# ----------------------------------------------------------------------------
+# The ports match the C physics but not to the last bit: libm ULP differences
+# (log10/pow/cbrt/exp), the hardwired u2pconv=1e-10 (C loosens to 1e-8), and the
+# near-axis REDUCEMINMODTHETA (not ported) remain. See
+# docs/PUFFY_AGN_DIVERGENCES.md for the full, corrected ledger. Read it before
+# treating any output as "the koral_lite_puffy run."
 # ============================================================================
 
 [physical]
@@ -72,9 +75,14 @@ eerhoratiomax = 1.0e20    # EERHORATIOMAX  (was 1e4)
 eeuuratiomin  = 1.0e-20   # EEUURATIOMIN
 eeuuratiomax  = 1.0e20    # EEUURATIOMAX
 b2rhoratiomax = 50.0      # B2RHORATIOMAX
-b2uuratiomax  = 1.0e3     # B2UURATIOMAX   (was 50)
+b2uuratiomax  = 1.0e3     # B2UURATIOMAX   (defined but DEAD: the b²/uu floor is
+                          #   commented out in koral_lite_puffy's ZAMO build)
 gammamaxhd    = 10.0      # GAMMAMAXHD
 gammamaxrad   = 10.0      # GAMMAMAXRAD
+# B2RHOFLOORFRAME ZAMOFRAME + ISENTROPIC_B2RHOFLOORS + B2RHOFLOOR_BACKUP_FFFRAME:
+# inject the b²/ρ floor mass in the normal-observer (ZAMO) frame, isentropically,
+# with a fluid-frame backup on u2p failure (was DRIFTFRAME in the validated build).
+zamo_floor_frame = true
 
 # --- implicit rad–gas solver (define.h RADIMP*) -----------------------------
 # Only the two that differ from ImplicitParams.puffy are set; RADIMPCONV 1e-10,
@@ -82,16 +90,38 @@ gammamaxrad   = 10.0      # GAMMAMAXRAD
 # RADIMP_START_WITH_BISECT, SCALE_JACOBIAN, ALLOWRADCEILINGINIMPLICIT,
 # ALLOWFORENTRINF4DPRIM already match.
 [implicit]
-radimpeps     = 1.0e-5    # RADIMPEPS      (was 1e-6)
-radimpmaxiter = 50        # RADIMPMAXITER  (was 40)
+radimpeps       = 1.0e-5    # RADIMPEPS      (was 1e-6)
+radimpmaxiter   = 50        # RADIMPMAXITER  (was 40)
+opdamp_maxlevels = 3        # OPDAMPINIMPLICIT=1, OPDAMPMAXLEVELS=3
+opdamp_factor    = 10.0     # OPDAMPFACTOR — failed solves retry with the four-force
+                            #   scaled by 10⁻ˡᵉᵛᵉˡ (1, 0.1, 0.01, 0.001)
+doradimpfixups   = true     # DORADIMPFIXUPS=1 — neighbour-average failed cells
+
+# --- reconstruction / wavespeed near-boundary tweaks (define.h) -------------
+[recon]
+reduceorderatbh          = true   # REDUCEORDERATBH — PPM→linear inside the horizon
+dampradwavespeednearaxis = 2      # DAMPRADWAVESPEEDNEARAXIS + …NCELLS 2
 
 # --- opacities & composition (define.h) -------------------------------------
-# BREMSSTRAHLUNG is OFF and Klein–Nishina is OFF, matching the define.h. See the
-# MESA warning in the header: absorption is synchrotron-only here.
+# koral_lite_puffy's opacity build (verified against opacities.c):
+#   * MESA_KAPPA ON  → the free-free ROSSELAND opacity is the MESA table lookup
+#     (minus electron scattering); the free-free PLANCK absorption is still the
+#     bremsstrahlung formula (C computes it inline in the MESA branch regardless
+#     of the BREMSSTRAHLUNG macro). So absorption = FF-Planck + synchrotron.
+#   * USE_SYNCHROTRON_BRIDGE_FUNCTIONS ON → the Ramesh NR bridge (Trad clamp +
+#     NR component + number-opacity crossover) replaces the Terelfactor.
+#   * PR_KAPPAES is UNDEFINED for PUFFY (problem.h:164 commented out) → scattering
+#     ≡ 0. This zeroes BOTH the scattering opacity AND the Comptonization
+#     four-force term (∝ κ_es). Hence scattering = false here (NOT just KN off).
+#   * BREMSSTRAHLUNG / KLEINNISHINA macros are commented out (dead once MESA is on).
 [opacities]
-bremsstrahlung = false    # BREMSSTRAHLUNG commented out (was on)
-kleinnishina   = false    # KLEINNISHINA commented out (was on)
-# SYNCHROTRON + COMPTONIZATION stay on (Channels.puffy defaults).
+bremsstrahlung = false                                # #define commented out (MESA supplies FF)
+kleinnishina   = false                                # #define commented out
+synchrotron_bridge = true                             # USE_SYNCHROTRON_BRIDGE_FUNCTIONS
+scattering     = false                                # PR_KAPPAES undefined ⇒ κ_es = 0 (and Compton = 0)
+mesa_table     = "data/mesa_tables/a09_z0.02_x0.7.data"  # MESA_KAPPA (matches HFRAC=0.7, MFRAC=0.02)
+# SYNCHROTRON + COMPTONIZATION channels stay on (Channels.puffy defaults);
+# Comptonization is on but evaluates to 0 because κ_es = 0.
 
 [composition]
 hfrac = 0.70              # HFRAC   (matches MESA a09_z0.02_x0.7)
