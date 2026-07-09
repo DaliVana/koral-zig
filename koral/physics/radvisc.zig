@@ -173,18 +173,41 @@ pub fn calcShearLab(
         }
     }
 
-    // covariant derivatives du_i;j and (diagonal) du^i;i
+    // Hand the assembled velocity gradients to the pure shear algebra. The
+    // gather above (neighbour prims + metrics via the FD stencil) is all the
+    // sim/grid coupling; everything below is local tensor algebra.
     const kr_blk = sim.cache.krBlock(ix, iy, iz);
+    return shearFromGradients(&du, &du2, ucon, ucov, gg, kr_blk);
+}
+
+/// Pure lab-frame shear algebra (rad.c:4090-4180 tail), extracted from
+/// calcShearLab so it can be exercised in isolation. Given the covariant
+/// velocity gradient du_i,j = ∂_j u_i and its contravariant counterpart du2
+/// (only the diagonal is read, for the expansion), the frame 4-velocity
+/// (ucon/ucov), the metric `gg`, and the Christoffel block `kr`
+/// (kr[k·16 + i·4 + j] = Γ^k_ij), build σ_μν and the expansion θ. No grid or
+/// sim access — feed it an analytic gradient and check the kinematic invariants
+/// (σ symmetric, σ_μν u^ν = 0) directly. calcShearLab is the thin sim wrapper
+/// that assembles the gradients by finite-differencing neighbour cells.
+pub fn shearFromGradients(
+    du: *const [4][4]f64,
+    du2: *const [4][4]f64,
+    ucon: [4]f64,
+    ucov: [4]f64,
+    gg: *const [4][5]f64,
+    kr: *const [64]f64,
+) ShearOut {
+    // covariant derivatives du_i;j and (diagonal) du^i;i
     var dcu: [4][4]f64 = @splat(@splat(0));
     var dcudiag: [4]f64 = @splat(0);
     for (0..4) |i| {
         for (0..4) |j| {
             var krsum: f64 = 0;
-            for (0..4) |k| krsum += kr_blk[k * 16 + i * 4 + j] * ucov[k];
+            for (0..4) |k| krsum += kr[k * 16 + i * 4 + j] * ucov[k];
             dcu[i][j] = du[i][j] - krsum;
         }
         var krsum: f64 = 0;
-        for (0..4) |k| krsum += kr_blk[i * 16 + i * 4 + k] * ucon[k];
+        for (0..4) |k| krsum += kr[i * 16 + i * 4 + k] * ucon[k];
         dcudiag[i] = du2[i][i] + krsum;
     }
 

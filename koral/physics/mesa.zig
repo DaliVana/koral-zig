@@ -225,3 +225,36 @@ test "mesa: parse + lookup a synthetic 2x2 table" {
     // logrho for logR=0.5 at logT=3.5: 0.5 = logrho - 10.5 + 18 -> logrho = -7.
     try std.testing.expectApproxEqRel(std.math.pow(f64, 10.0, 1.5), t.lookup(3.5, -7.0), 1e-12);
 }
+
+test "mesa: out-of-range inputs clamp to the grid edge (no extrapolation)" {
+    // Same 2x2 table as above: logT grid {3,4}, logR grid {0,1}, corners
+    // log10(kappa) = {{0,1},{2,3}}.
+    const text =
+        \\title line
+        \\form version X Z logRs logRmin logRmax logTs logTmin logTmax
+        \\1 1 0.7 0.02 2 0.0 1.0 2 3.0 4.0
+        \\
+        \\   logT     logR = logRho - 3*logT + 18
+        \\ 0.0 1.0
+        \\ 3.0  0.0 1.0
+        \\ 4.0  2.0 3.0
+    ;
+    var t = try MesaTable.parse(std.testing.allocator, text);
+    defer t.deinit();
+
+    // Far below both axes clamps to the (logT=3, logR=0) corner. lookup takes
+    // logrho, and logR = logrho − 3·logT + 18, so pick logrho to drive logR low
+    // too: logt_in=-2 → lt→3; logR=-29+6+18=-5 → lr→0. Corner value 0 → κ=1.
+    // Identical to the in-range corner lookup(3,-9), i.e. the edge is held flat.
+    try std.testing.expectApproxEqRel(t.lookup(3.0, -9.0), t.lookup(-2.0, -29.0), 1e-12);
+    try std.testing.expectApproxEqRel(@as(f64, 1.0), t.lookup(-2.0, -29.0), 1e-12);
+
+    // Far above both axes clamps to the (logT=4, logR=1) corner: value 3 → κ=1000
+    // (not an extrapolated 10^huge).
+    try std.testing.expectApproxEqRel(@as(f64, 1000.0), t.lookup(100.0, 1000.0), 1e-12);
+
+    // A finite value never leaves the table's κ range [10^0, 10^3] whatever the
+    // inputs — the defining safety property of the clamp.
+    const k = t.lookup(-50.0, 12.0);
+    try std.testing.expect(k >= 1.0 and k <= 1000.0);
+}

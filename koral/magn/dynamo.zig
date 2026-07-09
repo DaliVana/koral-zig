@@ -72,6 +72,83 @@ pub fn dampBphi(alphabeta: f64, facradius: f64, faczh: f64, dt_over_pk: f64, bet
     return dbphi;
 }
 
+/// The per-cell state mimic_dynamo consumes after the geometry / frame gather —
+/// everything the ΔA_φ law reads that isn't a fixed parameter.
+pub const DynamoCell = struct {
+    r: f64, // BL radius
+    th: f64, // BL colatitude θ
+    bphi: f64, // p[B3] (toroidal field)
+    bsq: f64, // b·b in BL (calc_angle_brbphibsq)
+    angle: f64, // field pitch −b^r b^φ √(g_rr g_φφ)/b² (fieldAngle)
+    prermhd: f64, // (γ−1)u (+ Ê/3 with radiation) — the pressure feeding β
+    gg33: f64, // MKS2 g_φφ at the cell
+    scaleth: f64, // sim.scaleth[clamp(ix)] — raw density-weighted scale height
+};
+
+/// What the dynamo produces for one cell.
+pub const DynamoOut = struct {
+    aphi: f64, // ΔA_φ toroidal vector potential (dyn_a φ slot)
+    bphi: f64, // B^φ after DAMPBETA (== input bphi when damping is off)
+    skip: bool, // r inside 1.0001·r_horizon → the cell contributes nothing
+};
+
+/// C: the per-cell body of mimic_dynamo (magn.c:1042-1151) — the ΔA_φ toroidal
+/// vector potential and the DAMPBETA azimuthal-field damping, as a pure function
+/// of the gathered cell state. Extracted from deltaARows so the dynamo *law* (the
+/// α sign flip across the midplane, the horizon/ISCO radial cutoffs, the faczh
+/// height window, the β-saturation damping) is unit-testable without a Sim, like
+/// dampBphi. `a` is the BH spin, `dt` the sub-step, rhor/risco the BL horizon /
+/// ISCO radii. deltaARows is the thin wrapper that gathers the metric, field
+/// angle and pressure per cell, then writes aphi/bphi back.
+pub fn dynamoDeltaA(dp: Params, a: f64, dt: f64, rhor: f64, risco: f64, c: DynamoCell) DynamoOut {
+    if (c.r < 1.0001 * rhor) return .{ .aphi = 0, .bphi = c.bphi, .skip = true }; // avoid the BH
+
+    const omk = 1.0 / (a + @sqrt(c.r * c.r * c.r));
+    const pk = 2.0 * pi / omk;
+
+    var angle = c.angle;
+    var facangle: f64 = 0;
+    if (std.math.isFinite(angle)) {
+        if (angle < -1.0) angle = -1.0;
+        facangle = @max(0.0, (dp.thetaangle - angle) / dp.thetaangle);
+    }
+
+    const facradius = misc.stepFunction(c.r - 1.0 * risco, 0.1 * risco);
+
+    const beta = 0.5 * c.bsq / c.prermhd;
+
+    // CALCHRONTHEGO scale height (clamped to avoid the axis)
+    var hrdtheta: f64 = undefined;
+    if (dp.calchronthego) {
+        hrdtheta = c.scaleth;
+        if (hrdtheta > 0.9 * pi / 2.0) hrdtheta = 0.9 * pi / 2.0;
+    } else {
+        hrdtheta = dp.expectedhr * pi / 2.0;
+    }
+
+    const zh = (pi / 2.0 - c.th) / hrdtheta;
+    const faczh = @max(0.0, 1.0 - zh * zh); // pow(·,1)
+    const facmagnetization = faczh;
+
+    var effalpha = dp.alphadynamo;
+    if (dp.alphaflipssign) {
+        effalpha = -(pi / 2.0 - c.th) / (hrdtheta / 2.0) * dp.alphadynamo;
+    }
+
+    const bphi = c.bphi;
+    const aphi = effalpha * (hrdtheta / (pi / 2.0)) / 0.4 *
+        dt / pk * c.r * c.gg33 * bphi *
+        facradius * facmagnetization * facangle;
+
+    var new_bphi = bphi;
+    if (dp.dampbeta) {
+        const dbphi = dampBphi(dp.alphabeta, facradius, faczh, dt / pk, beta, dp.betasaturated, bphi);
+        new_bphi = bphi + dbphi;
+    }
+
+    return .{ .aphi = aphi, .bphi = new_bphi, .skip = false };
+}
+
 /// C: calc_avgs_throughout / CALCHRONTHEGO (mpi.c:3168) — density-weighted RMS
 /// angular scale height at each radius, sqrt(Σρ√g(π/2−θ)² / Σρ√g) over the
 /// θ(,φ) column. Fills sim.scaleth[0..nx). Single rank (TOI=0): gix==0 stays
@@ -221,26 +298,17 @@ fn deltaARows(comptime SimT: type, sim: *SimT, dt: f64, iy0: i64, iy1: i64) rele
 
                 // dynamo scratch starts at zero (memset above)
                 const fa = try fieldAngle(SimT, &geom, geomBL, jac, &pp);
-                var angle = fa.angle;
-                const bsq = fa.bsq;
 
                 // BL {r, θ} come from the cached BL geometry's position vector
-                // (bit-identical to coco.cocoN(geom.xxvec, coords, .bl, mp)).
+                // (bit-identical to coco.cocoN(geom.xxvec, coords, .bl, mp)). The
+                // horizon cutoff stays in the wrapper so the calc_ff_Rtt closure
+                // work below runs on exactly the cells C's mimic_dynamo reaches
+                // (fieldAngle already ran for all cells, matching C's ordering).
                 const r = geomBL.xxvec[1];
                 const th = geomBL.xxvec[2];
                 if (r < 1.0001 * rhor) continue; // avoid the BH
 
-                const omk = 1.0 / (sim.opt.mp.a + @sqrt(r * r * r));
-                const pk = 2.0 * pi / omk;
-
-                var facangle: f64 = 0;
-                if (std.math.isFinite(angle)) {
-                    if (angle < -1.0) angle = -1.0;
-                    facangle = @max(0.0, (dp.thetaangle - angle) / dp.thetaangle);
-                }
-
-                const facradius = misc.stepFunction(r - 1.0 * risco, 0.1 * risco);
-
+                // pressure feeding β: gas (+ radiation Ê/3 with the M1 closure)
                 const gamma = sim.opt.gam; // no CONSISTENTGAMMA
                 var prermhd = (gamma - 1.0) * pp[uu_i];
                 if (comptime L.hasVar(.ee)) {
@@ -249,38 +317,23 @@ fn deltaARows(comptime SimT: type, sim: *SimT, dt: f64, iy0: i64, iy1: i64) rele
                     prermhd += ehat / 3.0;
                 }
 
-                const beta = 0.5 * bsq / prermhd;
+                // the raw density-weighted scale height for this radial column
+                const gix = std.math.clamp(ix, 0, nx - 1);
 
-                // CALCHRONTHEGO scale height (clamped to avoid the axis)
-                var hrdtheta: f64 = undefined;
-                if (dp.calchronthego) {
-                    const gix = std.math.clamp(ix, 0, nx - 1);
-                    hrdtheta = sim.scaleth[@intCast(gix)];
-                    if (hrdtheta > 0.9 * pi / 2.0) hrdtheta = 0.9 * pi / 2.0;
-                } else {
-                    hrdtheta = dp.expectedhr * pi / 2.0;
-                }
+                // pure dynamo law over the gathered cell state
+                const out = dynamoDeltaA(dp.*, sim.opt.mp.a, dt, rhor, risco, .{
+                    .r = r,
+                    .th = th,
+                    .bphi = pp[b3],
+                    .bsq = fa.bsq,
+                    .angle = fa.angle,
+                    .prermhd = prermhd,
+                    .gg33 = geom.gg[3][3],
+                    .scaleth = sim.scaleth[@intCast(gix)],
+                });
 
-                const zh = (pi / 2.0 - th) / hrdtheta;
-                const faczh = @max(0.0, 1.0 - zh * zh); // pow(·,1)
-                const facmagnetization = faczh;
-
-                var effalpha = dp.alphadynamo;
-                if (dp.alphaflipssign) {
-                    effalpha = -(pi / 2.0 - th) / (hrdtheta / 2.0) * dp.alphadynamo;
-                }
-
-                const bphi = pp[b3];
-                const aphi = effalpha * (hrdtheta / (pi / 2.0)) / 0.4 *
-                    dt / pk * r * geom.gg[3][3] * bphi *
-                    facradius * facmagnetization * facangle;
-
-                sim.dyn_a.set(2, ix, iy, iz, aphi); // φ component (B3 slot)
-
-                if (dp.dampbeta) {
-                    const dbphi = dampBphi(dp.alphabeta, facradius, faczh, dt / pk, beta, dp.betasaturated, bphi);
-                    sim.p.set(b3, ix, iy, iz, bphi + dbphi);
-                }
+                sim.dyn_a.set(2, ix, iy, iz, out.aphi); // φ component (B3 slot)
+                if (dp.dampbeta) sim.p.set(b3, ix, iy, iz, out.bphi);
             }
         }
     }

@@ -320,3 +320,68 @@ test "P1 dynamo threading: applyDynamo nthreads=4 is bit-identical to nthreads=1
     for (s1.dyn_a.data, s4.dyn_a.data) |v1, v4| try std.testing.expectEqual(v1, v4);
     for (s1.scaleth, s4.scaleth) |v1, v4| try std.testing.expectEqual(v1, v4);
 }
+
+// The dynamo *law* was extracted from the mimic_dynamo grid loop into the pure
+// dynamoDeltaA kernel (magn/dynamo.zig). These gates drive it directly with
+// hand-built cell states — no Sim, no metric cache — so they pin the physics a
+// scientist edits (α sign flip, the height window, the horizon cutoff) without a
+// 384×360 golden. Schwarzschild (a=0) BL radii: horizon 2, ISCO 6. The full-Sim
+// golden still carries formula-exactness against C; these carry the invariants.
+const rhor0: f64 = 2.0;
+const risco0: f64 = 6.0;
+
+/// A mid-disk cell that lands squarely in the dynamo-active window (r past the
+/// ISCO, |θ−π/2| inside the scale height, field pitch below THETAANGLE).
+fn activeCell(th: f64, bphi: f64) dynamo.DynamoCell {
+    return .{
+        .r = 10.0,
+        .th = th,
+        .bphi = bphi,
+        .bsq = 1.0,
+        .angle = 0.0, // < THETAANGLE ⇒ facangle = 1
+        .prermhd = 1.0,
+        .gg33 = 100.0,
+        .scaleth = 0.0, // unused: these gates run with calchronthego = false
+    };
+}
+
+test "M12 dynamo law: ΔA_φ flips sign across the equator (ALPHAFLIPSSIGN, pure kernel)" {
+    // expectedhr path so hrdtheta is a fixed 0.3·π/2 — no scale-height gather.
+    const dp = dynamo.Params{ .calchronthego = false, .dampbeta = false };
+    const dth = 0.1; // both cells inside the scale height ⇒ faczh > 0
+
+    const north = dynamo.dynamoDeltaA(dp, 0.0, 1.0, rhor0, risco0, activeCell(pi / 2.0 - dth, 1e-3));
+    const south = dynamo.dynamoDeltaA(dp, 0.0, 1.0, rhor0, risco0, activeCell(pi / 2.0 + dth, 1e-3));
+
+    try std.testing.expect(!north.skip and !south.skip);
+    // effalpha = −(π/2−θ)·(…>0), everything else is even in (π/2−θ) and > 0, so
+    // ΔA_φ is odd across the midplane: opposite signs, equal magnitude.
+    try std.testing.expect(north.aphi < 0.0);
+    try std.testing.expect(south.aphi > 0.0);
+    try std.testing.expectApproxEqRel(north.aphi, -south.aphi, 1e-12);
+}
+
+test "M12 dynamo law: the height window switches ΔA_φ off beyond the scale height" {
+    const dp = dynamo.Params{ .calchronthego = false, .dampbeta = true };
+    const hrdtheta = dp.expectedhr * pi / 2.0;
+
+    // just inside the scale height (|zh| < 1) the dynamo is live…
+    const inside = dynamo.dynamoDeltaA(dp, 0.0, 1.0, rhor0, risco0, activeCell(pi / 2.0 - 0.5 * hrdtheta, 1e-3));
+    try std.testing.expect(inside.aphi != 0.0);
+
+    // …past it (|zh| > 1) faczh = max(0, 1−zh²) = 0, so both ΔA_φ and the
+    // DAMPBETA increment vanish — the field is left untouched.
+    const outside = dynamo.dynamoDeltaA(dp, 0.0, 1.0, rhor0, risco0, activeCell(pi / 2.0 - 1.5 * hrdtheta, 1e-3));
+    try std.testing.expectEqual(@as(f64, 0.0), outside.aphi);
+    try std.testing.expectEqual(@as(f64, 1e-3), outside.bphi); // B^φ unchanged
+}
+
+test "M12 dynamo law: cells inside 1.0001·r_horizon are skipped" {
+    const dp = dynamo.Params{ .calchronthego = false };
+    var c = activeCell(pi / 2.0 - 0.1, 7e-4);
+    c.r = rhor0; // exactly on the horizon ⇒ inside 1.0001·rhor
+    const out = dynamo.dynamoDeltaA(dp, 0.0, 1.0, rhor0, risco0, c);
+    try std.testing.expect(out.skip);
+    try std.testing.expectEqual(@as(f64, 0.0), out.aphi);
+    try std.testing.expectEqual(@as(f64, 7e-4), out.bphi); // untouched
+}
