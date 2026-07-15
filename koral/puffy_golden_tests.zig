@@ -51,26 +51,7 @@ const LP = SimP.Layout;
 /// class field magnitude max|c|. The physically meaningful keystone metric —
 /// a per-cell *relative* deviation would amplify the razor-thin torus
 /// surface (ρ ∝ ε³ → 0) by 3/ε and drown the field-scale agreement.
-const FieldDev = struct {
-    max_diff: f64 = 0,
-    max_mag: f64 = 0,
-    ix: i64 = 0,
-    iy: i64 = 0,
-    c_val: f64 = 0,
-    z_val: f64 = 0,
-
-    fn add(self: *FieldDev, c: f64, z: f64, ix: i64, iy: i64) void {
-        const d = @abs(c - z);
-        if (d > self.max_diff) self.* = .{ .max_diff = d, .max_mag = self.max_mag, .ix = ix, .iy = iy, .c_val = c, .z_val = z };
-        self.max_mag = @max(self.max_mag, @abs(c));
-    }
-    fn dev(self: *const FieldDev) f64 {
-        return if (self.max_mag > 0) self.max_diff / self.max_mag else 0;
-    }
-    fn report(self: *const FieldDev, name: []const u8) void {
-        std.debug.print("  {s:<5} field {e:.3}  (|Δ|max {e:.3} / |{s}|max {e:.3}) at ({d},{d})  C {e:.10} zig {e:.10}\n", .{ name, self.dev(), self.max_diff, name, self.max_mag, self.ix, self.iy, self.c_val, self.z_val });
-    }
-};
+const FieldDev = golden.FieldDev;
 
 const var_names = [_][]const u8{ "rho", "uu", "vx", "vy", "vz", "entr", "b1", "b2", "b3", "ee", "fx", "fy", "fz" };
 
@@ -113,7 +94,7 @@ fn compareBslots(s: *SimP, k: *const golden.Kini, tol: f64, is_field: [3]bool, l
             var pp: [SimP.nv]f64 = undefined;
             s.p.load(ix, iy, 0, &pp);
             for (0..3) |ib| {
-                dev[ib].add(k.data[base + ib], pp[bslots[ib]], ix, iy);
+                dev[ib].addLoc(k.data[base + ib], pp[bslots[ib]], ix, iy);
                 absdiff[ib] = @max(absdiff[ib], @abs(k.data[base + ib] - pp[bslots[ib]]));
             }
         }
@@ -162,7 +143,7 @@ fn runKeystone(a: std.mem.Allocator) !void {
                 const base = kp.base(jx, jy, 0);
                 var pp: [SimP.nv]f64 = undefined;
                 s.p.load(ix, iy, 0, &pp);
-                for (0..13) |iv| dev[iv].add(kp.data[base + iv], pp[iv], ix, iy);
+                for (0..13) |iv| dev[iv].addLoc(kp.data[base + iv], pp[iv], ix, iy);
                 b3_absdiff = @max(b3_absdiff, @abs(kp.data[base + toroidal] - pp[toroidal]));
             }
         }
@@ -235,8 +216,8 @@ test "M11 keystone: qags attribution — epsrel 1e-12 collapses torus deviation"
             var pp: [SimP.nv]f64 = undefined;
             s.p.load(ix, iy, 0, &pp);
             if (ke.data[base + LP.index(.rho)] > 1e-22) { // torus cells
-                dev_rho.add(ke.data[base + LP.index(.rho)], pp[LP.index(.rho)], ix, iy);
-                dev_uu.add(ke.data[base + LP.index(.uu)], pp[LP.index(.uu)], ix, iy);
+                dev_rho.addLoc(ke.data[base + LP.index(.rho)], pp[LP.index(.rho)], ix, iy);
+                dev_uu.addLoc(ke.data[base + LP.index(.uu)], pp[LP.index(.uu)], ix, iy);
             }
         }
     }

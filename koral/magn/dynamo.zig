@@ -168,33 +168,41 @@ pub fn calcScaleHeight(comptime SimT: type, sim: *SimT) void {
 
 /// The per-column scale-height body for ix ∈ [ix0, ix1).
 fn scaleHeightCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
+    var ix: i64 = ix0;
+    while (ix < ix1) : (ix += 1) {
+        sim.scaleth[@intCast(ix)] = scaleHeightAtIx(SimT, sim, ix);
+    }
+}
+
+/// The density-weighted scale height at a single radial index — the per-column
+/// body of calcScaleHeight as a pure read (no sim.scaleth write), so a
+/// diagnostic can query one radius without mutating the Sim or filling the
+/// whole grid. C's ix==0 quirk (raw, unnormalized sum) is preserved. Both
+/// paths route through here, so calcScaleHeight stays bit-identical.
+pub fn scaleHeightAtIx(comptime SimT: type, sim: *const SimT, ix: i64) f64 {
     const L = SimT.Layout;
     const rho_i = comptime L.index(.rho);
-
     const ny = sim.nyi();
     const nz = sim.nzi();
 
-    var ix: i64 = ix0;
-    while (ix < ix1) : (ix += 1) {
-        var sigma: f64 = 0;
-        var scaleth: f64 = 0;
-        var iy: i64 = 0;
-        while (iy < ny) : (iy += 1) {
-            var iz: i64 = 0;
-            while (iz < nz) : (iz += 1) {
-                // √−g and BL θ from the caches — no per-cell fill_geometry /
-                // cocoN (finding #1); bit-identical to the recomputed values.
-                const gd = sim.cache.gdet(ix, iy, iz);
-                const th = sim.cache.blGeom(ix, iy, iz).xxvec[2];
-                const rho = sim.p.get(rho_i, ix, iy, iz);
-                const dth = pi / 2.0 - th;
-                sigma += rho * gd;
-                scaleth += rho * gd * dth * dth;
-            }
+    var sigma: f64 = 0;
+    var scaleth: f64 = 0;
+    var iy: i64 = 0;
+    while (iy < ny) : (iy += 1) {
+        var iz: i64 = 0;
+        while (iz < nz) : (iz += 1) {
+            // √−g and BL θ from the caches — no per-cell fill_geometry /
+            // cocoN (finding #1); bit-identical to the recomputed values.
+            const gd = sim.cache.gdet(ix, iy, iz);
+            const th = sim.cache.blGeom(ix, iy, iz).xxvec[2];
+            const rho = sim.p.get(rho_i, ix, iy, iz);
+            const dth = pi / 2.0 - th;
+            sigma += rho * gd;
+            scaleth += rho * gd * dth * dth;
         }
-        // C quirk: the innermost radial index is left unnormalized
-        sim.scaleth[@intCast(ix)] = if (ix > 0) @sqrt(scaleth / sigma) else scaleth;
     }
+    // C quirk: the innermost radial index is left unnormalized
+    return if (ix > 0) @sqrt(scaleth / sigma) else scaleth;
 }
 
 /// C: calc_angle_brbphibsq (magn.c:804), non-avg path — the field pitch
@@ -258,8 +266,10 @@ pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) Error!void {
         if (res.err) |e| return e;
     }
 
-    // ---- curl ΔA_φ → B^i (vecpot 3..5), superimpose on the domain ----
-    ct.curlFromA(SimT, sim, &sim.dyn_a, 0);
+    // ---- curl ΔA_φ → B^i in the scratch slots 3..5, superimpose on domain ----
+    // curlFromA clobbers &sim.vecpot 0..2 (corner A) and returns it with B in
+    // 3..5; the superpose pass below reads those slots from sim.vecpot.
+    _ = ct.curlFromA(SimT, sim, &sim.vecpot, &sim.dyn_a, 0);
 
     {
         const res = threading.parallelRange(SimT, sim, sim.team, 0, ny, W.superpose);
@@ -378,5 +388,5 @@ pub fn applyDynamo(comptime SimT: type, sim: *SimT, t: f64, dt: f64) Error!void 
     calcScaleHeight(SimT, sim);
     try sim.setBc(t, false);
     try mimicDynamo(SimT, sim, dt);
-    try sim.calcU2p();
+    try sim.calcU2p(t);
 }

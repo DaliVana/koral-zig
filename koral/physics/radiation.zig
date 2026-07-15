@@ -127,14 +127,18 @@ pub fn calcFfEhat(
 /// scaling, so it reduces to the plain boost), then u2p_rad on gdetu·R^0_μ.
 /// The C caller ignores u2p_rad's return code; so do we. Modifies pp's
 /// EE..FZ slots in place; MHD slots pass through untouched.
+/// By-value: takes the fluid-frame primitives and returns them with EE..FZ
+/// replaced by the lab-frame radiation moments (the rest unchanged). The u2pRad
+/// failure path is inherited (returns the input's EE..FZ). Init-time only.
 pub fn pradFf2Lab(
     comptime cfg: config.Config,
-    pp: *[layout.VarLayout(cfg).count]f64,
+    pp_in: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
     rp: invert_rad.RadParams,
-) relele.Error!void {
+) relele.Error![layout.VarLayout(cfg).count]f64 {
     const L = layout.VarLayout(cfg);
-    const rij_uu_ff = try calcRij(cfg, pp.*, geom);
+    var pp = pp_in;
+    const rij_uu_ff = try calcRij(cfg, pp, geom);
     const rij_uu = try frames.boost22Ff2Lab(
         rij_uu_ff,
         .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
@@ -150,7 +154,8 @@ pub fn pradFf2Lab(
     uu[L.index(.fy)] = gdetu * rij_ud[0][2];
     uu[L.index(.fz)] = gdetu * rij_ud[0][3];
 
-    _ = invert_rad.u2pRad(cfg, uu, pp, geom, rp);
+    _ = invert_rad.u2pRad(cfg, uu, &pp, geom, rp);
+    return pp;
 }
 
 /// C: calc_rad_wavespeeds (rad.c:3598) — aval[0..6] are the unlimited

@@ -141,7 +141,12 @@ test "M6: uniform magnetized state static over 50 steps" {
         while (ix < s.nxi()) : (ix += 1) {
             for (0..NV) |iv| {
                 const scale = @max(@abs(pp0[iv]), 1e-30);
-                try expect(@abs(s.p.get(iv, ix, iy, 0) - pp0[iv]) / scale <= 1e-13);
+                const got = s.p.get(iv, ix, iy, 0);
+                const dev = @abs(got - pp0[iv]) / scale;
+                if (!(dev <= 1e-13)) {
+                    std.debug.print("uniform-B drift: ix {d} iy {d} iv {d}: {e:.17} -> {e:.17} (dev {e})\n", .{ ix, iy, iv, pp0[iv], got, dev });
+                    return error.TestUnexpectedResult;
+                }
             }
         }
     }

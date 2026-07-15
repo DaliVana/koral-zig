@@ -129,12 +129,15 @@ pub const MetricCache = struct {
     gcon: []f64,
     /// Christoffels at centers, stride 64 (C: gKr)
     kris: []f64,
-    /// Jacobians MYCOORDS→OUTCOORDS and back, stride 16 (C: dxdx_my2out/out2my)
+    /// Jacobian MYCOORDS→OUTCOORDS, stride 16 (C: dxdx_my2out). The reverse
+    /// dxdx_out2my was write-only in this port, so it is not stored.
     dxdx_my2out: []f64,
-    dxdx_out2my: []f64,
-    /// faces, stride 20; dim d has one extra slice in direction d
-    gb: [3][]f64,
-    gconb: [3][]f64,
+    /// faces, stride 20; dim d has one extra slice in direction d. Null when
+    /// the cache was built with `.faces = false` (postprocessing mode): the
+    /// face metrics are never filled and fillGeometryFace panics rather than
+    /// returning a NaN geometry.
+    gb: [3]?[]f64,
+    gconb: [3]?[]f64,
     /// BL (OUTCOORDS) geometry per cell — one entry per cell (incl. ghosts),
     /// filled only when `bl_cache` is set (the dynamo / radviscosity passes).
     /// Empty otherwise. Each entry is bit-identical to geometryBLat(...) and
@@ -175,18 +178,18 @@ pub const MetricCache = struct {
             .gcon = try allocator.alloc(f64, nc * 20),
             .kris = try allocator.alloc(f64, nc * 64),
             .dxdx_my2out = try allocator.alloc(f64, nc * 16),
-            .dxdx_out2my = try allocator.alloc(f64, nc * 16),
-            .gb = undefined,
-            .gconb = undefined,
+            .gb = .{ null, null, null },
+            .gconb = .{ null, null, null },
             .bl_geom = try allocator.alloc(Geometry, if (opts.bl_cache) nc else 0),
         };
-        for (0..3) |d| {
-            const nf = faceCount(grid, d);
-            self.gb[d] = try allocator.alloc(f64, nf * 20);
-            self.gconb[d] = try allocator.alloc(f64, nf * 20);
-            if (!opts.faces) {
-                @memset(self.gb[d], 0);
-                @memset(self.gconb[d], 0);
+        // Face metrics: allocated + filled only in the default (faces) mode.
+        // Postprocessing mode (.faces = false) leaves them null — no ~183 MB of
+        // zeroed, never-read storage, and fillGeometryFace fails loudly.
+        if (opts.faces) {
+            for (0..3) |d| {
+                const nf = faceCount(grid, d);
+                self.gb[d] = try allocator.alloc(f64, nf * 20);
+                self.gconb[d] = try allocator.alloc(f64, nf * 20);
             }
         }
 
@@ -201,11 +204,10 @@ pub const MetricCache = struct {
         self.allocator.free(self.gcon);
         self.allocator.free(self.kris);
         self.allocator.free(self.dxdx_my2out);
-        self.allocator.free(self.dxdx_out2my);
         self.allocator.free(self.bl_geom);
         for (0..3) |d| {
-            self.allocator.free(self.gb[d]);
-            self.allocator.free(self.gconb[d]);
+            if (self.gb[d]) |b| self.allocator.free(b);
+            if (self.gconb[d]) |b| self.allocator.free(b);
         }
         self.* = undefined;
     }
@@ -220,12 +222,7 @@ pub const MetricCache = struct {
     }
 
     inline fn cellIndex(self: *const MetricCache, ix: i64, iy: i64, iz: i64) usize {
-        const grid = &self.grid;
-        const jx: usize = @intCast(ix + @as(i64, @intCast(grid.ngx)));
-        const jy: usize = @intCast(iy + @as(i64, @intCast(grid.ngy)));
-        const jz: usize = @intCast(iz + @as(i64, @intCast(grid.ngz)));
-        std.debug.assert(jx < grid.sx() and jy < grid.sy() and jz < grid.sz());
-        return jx + jy * grid.sx() + jz * grid.sy() * grid.sx();
+        return self.grid.cellIndex(ix, iy, iz);
     }
 
     /// Face `dim`-index f is the *left* face of cell f in that dimension;
@@ -304,21 +301,20 @@ pub const MetricCache = struct {
             }
         }
 
-        // Jacobians to/from output coordinates (C: PRECOMPUTE_MY2OUT)
+        // Jacobian to output coordinates (C: PRECOMPUTE_MY2OUT). The reverse
+        // out2my (and its x_out/j_out2my inputs) was write-only — dropped.
         const di = ci * 16;
         const j_my2out = coco.dxdx(x, self.coords, self.out_coords, self.mp);
-        const x_out = coco.cocoN(x, self.coords, self.out_coords, self.mp);
-        const j_out2my = coco.dxdx(x_out, self.out_coords, self.coords, self.mp);
         for (0..4) |i| {
             for (0..4) |j| {
                 self.dxdx_my2out[di + i * 4 + j] = j_my2out[i][j];
-                self.dxdx_out2my[di + i * 4 + j] = j_out2my[i][j];
             }
         }
     }
 
-    // (Christoffel gdet-trace correction lives at module level below so
-    // tests can apply it to a single cell without building the full cache.)
+    // (Christoffel gdet-trace correction is applyKrisCorrection, defined at
+    // module level above, so tests can apply it to a single cell without
+    // building the full cache.)
 
     /// Fill the BL (OUTCOORDS) geometry sidecar over every cell incl. ghosts.
     /// Each entry equals geometryBLat(&grid, coords, mp, ix, iy, iz) exactly —
@@ -358,17 +354,17 @@ pub const MetricCache = struct {
                     if (iy < nyh and iz < nzh) {
                         const x = [4]f64{ 0, grid.xl(ix), grid.yc(iy), grid.zc(iz) };
                         const d = metric.compute(self.coords, self.mp, x);
-                        storeBlocks(self.gb[0], self.gconb[0], self.faceIndex(0, ix, iy, iz) * 20, d);
+                        storeBlocks(self.gb[0].?, self.gconb[0].?, self.faceIndex(0, ix, iy, iz) * 20, d);
                     }
                     if (ix < nxh and iz < nzh) {
                         const x = [4]f64{ 0, grid.xc(ix), grid.yl(iy), grid.zc(iz) };
                         const d = metric.compute(self.coords, self.mp, x);
-                        storeBlocks(self.gb[1], self.gconb[1], self.faceIndex(1, ix, iy, iz) * 20, d);
+                        storeBlocks(self.gb[1].?, self.gconb[1].?, self.faceIndex(1, ix, iy, iz) * 20, d);
                     }
                     if (ix < nxh and iy < nyh) {
                         const x = [4]f64{ 0, grid.xc(ix), grid.yc(iy), grid.zl(iz) };
                         const d = metric.compute(self.coords, self.mp, x);
-                        storeBlocks(self.gb[2], self.gconb[2], self.faceIndex(2, ix, iy, iz) * 20, d);
+                        storeBlocks(self.gb[2].?, self.gconb[2].?, self.faceIndex(2, ix, iy, iz) * 20, d);
                     }
                 }
             }
@@ -461,8 +457,8 @@ pub const MetricCache = struct {
             else => unreachable,
         };
         return self.geometryFromBlocks(
-            self.gb[dim],
-            self.gconb[dim],
+            self.gb[dim] orelse @panic("fillGeometryFace on a MetricCache built with .faces = false"),
+            self.gconb[dim] orelse @panic("fillGeometryFace on a MetricCache built with .faces = false"),
             self.faceIndex(dim, ix, iy, iz) * 20,
             xxvec,
         );

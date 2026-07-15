@@ -29,6 +29,37 @@ named symbol before editing.
   `avg2pointScalar` switches exhaustive, self-managed `FaceStore.deinit`, hardened the golden readers,
   reordered the `Scal` enum per-dimension, de-duplicated the build install step, and turned `-Dmpi`
   into a compile error. Kept **annotated in place** in the P5 tier below; prune when old news.
+- **P3 — Purity, hidden state & structural API** ✅ **2026-07-15** — the substantive tier done, verified
+  byte-for-byte (`-Dslow-tests` 215/216; every golden — `calc_BfromA` 0.0, `flux_ct` 1.1e-16, `sod64`
+  4.4e-14, puffy-init divB 3.2e-22 — unchanged). Landed: `SpecificBc` gained a `bc_ctx` opaque-context
+  param, **removing the repo's only module-level `var`** (radtube `active_tube`) and the `BondiCtx`
+  struct-vars; `calcU2p` takes an explicit `t` (no ambient `self.time` in the BC refresh); the dead
+  write-only `ptm1`/`ppostimplicit` fields + their 4 copies/step deleted; one `Grid.cellIndex` now backs
+  `Field.cellOffset`/`MetricCache.cellIndex`/the flag index (drops the `p.cellOffset/NV` layout
+  reach-through); `calcShearLab` loads its center prims from `sim.p` (no divergent `pp0`); `MetricCache`
+  face storage is `[3]?[]f64` (no ~183 MB zeroed dead alloc when `.faces=false`; `fillGeometryFace`
+  panics instead of returning NaN) and the write-only `dxdx_out2my` + its per-cell `cocoN`/`dxdx` were
+  dropped; `scaleHeightAt` is `*const` via a new `scaleHeightAtIx`; `curlFromA`/`cornerAverageA`/
+  `calcBfromACore` take the scratch Field explicitly and `curlFromA` returns it; `pradFf2Lab` is
+  by-value; and the `u2pSolverW`/`u2pMhd` in/out contracts + the stale `applyKrisCorrection` comment are
+  documented. The `geometryAt` cell-identity finding is **moot** (P5 removed `Geometry.ix/iy/iz`).
+  **Deferred (rationale):** `Opac.tot_emissivity` sentinel (verifier-downgraded; sentinel already
+  documented; a fill has an `OpacLevel` dependency — review calls as-is "defensible"); `calcRijViscTotal`
+  freshness stamp and `impl_dt` context-generic `parallelRows` (both verifier-downgraded, "no correctness
+  hazard today", touch the hot/threaded path); `Field.load` by-value across ~99 sites (low, mechanical,
+  incremental-by-design).
+- **P4 — Test hygiene** ✅ **2026-07-15** — the two structural gaps closed + the reporting polish, verified
+  (`-Dslow-tests` 215/216). `build.zig` now fails configure if any `koral/*_tests.zig` (or
+  `testing/tubes.zig`) is not `@import`ed in `koral.zig`'s test block (silent-coverage-loss guard); the
+  metric golden test dropped its private `Golden`/`readGolden`/`DevTracker`/`coordsFromId` for
+  `testing/golden.zig`, and the triplicated `Dev`/`FieldDev` field trackers were unified into one shared
+  `FieldDev`; the five bare per-cell `expect()`s (evolution/mhd/radiation) now print ix/iy/iv/dev on
+  failure; the default radtube battery runs 3a+4a before asserting (4a's ODE gate no longer hidden); the
+  radvisc `torusCell orelse SkipZigTest` is now a loud `error.NoTorusCellFound`; and the tautological
+  iv-ordering assertion checks the raw flat array. **Deferred:** the `testing/theory.zig` extraction of
+  the remaining copy-pasted theory helpers (`expectClose`/`velrWithGamma`/`ppFromTemps`/`stepTo`/Options
+  builders) — pure test-side DRY with no coverage/behavior impact, and its "before large P3 work"
+  ordering rationale is moot now that P3 is done.
 
 The rest below were removed (fixed in earlier passes):
 
@@ -485,7 +516,13 @@ un-inlined per the note. Debug/ReleaseSafe-only effect, no FP change → golden-
 
 ---
 
-# P3 — Purity, hidden state & structural API
+# P3 — Purity, hidden state & structural API ✅ DONE (2026-07-15)
+
+**Status (2026-07-15).** Substantive tier applied + verified byte-for-byte (`-Dslow-tests` 215/216);
+see the summary at the top of this file. Deferred (with rationale, per the top summary):
+`Opac.tot_emissivity` sentinel, `calcRijViscTotal` freshness stamp, `impl_dt` context-generic
+`parallelRows`, and the ~99-site `Field.load` by-value migration. The `geometryAt` cell-identity item
+is moot (P5 removed `Geometry.ix/iy/iz`).
 
 Signature-/ownership-level cleanups that remove ambient-state hazards and the repo's remaining
 must-call-X-before-Y couplings. Nearly all are bit-identical (indices/plumbing only), pinned by the
@@ -732,7 +769,14 @@ would not catch the failure mode).
 
 ---
 
-# P4 — Test hygiene
+# P4 — Test hygiene ✅ DONE (2026-07-15)
+
+**Status (2026-07-15).** Applied + verified (`-Dslow-tests` 215/216): the `build.zig` registration
+guard, the metric-golden/`FieldDev` helper de-duplication, the sweep-loop `expect()` diagnostics, the
+radtube run-all-then-assert, the loud `error.NoTorusCellFound`, and the real iv-ordering assertion.
+Deferred: the `testing/theory.zig` extraction of the remaining copy-pasted theory helpers (pure
+test-side DRY; the higher-risk golden-reader dedup half is done, and its "before large P3 work"
+ordering rationale is moot now that P3 is complete).
 
 The suite is the codebase's strongest safety net for these refactors — harden the two structural gaps
 (silent coverage loss, duplicated helpers) before doing large P2/P3 work, then the reporting polish.

@@ -192,6 +192,37 @@ pub const DevTracker = struct {
     }
 };
 
+/// Field-scale deviation tracker: the worst |C−zig| over a whole-grid sweep,
+/// normalized by that field's own maximum |C| magnitude (not per element) —
+/// so near-zero cells don't inflate a relative error. `add` tracks the value
+/// only; `addLoc` also records the (ix,iy) of the worst-diff cell for
+/// `report`. (Shared by the visc/dynamo/puffy golden tests — the puffy one
+/// is the superset that keeps location; visc/dynamo use the location-less
+/// `add`.)
+pub const FieldDev = struct {
+    max_diff: f64 = 0,
+    max_mag: f64 = 0,
+    ix: i64 = 0,
+    iy: i64 = 0,
+    c_val: f64 = 0,
+    z_val: f64 = 0,
+
+    pub fn add(self: *FieldDev, c: f64, z: f64) void {
+        self.addLoc(c, z, 0, 0);
+    }
+    pub fn addLoc(self: *FieldDev, c: f64, z: f64, ix: i64, iy: i64) void {
+        const d = @abs(c - z);
+        if (d > self.max_diff) self.* = .{ .max_diff = d, .max_mag = self.max_mag, .ix = ix, .iy = iy, .c_val = c, .z_val = z };
+        self.max_mag = @max(self.max_mag, @abs(c));
+    }
+    pub fn dev(self: *const FieldDev) f64 {
+        return if (self.max_mag > 0) self.max_diff / self.max_mag else 0;
+    }
+    pub fn report(self: *const FieldDev, name: []const u8) void {
+        std.debug.print("  {s:<5} field {e:.3}  (|Δ|max {e:.3} / |{s}|max {e:.3}) at ({d},{d})  C {e:.10} zig {e:.10}\n", .{ name, self.dev(), self.max_diff, name, self.max_mag, self.ix, self.iy, self.c_val, self.z_val });
+    }
+};
+
 /// Unpack a 10-value upper triangle into a symmetric 4×5 block (col 4 = 0).
 pub fn sym10(vals: []const f64) [4][5]f64 {
     var m: [4][5]f64 = @splat(@splat(0));

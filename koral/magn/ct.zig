@@ -190,8 +190,8 @@ pub fn calcBfromA(comptime SimT: type, sim: *SimT, ifoverwrite: bool) relele.Err
     const ny = sim.nyi();
     const nz = sim.nzi();
 
-    cornerAverageA(SimT, sim, &sim.p, b1);
-    calcBfromACore(SimT, sim);
+    cornerAverageA(SimT, sim, &sim.vecpot, &sim.p, b1);
+    calcBfromACore(SimT, sim, &sim.vecpot);
 
     if (ifoverwrite) {
         const ngx: i64 = @intCast(sim.grid.ngx);
@@ -220,10 +220,12 @@ pub fn calcBfromA(comptime SimT: type, sim: *SimT, ifoverwrite: bool) relele.Err
 
 /// Corner-averaged vector potential (magn.c:499-515): A_i at each corner is
 /// the average of the surrounding cell-centered A_i, read from `src` slots
-/// [base, base+1, base+2] and written into vecpot 0..2. `src` is any Field on
-/// the same grid — sim.p (B slots) for calc_BfromA, the dynamo scratch for
-/// mimic_dynamo. Exposed via pub so the dynamo can reuse the curl.
-pub fn cornerAverageA(comptime SimT: type, sim: *SimT, src: anytype, base: usize) void {
+/// [base, base+1, base+2] and written into `scratch` slots 0..2. `src` is any
+/// Field on the same grid — sim.p (B slots) for calc_BfromA, the dynamo scratch
+/// for mimic_dynamo; `scratch` is the 6-slot work Field (`&sim.vecpot`) that
+/// carries the corner A (0..2) then the curl B (3..5). Exposed via pub so the
+/// dynamo can reuse the curl.
+pub fn cornerAverageA(comptime SimT: type, sim: *SimT, scratch: anytype, src: anytype, base: usize) void {
     const nx = sim.nxi();
     const ny = sim.nyi();
     const nz = sim.nzi();
@@ -254,7 +256,7 @@ pub fn cornerAverageA(comptime SimT: type, sim: *SimT, src: anytype, base: usize
                             src.get(c, ix, iy, iz - 1) + src.get(c, ix, iy - 1, iz - 1) +
                             src.get(c, ix - 1, iy, iz - 1) + src.get(c, ix - 1, iy - 1, iz - 1));
                     }
-                    sim.vecpot.set(iv, ix, iy, iz, a_val);
+                    scratch.set(iv, ix, iy, iz, a_val);
                 }
             }
         }
@@ -262,16 +264,19 @@ pub fn cornerAverageA(comptime SimT: type, sim: *SimT, src: anytype, base: usize
 }
 
 /// Curl of a cell-centered vector potential held in `src` slots
-/// [base..base+2]: corner-average then curl, leaving B^i in vecpot 3..5
-/// (C: calc_BfromA(pinput, 0) — the ifoverwrite==0 path the dynamo uses).
-pub fn curlFromA(comptime SimT: type, sim: *SimT, src: anytype, base: usize) void {
-    cornerAverageA(SimT, sim, src, base);
-    calcBfromACore(SimT, sim);
+/// [base..base+2]: corner-average then curl, leaving B^i in `scratch` slots
+/// 3..5 (C: calc_BfromA(pinput, 0) — the ifoverwrite==0 path the dynamo uses).
+/// Returns `scratch` so the consumer visibly reads the result there — slots
+/// 0..2 are clobbered (corner A), 3..5 hold the output B.
+pub fn curlFromA(comptime SimT: type, sim: *SimT, scratch: anytype, src: anytype, base: usize) @TypeOf(scratch) {
+    cornerAverageA(SimT, sim, scratch, src, base);
+    calcBfromACore(SimT, sim, scratch);
+    return scratch;
 }
 
 /// C: calc_BfromA_core (magn.c:568) — curl of the corner A over the domain,
-/// stored back into the scratch slots (as C reuses pvecpot[1..3]).
-fn calcBfromACore(comptime SimT: type, sim: *SimT) void {
+/// stored back into the `scratch` slots (as C reuses pvecpot[1..3]).
+fn calcBfromACore(comptime SimT: type, sim: *SimT, scratch: anytype) void {
     const nx = sim.nxi();
     const ny = sim.nyi();
     const nz = sim.nzi();
@@ -290,39 +295,39 @@ fn calcBfromACore(comptime SimT: type, sim: *SimT) void {
                 if (nz == 1) {
                     // flux-ct-compatible, axisymmetric (magn.c:597-618)
                     inline for (0..3) |c| {
-                        dA[c + 1][2] = -(sim.vecpot.get(c, ix, iy, iz) - sim.vecpot.get(c, ix, iy + 1, iz) +
-                            sim.vecpot.get(c, ix + 1, iy, iz) - sim.vecpot.get(c, ix + 1, iy + 1, iz)) /
+                        dA[c + 1][2] = -(scratch.get(c, ix, iy, iz) - scratch.get(c, ix, iy + 1, iz) +
+                            scratch.get(c, ix + 1, iy, iz) - scratch.get(c, ix + 1, iy + 1, iz)) /
                             (2.0 * g.cellSize(iy, 1));
-                        dA[c + 1][1] = -(sim.vecpot.get(c, ix, iy, iz) + sim.vecpot.get(c, ix, iy + 1, iz) -
-                            sim.vecpot.get(c, ix + 1, iy, iz) - sim.vecpot.get(c, ix + 1, iy + 1, iz)) /
+                        dA[c + 1][1] = -(scratch.get(c, ix, iy, iz) + scratch.get(c, ix, iy + 1, iz) -
+                            scratch.get(c, ix + 1, iy, iz) - scratch.get(c, ix + 1, iy + 1, iz)) /
                             (2.0 * g.cellSize(ix, 0));
                         dA[c + 1][3] = 0;
                     }
                 } else {
                     // full 3D corner differences (magn.c:622-659)
                     inline for (0..3) |c| {
-                        dA[c + 1][1] = (sim.vecpot.get(c, ix + 1, iy, iz) - sim.vecpot.get(c, ix, iy, iz) +
-                            sim.vecpot.get(c, ix + 1, iy + 1, iz) - sim.vecpot.get(c, ix, iy + 1, iz) +
-                            sim.vecpot.get(c, ix + 1, iy, iz + 1) - sim.vecpot.get(c, ix, iy, iz + 1) +
-                            sim.vecpot.get(c, ix + 1, iy + 1, iz + 1) - sim.vecpot.get(c, ix, iy + 1, iz + 1)) /
+                        dA[c + 1][1] = (scratch.get(c, ix + 1, iy, iz) - scratch.get(c, ix, iy, iz) +
+                            scratch.get(c, ix + 1, iy + 1, iz) - scratch.get(c, ix, iy + 1, iz) +
+                            scratch.get(c, ix + 1, iy, iz + 1) - scratch.get(c, ix, iy, iz + 1) +
+                            scratch.get(c, ix + 1, iy + 1, iz + 1) - scratch.get(c, ix, iy + 1, iz + 1)) /
                             (4.0 * g.cellSize(ix, 0));
-                        dA[c + 1][2] = (sim.vecpot.get(c, ix, iy + 1, iz) - sim.vecpot.get(c, ix, iy, iz) +
-                            sim.vecpot.get(c, ix + 1, iy + 1, iz) - sim.vecpot.get(c, ix + 1, iy, iz) +
-                            sim.vecpot.get(c, ix, iy + 1, iz + 1) - sim.vecpot.get(c, ix, iy, iz + 1) +
-                            sim.vecpot.get(c, ix + 1, iy + 1, iz + 1) - sim.vecpot.get(c, ix + 1, iy, iz + 1)) /
+                        dA[c + 1][2] = (scratch.get(c, ix, iy + 1, iz) - scratch.get(c, ix, iy, iz) +
+                            scratch.get(c, ix + 1, iy + 1, iz) - scratch.get(c, ix + 1, iy, iz) +
+                            scratch.get(c, ix, iy + 1, iz + 1) - scratch.get(c, ix, iy, iz + 1) +
+                            scratch.get(c, ix + 1, iy + 1, iz + 1) - scratch.get(c, ix + 1, iy, iz + 1)) /
                             (4.0 * g.cellSize(iy, 1));
-                        dA[c + 1][3] = (sim.vecpot.get(c, ix, iy, iz + 1) - sim.vecpot.get(c, ix, iy, iz) +
-                            sim.vecpot.get(c, ix + 1, iy, iz + 1) - sim.vecpot.get(c, ix + 1, iy, iz) +
-                            sim.vecpot.get(c, ix, iy + 1, iz + 1) - sim.vecpot.get(c, ix, iy + 1, iz) +
-                            sim.vecpot.get(c, ix + 1, iy + 1, iz + 1) - sim.vecpot.get(c, ix + 1, iy + 1, iz)) /
+                        dA[c + 1][3] = (scratch.get(c, ix, iy, iz + 1) - scratch.get(c, ix, iy, iz) +
+                            scratch.get(c, ix + 1, iy, iz + 1) - scratch.get(c, ix + 1, iy, iz) +
+                            scratch.get(c, ix, iy + 1, iz + 1) - scratch.get(c, ix, iy + 1, iz) +
+                            scratch.get(c, ix + 1, iy + 1, iz + 1) - scratch.get(c, ix + 1, iy + 1, iz)) /
                             (4.0 * g.cellSize(iz, 2));
                     }
                 }
 
                 const gdet = sim.cache.gdet(ix, iy, iz); // finding #1: no full Geometry build
-                sim.vecpot.set(3, ix, iy, iz, (dA[2][3] - dA[3][2]) / gdet);
-                sim.vecpot.set(4, ix, iy, iz, (dA[3][1] - dA[1][3]) / gdet);
-                sim.vecpot.set(5, ix, iy, iz, (dA[1][2] - dA[2][1]) / gdet);
+                scratch.set(3, ix, iy, iz, (dA[2][3] - dA[3][2]) / gdet);
+                scratch.set(4, ix, iy, iz, (dA[3][1] - dA[1][3]) / gdet);
+                scratch.set(5, ix, iy, iz, (dA[1][2] - dA[2][1]) / gdet);
             }
         }
     }

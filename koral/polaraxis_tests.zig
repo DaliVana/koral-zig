@@ -160,7 +160,7 @@ test "calc_u2p on polar rows: B-only inversion, prims and floors untouched" {
         s.u.store(ix, iy, 0, &uu);
     }
 
-    try s.calcU2p();
+    try s.calcU2p(0.0);
 
     // polar row: prims still the initialized values, but B rows follow uu
     {

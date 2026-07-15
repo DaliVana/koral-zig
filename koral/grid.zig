@@ -79,6 +79,20 @@ pub const Grid = struct {
         return g.sx() * g.sy() * g.sz();
     }
 
+    /// Flat storage index of signed cell (ix,iy,iz): ghosts map into
+    /// [0,sx)×[0,sy)×[0,sz), iz slowest. The single source of the
+    /// signed→padded-storage mapping — Field.cellOffset (×NV),
+    /// MetricCache.cellIndex, and the per-cell flag index all route through
+    /// here so an AoSoA relayout has one place to change. `inline`: hit
+    /// O(cells × passes)/step; no FP → golden-safe.
+    pub inline fn cellIndex(g: Grid, ix: i64, iy: i64, iz: i64) usize {
+        const jx: usize = @intCast(ix + @as(i64, @intCast(g.ngx)));
+        const jy: usize = @intCast(iy + @as(i64, @intCast(g.ngy)));
+        const jz: usize = @intCast(iz + @as(i64, @intCast(g.ngz)));
+        std.debug.assert(jx < g.sx() and jy < g.sy() and jz < g.sz());
+        return jx + jy * g.sx() + jz * g.sy() * g.sx();
+    }
+
     /// Cell-center internal coordinate. Signed index: ghosts are negative /
     /// ≥ n. Computed exactly as C does (set_grid, finite.c:1930):
     /// x(i) = ½(xb(i) + xb(i+1)) — for irrational bounds this differs from

@@ -83,7 +83,11 @@ test "M5: uniform MINK state static over 100 steps (at rest and boosted)" {
             s.p.load(ix, 0, 0, &pp);
             for (0..NVH) |iv| {
                 const scale = @max(@abs(pp0[iv]), 1e-30);
-                try expect(@abs(pp[iv] - pp0[iv]) / scale <= 1e-14);
+                const dev = @abs(pp[iv] - pp0[iv]) / scale;
+                if (!(dev <= 1e-14)) {
+                    std.debug.print("static drift: ix {d} iv {d}: {e:.17} -> {e:.17} (dev {e})\n", .{ ix, iv, pp0[iv], pp[iv], dev });
+                    return error.TestUnexpectedResult;
+                }
             }
         }
     }
@@ -126,7 +130,11 @@ test "M5: total conserveds exactly conserved (periodic, smooth flow)" {
         }
         for (0..NVH) |iv| {
             const scale = @max(@abs(tot0[iv]), 1e-3 * @abs(tot0[Lp.index(.rho)]));
-            try expect(@abs(tot[iv] - tot0[iv]) / scale <= 1e-13);
+            const dev = @abs(tot[iv] - tot0[iv]) / scale;
+            if (!(dev <= 1e-13)) {
+                std.debug.print("conservation drift: iv {d}: {e:.17} -> {e:.17} (dev {e})\n", .{ iv, tot0[iv], tot[iv], dev });
+                return error.TestUnexpectedResult;
+            }
         }
     }
 
@@ -146,7 +154,10 @@ test "M5: total conserveds exactly conserved (periodic, smooth flow)" {
         if (iv == Lp.index(.entr)) continue;
         const scale = @max(@abs(tot0[iv]), 1e-3 * @abs(tot0[Lp.index(.rho)]));
         const drift = @abs(tot[iv] - tot0[iv]) / scale;
-        try expect(drift <= 25 * 1e-10);
+        if (!(drift <= 25 * 1e-10)) {
+            std.debug.print("conservation drift (25 steps): iv {d}: {e:.17} -> {e:.17} (drift {e})\n", .{ iv, tot0[iv], tot[iv], drift });
+            return error.TestUnexpectedResult;
+        }
     }
 }
 
@@ -620,14 +631,14 @@ const cfg_hydro_ks = config.Config{
 const SimKs = sim_mod.Sim(cfg_hydro_ks);
 
 const BondiCtx = struct {
-    var michel: Michel = undefined;
-    var rc: f64 = 8.0;
+    michel: Michel,
+    rc: f64,
 
-    fn prims(s: *const SimKs, r_ix: i64) [SimKs.nv]f64 {
+    fn prims(self: *const BondiCtx, s: *const SimKs, r_ix: i64) [SimKs.nv]f64 {
         const L = SimKs.Layout;
         const r = s.grid.xc(r_ix);
-        const m = michel.solve(r, rc);
-        const p = michel.k * std.math.pow(f64, m.rho, michel_gam);
+        const m = self.michel.solve(r, self.rc);
+        const p = self.michel.k * std.math.pow(f64, m.rho, michel_gam);
         const uint = p / (michel_gam - 1.0);
 
         const geom = s.cache.fillGeometry(r_ix, 0, 0);
@@ -645,13 +656,14 @@ const BondiCtx = struct {
         return pp;
     }
 
-    fn bc(s: *const SimKs, ix: i64, iy: i64, iz: i64, t: f64, ifinit: bool, face: sim_mod.BcFace) relele.Error![SimKs.nv]f64 {
+    fn bc(ctx: ?*const anyopaque, s: *const SimKs, ix: i64, iy: i64, iz: i64, t: f64, ifinit: bool, face: sim_mod.BcFace) relele.Error![SimKs.nv]f64 {
         _ = iy;
         _ = iz;
         _ = t;
         _ = ifinit;
         _ = face;
-        return prims(s, ix);
+        const self: *const BondiCtx = @ptrCast(@alignCast(ctx.?));
+        return self.prims(s, ix);
     }
 };
 
@@ -664,20 +676,19 @@ fn runBondi(a: std.mem.Allocator, nx: usize, tend: f64) !f64 {
         .miny = std.math.pi / 2.0 - 0.5,
         .maxy = std.math.pi / 2.0 + 0.5,
     });
+    const ctx = BondiCtx{ .rc = 8.0, .michel = Michel.init(8.0) };
     var s = try SimKs.init(a, g, .{
         .coords = .ks,
         .gam = michel_gam,
         .bc_x = .specific,
         .specific_bc = &BondiCtx.bc,
+        .bc_ctx = &ctx,
     });
     defer s.deinit();
 
-    BondiCtx.rc = 8.0;
-    BondiCtx.michel = Michel.init(BondiCtx.rc);
-
     var ix: i64 = 0;
     while (ix < s.nxi()) : (ix += 1) {
-        try s.initCell(ix, 0, 0, BondiCtx.prims(&s, ix));
+        try s.initCell(ix, 0, 0, ctx.prims(&s, ix));
     }
     try s.finishInit();
 

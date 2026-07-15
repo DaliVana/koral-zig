@@ -54,19 +54,24 @@ pub const ShearOut = struct {
 
 /// C: calc_shear_lab (rad.c:3952), the RAD branch (VELPRIMRAD, FX..FZ). The
 /// gas branch (VELPRIM, VX..VZ) is available via `istart`/`whichvel` but
-/// PUFFY only uses RAD. Neighbour prims come from sim.p, neighbour metrics
-/// and coordinates from the metric cache; Christoffels from the center cell.
+/// PUFFY only uses RAD. Center and neighbour prims both come from sim.p,
+/// neighbour metrics and coordinates from the metric cache; Christoffels from
+/// the center cell.
 pub fn calcShearLab(
     comptime SimT: type,
     sim: *const SimT,
     ix: i64,
     iy: i64,
     iz: i64,
-    pp0: *const [SimT.nv]f64,
     comptime istart: usize,
     comptime whichvel: relele.VelType,
 ) relele.Error!ShearOut {
     const NV = SimT.nv;
+
+    // Center prims from the live state — loaded here (not passed in) so they
+    // cannot diverge from the ±1 neighbours the FD stencil reads from sim.p.
+    var pp0: [NV]f64 = undefined;
+    sim.p.load(ix, iy, iz, &pp0);
 
     const geom = sim.cache.fillGeometry(ix, iy, iz);
     const gg = &geom.gg;
@@ -329,7 +334,7 @@ pub fn calcRadShearViscosity(
     global_dt: f64,
 ) relele.Error!struct { shear: [4][4]f64, nu: f64 } {
     const L = SimT.Layout;
-    const sh = try calcShearLab(SimT, sim, ix, iy, iz, pp, comptime L.index(.fx), .velr);
+    const sh = try calcShearLab(SimT, sim, ix, iy, iz, comptime L.index(.fx), .velr);
     const shear = relele.indices1122(sh.s, &geom.GG); // σ_ij → σ^ij
     const nu = try calcRadViscCoeff(SimT, sim, ix, iy, iz, pp, geom, global_dt);
     return .{ .shear = shear, .nu = nu };

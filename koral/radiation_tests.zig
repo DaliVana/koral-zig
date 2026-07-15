@@ -474,7 +474,11 @@ test "M7: uniform MINK state with radiation static over 50 steps (rest and boost
             s.p.load(ix, 0, 0, &pp);
             for (0..NV) |iv| {
                 const scale = @max(@abs(pp0[iv]), 1e-30);
-                try expect(@abs(pp[iv] - pp0[iv]) / scale <= 1e-14);
+                const dev = @abs(pp[iv] - pp0[iv]) / scale;
+                if (!(dev <= 1e-14)) {
+                    std.debug.print("rad static drift: ix {d} iv {d}: {e:.17} -> {e:.17} (dev {e})\n", .{ ix, iv, pp0[iv], pp[iv], dev });
+                    return error.TestUnexpectedResult;
+                }
             }
         }
     }

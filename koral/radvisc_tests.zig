@@ -61,7 +61,7 @@ test "M12 radviscosity: RADVISCNUDAMP caps ν at mindx²/(4 global_dt)" {
     defer s.deinit();
     _ = try puffy.initAll(SimP, &s);
 
-    const cell = torusCell(&s) orelse return error.SkipZigTest;
+    const cell = torusCell(&s) orelse return error.NoTorusCellFound;
     const ix = cell[0];
     const iy = cell[1];
     var pp: [SimP.nv]f64 = undefined;
@@ -88,7 +88,7 @@ test "M12 radviscosity: RADVISCMAXVELDAMP caps the viscous flux above MAXRADVISC
     defer s.deinit();
     _ = try puffy.initAll(SimP, &s);
 
-    const cell = torusCell(&s) orelse return error.SkipZigTest;
+    const cell = torusCell(&s) orelse return error.NoTorusCellFound;
     const ix = cell[0];
     const iy = cell[1];
     var pp: [SimP.nv]f64 = undefined;
@@ -141,7 +141,7 @@ test "M12 radviscosity: σ_μν is symmetric and u-orthogonal (kinematic shear i
 
     // an interior torus cell — its ±1 neighbours are interior too, so the shear
     // FD stencil reads real data (no ghost dependence) and σ is non-degenerate.
-    const cell = torusCell(&s) orelse return error.SkipZigTest;
+    const cell = torusCell(&s) orelse return error.NoTorusCellFound;
     const ix = cell[0];
     const iy = cell[1];
     var pp: [SimP.nv]f64 = undefined;
@@ -149,7 +149,7 @@ test "M12 radviscosity: σ_μν is symmetric and u-orthogonal (kinematic shear i
     const geom = s.cache.fillGeometry(ix, iy, 0);
 
     // σ_μν (both indices lowered) in the radiation frame (FX..FZ, VELR).
-    const sh = try radvisc.calcShearLab(SimP, &s, ix, iy, 0, &pp, comptime LP.index(.fx), .velr);
+    const sh = try radvisc.calcShearLab(SimP, &s, ix, iy, 0, comptime LP.index(.fx), .velr);
     const sigma = sh.s;
 
     // the radiation-frame 4-velocity the shear is projected around.

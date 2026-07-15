@@ -244,6 +244,7 @@ const SimRad = sim_mod.Sim(tubes.cfg_rad);
 
 /// ZIGRADTUBE/bc.c — Dirichlet: ghosts pinned to the tube-2 states.
 fn radtubeBc(
+    ctx: ?*const anyopaque,
     s: *const SimRad,
     ix: i64,
     iy: i64,
@@ -252,6 +253,7 @@ fn radtubeBc(
     ifinit: bool,
     face: sim_mod.BcFace,
 ) relele.Error![SimRad.nv]f64 {
+    _ = ctx;
     _ = s;
     _ = iy;
     _ = iz;

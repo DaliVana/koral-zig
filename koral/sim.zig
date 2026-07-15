@@ -113,6 +113,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// `catch unreachable` (panic in safe builds, UB in ReleaseFast). The
         /// sole caller setBcCell already returns Error!void.
         pub const SpecificBc = *const fn (
+            ctx: ?*const anyopaque,
             sim: *const Self,
             ix: i64,
             iy: i64,
@@ -165,6 +166,11 @@ pub fn Sim(comptime cfg: config.Config) type {
             bc_y: BcKind = .copy,
             bc_z: BcKind = .copy,
             specific_bc: ?SpecificBc = null,
+            /// Opaque user context threaded verbatim to `specific_bc` on every
+            /// ghost fill (e.g. which shock tube / which Michel solution the BC
+            /// samples). Lets a runtime-parameterized BC avoid module-level
+            /// state; the comptime-bound BCs (puffy) ignore it.
+            bc_ctx: ?*const anyopaque = null,
             /// Worker threads for the per-step passes (P1: all of them run
             /// on the persistent team). 1 ≡ the serial path (bit-identical;
             /// the golden tests run here).
@@ -191,8 +197,6 @@ pub fn Sim(comptime cfg: config.Config) type {
         drt1: FieldT,
         drt2: FieldT,
         uforget: FieldT,
-        ptm1: FieldT,
-        ppostimplicit: FieldT,
         // fixup backups (finite.c:5030)
         u_bak: FieldT,
         p_bak: FieldT,
@@ -258,8 +262,9 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// exits and the OS reclaims, and the test suite runs under the leak-
         /// checking allocator only after a *successful* init.
         const heap_field_names = .{
-            "p",    "u",    "ut0",     "ut1",  "ut2",           "dut1",  "dut2",
-            "drt1", "drt2", "uforget", "ptm1", "ppostimplicit", "u_bak", "p_bak",
+            "p",    "u",    "ut0",     "ut1",   "ut2",
+            "dut1", "dut2", "drt1",    "drt2",  "uforget",
+            "u_bak", "p_bak",
         };
 
         pub fn init(allocator: std.mem.Allocator, g: Grid, opt: Options) !Self {
@@ -444,7 +449,9 @@ pub fn Sim(comptime cfg: config.Config) type {
         // O(cells × passes)/step; `inline` for Debug/ReleaseSafe (no FP change,
         // golden-safe — P2 #10).
         inline fn flagIdx(self: *const Self, f: Flag, ix: i64, iy: i64, iz: i64) usize {
-            return (self.p.cellOffset(ix, iy, iz) / NV) * n_flags + @intFromEnum(f);
+            // layout-independent cell index — was `p.cellOffset/NV`, which
+            // coupled flag indexing to the primitives Field's AoS layout.
+            return self.grid.cellIndex(ix, iy, iz) * n_flags + @intFromEnum(f);
         }
         pub inline fn getFlag(self: *const Self, f: Flag, ix: i64, iy: i64, iz: i64) i32 {
             return self.flags[self.flagIdx(f, ix, iy, iz)];
@@ -741,7 +748,12 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         /// C: calc_u2p (finite.c:546) — per-cell inversion + floors, then
         /// fixup averaging and a boundary refresh.
-        pub fn calcU2p(self: *Self) Error!void {
+        /// `t` is the simulation time the refreshed ghosts are evaluated at
+        /// (C: global_time). Every caller passes the current step's t, which
+        /// equals self.time; taking it explicitly keeps the BC refresh from
+        /// depending on ambient state a standalone caller (opExplicit,
+        /// applyDynamo) might not have set.
+        pub fn calcU2p(self: *Self, t: f64) Error!void {
             self.timers.begin(.u2p);
             defer self.timers.end();
             const res = threading.parallelRange(Self, self, self.team, 0, self.nyi(), u2pRowsWorker);
@@ -751,7 +763,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             if (comptime L.hasVar(.ee)) {
                 try self.cellFixup(.rad_fixup);
             }
-            try self.setBc(self.time, false);
+            try self.setBc(t, false);
         }
 
         /// The per-cell inversion body for iy ∈ [iy0, iy1) (all iz, all ix).
@@ -1331,7 +1343,6 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         /// C: op_explicit (finite.c:633).
         pub fn opExplicit(self: *Self, t: f64, dtin: f64) Error!void {
-            _ = t;
             // (upreexplicit/ppreexplicit copies skipped — see header)
             // calc_avgs_throughout: CALCHRONTHEGO only (M12)
 
@@ -1358,7 +1369,7 @@ pub fn Sim(comptime cfg: config.Config) type {
 
             // (EXPLICIT_LAB_RAD_SOURCE not used — PUFFY couples implicitly)
 
-            try self.calcU2p();
+            try self.calcU2p(t);
             // (MIXENTROPIESPROPERLY off)
         }
 
@@ -1717,7 +1728,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             defer self.timers.end();
 
             const t = self.t;
-            self.time = t; // C: global_time = t
+            self.time = t; // C: global_time = t (write-only: kept to mirror C; calcU2p now takes t explicitly)
 
             // The CFL denominator must have been seeded (initTimestepGuess, part
             // of C's solve preamble) or be forced — otherwise tstepdenmax is 0
@@ -1748,14 +1759,14 @@ pub fn Sim(comptime cfg: config.Config) type {
 
             // ---- 1st implicit ----
             self.copyFull(&self.ut0, &self.u);
-            self.copyFull(&self.ptm1, &self.p);
+            // (C copies p→ptm1 and, post-implicit, p→ppostimplicit here; both
+            //  are write-only on this path — no Zig consumer — so dropped.)
             try self.opImplicit(t, dt * gam_imex); // U(1)
-            self.copyFull(&self.ppostimplicit, &self.p);
             self.stageDeriv(&self.drt1, &self.u, &self.ut0, dt * gam_imex);
 
             // ---- 1st explicit ----
             self.copyFull(&self.ut1, &self.u);
-            try self.calcU2p();
+            try self.calcU2p(t);
             try self.doCorrect();
             try self.setBc(t, false);
             try self.opExplicit(t, dt); // F(U(1))
@@ -1773,16 +1784,15 @@ pub fn Sim(comptime cfg: config.Config) type {
 
             // ---- 2nd implicit ----
             self.copyFull(&self.uforget, &self.u);
-            try self.calcU2p();
-            self.copyFull(&self.ptm1, &self.p);
+            try self.calcU2p(t);
+            // (C copies p→ptm1 / p→ppostimplicit here; write-only, dropped.)
             try self.doCorrect();
             try self.opImplicit(t, gam_imex * dt); // U(2)
-            self.copyFull(&self.ppostimplicit, &self.p);
             self.stageDeriv(&self.drt2, &self.u, &self.uforget, dt * gam_imex);
 
             // ---- 2nd explicit ----
             self.copyFull(&self.ut2, &self.u);
-            try self.calcU2p();
+            try self.calcU2p(t);
             try self.doCorrect();
             try self.setBc(t, false);
             try self.opExplicit(t, dt); // F(U(2))
@@ -1799,7 +1809,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.stageCombine(&self.u, &self.u, dt / 2.0, &self.drt1, dt / 2.0, &self.drt2);
 
             // ---- final inversion & bookkeeping ----
-            try self.calcU2p();
+            try self.calcU2p(t);
             try self.doCorrect();
             try self.setBc(t, false);
 

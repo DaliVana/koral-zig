@@ -200,6 +200,13 @@ fn wOutOfBounds(W: f64, Qtsq: f64, QdotBsq: f64, Bsq: f64, res: Residual) bool {
 
 /// C: u2p_solver_W (u2p.c:1024). Returns C's status code; on 0 the
 /// MHD primitive slots of `pp` are overwritten.
+///
+/// `pp` is IN/OUT: on entry it must hold the cell's current primitives —
+/// pp[rho], pp[uu], pp[vx..vz] seed the Newton initial guess (C: the previous
+/// step's p). A zeroed or arbitrary buffer gives W≈0, ~50 stuck iterations,
+/// and a −150 return → entropy fallback; the guess-dependence is load-bearing
+/// for golden agreement, so an isFinite assert cannot substitute for it
+/// (rho=0 is finite yet still fails).
 pub fn u2pSolverW(
     comptime cfg: config.Config,
     uu: [layout.VarLayout(cfg).count]f64,
@@ -384,6 +391,10 @@ pub const U2pResult = struct {
 /// The MHD part of C's u2p() cascade (u2p.c:131): hot energy inversion,
 /// entropy fallback, primitives restored on total failure. The radiation
 /// inversion (u2p_rad) arrives with M7.
+///
+/// `pp` is IN/OUT: on entry it is the cell's current primitives (the Newton
+/// seed, per u2pSolverW); on total failure the incoming pp is restored
+/// unchanged (C's ppbak dance).
 pub fn u2pMhd(
     comptime cfg: config.Config,
     uu_in: [layout.VarLayout(cfg).count]f64,

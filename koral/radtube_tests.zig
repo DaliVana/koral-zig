@@ -49,9 +49,8 @@ const L = SimT.Layout;
 const NV = SimT.nv;
 const Grid = grid_mod.Grid;
 
-var active_tube: *const tubes.Tube = undefined;
-
 fn tubeBc(
+    ctx: ?*const anyopaque,
     s: *const SimT,
     ix: i64,
     iy: i64,
@@ -66,7 +65,8 @@ fn tubeBc(
     _ = t;
     _ = ifinit;
     _ = face;
-    return tubes.ppSide(cfg, if (ix < 0) active_tube.left else active_tube.right, active_tube.gam);
+    const tube: *const tubes.Tube = @ptrCast(@alignCast(ctx.?));
+    return tubes.ppSide(cfg, if (ix < 0) tube.left else tube.right, tube.gam);
 }
 
 /// analytic total fluxes (ρu^x, T^{xx}+R^{xx}, T^{tx}+R^{tx}) from prims
@@ -90,7 +90,6 @@ const Metrics = struct {
 };
 
 fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64) !Metrics {
-    active_tube = tube;
     // choices.h's default UURHORATIOMAX = 1e2 would chop the Γ = 2 tubes'
     // downstream u/ρ ≈ 290 — the tubes need wide hydro ratio floors
     var floors = invert.FloorParams.cdefault;
@@ -106,6 +105,7 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
         .implicit = implicit.ImplicitParams.puffy,
         .bc_x = .specific,
         .specific_bc = &tubeBc,
+        .bc_ctx = tube, // which tube the BC samples (was a module-level var)
     });
     defer s.deinit();
 
@@ -322,16 +322,21 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
 test "radiative shock tube battery (tubes 3a, 4a)" {
     const a = std.testing.allocator;
 
+    // Run both tubes first, assert at the end — a failed 3a gate must not
+    // hide 4a (the more expensive tube, and the only default-suite
+    // ODE-residual gate). Mirrors the slow set below.
+    const m3a = try runTube(a, &tubes.tubes[2], 192, 60.0);
+    const m4a = try runTube(a, &tubes.tubes[4], 128, 300.0);
+
+    var ok = true;
     // tube 3a: highly relativistic wave (γ ≈ 10). "Smooth" analytically,
     // but the downstream mean free path 1/(κρ) ≈ 0.4 is ~2 cells here:
     // effectively a captured front that breathes at low amplitude (the
     // classic slowly-moving-shock behavior) — integral gates only
     // (measured after polish: stat 9.0e-3, plat 1.1e-5/2.7e-3, flux 4.7e-2)
-    {
-        const m = try runTube(a, &tubes.tubes[2], 192, 60.0);
-        try std.testing.expect(m.stat <= 2.0e-2);
-        try std.testing.expect(m.plat_l <= 2.5e-2 and m.plat_r <= 2.5e-2);
-        try std.testing.expect(m.flux <= 8.0e-2);
+    if (!(m3a.stat <= 2.0e-2 and m3a.plat_l <= 2.5e-2 and m3a.plat_r <= 2.5e-2 and m3a.flux <= 8.0e-2)) {
+        std.debug.print("tube 3a FAILED its gates\n", .{});
+        ok = false;
     }
     // tube 4a: radiation-pressure-dominated smooth wave — resolved
     // (mfp ≈ 11 cells), so the pointwise stationary-ODE gate applies too.
@@ -339,13 +344,11 @@ test "radiative shock tube battery (tubes 3a, 4a)" {
     // dt/5 (resolution-independent: 0.29 at nx = 384) — a sign/factor
     // error in G or R^{μν} would put it at ≥ 1. (measured: stat 7.6e-3,
     // plat 4.8e-8/1.4e-3, flux 3.8e-3, ode 0.32)
-    {
-        const m = try runTube(a, &tubes.tubes[4], 128, 300.0);
-        try std.testing.expect(m.stat <= 1.5e-2);
-        try std.testing.expect(m.plat_l <= 2.5e-2 and m.plat_r <= 2.5e-2);
-        try std.testing.expect(m.flux <= 2.0e-2);
-        try std.testing.expect(m.ode <= 4.0e-1);
+    if (!(m4a.stat <= 1.5e-2 and m4a.plat_l <= 2.5e-2 and m4a.plat_r <= 2.5e-2 and m4a.flux <= 2.0e-2 and m4a.ode <= 4.0e-1)) {
+        std.debug.print("tube 4a FAILED its gates\n", .{});
+        ok = false;
     }
+    try std.testing.expect(ok);
 }
 
 test "radiative shock tube battery, slow set (tubes 1, 2, 3b, 4b, hi-res)" {

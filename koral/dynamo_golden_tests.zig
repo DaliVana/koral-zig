@@ -50,17 +50,7 @@ fn dynamoOptions() SimP.Options {
     };
 }
 
-const Dev = struct {
-    max_diff: f64 = 0,
-    max_mag: f64 = 0,
-    fn add(self: *Dev, c: f64, z: f64) void {
-        self.max_diff = @max(self.max_diff, @abs(c - z));
-        self.max_mag = @max(self.max_mag, @abs(c));
-    }
-    fn dev(self: *const Dev) f64 {
-        return if (self.max_mag > 0) self.max_diff / self.max_mag else 0;
-    }
-};
+const Dev = golden.FieldDev;
 
 test "M12 dynamo: apply_dynamo B vs C (PUFFY t=0 + injected B³, 384×360)" {
     if (!build_options.slow_tests) return error.SkipZigTest;

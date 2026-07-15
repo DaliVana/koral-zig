@@ -600,7 +600,7 @@ pub fn prepInitCell(
         pp[L.index(.fz)] = 0.0;
 
         // BL fluid-frame radiative primitives → BL lab
-        try radiation.pradFf2Lab(cfg, &pp, geomBL, rad_params);
+        pp = try radiation.pradFf2Lab(cfg, pp, geomBL, rad_params);
     }
 
     // BL → MYCOORDS
@@ -751,6 +751,7 @@ pub fn Bc(comptime SimT: type) type {
         const has_b = L.hasVar(.b1);
 
         pub fn calc(
+            ctx: ?*const anyopaque,
             sim: *const SimT,
             ix: i64,
             iy: i64,
@@ -759,6 +760,7 @@ pub fn Bc(comptime SimT: type) type {
             ifinit: bool,
             face: sim_mod.BcFace,
         ) relele.Error![NV]f64 {
+            _ = ctx; // comptime-bound BC — no runtime context
             _ = t;
             _ = ifinit;
             const nx: i64 = @intCast(sim.grid.nx);

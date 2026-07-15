@@ -36,12 +36,7 @@ pub fn Field(comptime NV: usize) type {
         /// win is Debug/ReleaseSafe (ReleaseFast already inlines it). No FP
         /// change → golden-safe (P2 #10).
         pub inline fn cellOffset(self: *const Self, ix: i64, iy: i64, iz: i64) usize {
-            const g = &self.grid;
-            const jx: usize = @intCast(ix + @as(i64, @intCast(g.ngx)));
-            const jy: usize = @intCast(iy + @as(i64, @intCast(g.ngy)));
-            const jz: usize = @intCast(iz + @as(i64, @intCast(g.ngz)));
-            std.debug.assert(jx < g.sx() and jy < g.sy() and jz < g.sz());
-            return (jx + jy * g.sx() + jz * g.sy() * g.sx()) * NV;
+            return self.grid.cellIndex(ix, iy, iz) * NV;
         }
 
         pub inline fn get(self: *const Self, iv: usize, ix: i64, iy: i64, iz: i64) f64 {
@@ -142,8 +137,12 @@ test "field: memory layout is iv-fastest then x (C get_u ordering)" {
     const NV = 3;
     var f = try Field(NV).init(std.testing.allocator, g);
     defer f.deinit();
-    // Adjacent iv within one cell → adjacent memory.
-    try std.testing.expectEqual(f.cellOffset(0, 0, 0) + 1, f.cellOffset(0, 0, 0) + 1);
+    // Adjacent iv within one cell → adjacent memory: iv=1 must land at
+    // base+1 in the raw flat array (inspect f.data directly — the address
+    // function alone can't prove ordering).
+    f.set(0, 0, 0, 0, 111.0);
+    f.set(1, 0, 0, 0, 222.0);
+    try std.testing.expectEqual(@as(f64, 222.0), f.data[f.cellOffset(0, 0, 0) + 1]);
     // Next cell in x → offset advances by exactly NV.
     try std.testing.expectEqual(f.cellOffset(0, 0, 0) + NV, f.cellOffset(1, 0, 0));
     // Next cell in y → advances by SX*NV.

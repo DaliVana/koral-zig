@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) !void {
+    const io = b.graph.io;
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const use_mpi = b.option(bool, "mpi", "link system MPI (not yet implemented)") orelse false;
@@ -53,6 +54,44 @@ pub fn build(b: *std.Build) !void {
     const test_step = b.step("test", "run koral library tests");
     test_step.dependOn(&run_koral_tests.step);
 
+    // Configure-time guard: the suite is registered by hand in koral.zig's
+    // `test {}` block (there is no auto-registration), so a new, cleanly-
+    // compiling `foo_tests.zig` would run *zero* tests unnoticed. Enforce the
+    // contract: every top-level `koral/*_tests.zig` (theory + `*_golden_tests.zig`,
+    // which also ends in `_tests.zig`) must appear as an `@import` in koral.zig,
+    // plus the one off-naming carrier `testing/tubes.zig`. Fail the build loudly
+    // otherwise.
+    {
+        const koral_src = try b.build_root.handle.readFileAlloc(io, "koral/koral.zig", b.allocator, .limited(1 << 20));
+        var any_missing = false;
+        const warn = struct {
+            fn header(first: *bool) void {
+                if (!first.*) std.debug.print("build.zig: test file(s) not registered in koral.zig test block:\n", .{});
+                first.* = true;
+            }
+        };
+        var tdir = try b.build_root.handle.openDir(io, "koral", .{ .iterate = true });
+        defer tdir.close(io);
+        var tit = tdir.iterate();
+        while (try tit.next(io)) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, "_tests.zig")) continue;
+            const needle = b.fmt("@import(\"{s}\")", .{entry.name});
+            if (std.mem.indexOf(u8, koral_src, needle) == null) {
+                warn.header(&any_missing);
+                std.debug.print("  - {s}\n", .{entry.name});
+            }
+        }
+        if (std.mem.indexOf(u8, koral_src, "@import(\"testing/tubes.zig\")") == null) {
+            warn.header(&any_missing);
+            std.debug.print("  - testing/tubes.zig (off-naming carrier)\n", .{});
+        }
+        if (any_missing) {
+            std.debug.print("Add `_ = @import(\"<name>\");` to koral.zig's test block.\n", .{});
+            return error.UnregisteredTestFile;
+        }
+    }
+
     // Implicit-solver benchmark (always ReleaseFast; the dev-mode koral
     // module above keeps whatever -Doptimize the user picked)
     const koral_fast = b.createModule(.{
@@ -98,7 +137,6 @@ pub fn build(b: *std.Build) !void {
         .dependOn(&run_res2kdmp.step);
 
     // One executable per koral/problems/<name>/main.zig
-    const io = b.graph.io;
     var dir = try b.build_root.handle.openDir(io, "koral/problems", .{ .iterate = true });
     defer dir.close(io);
     var it = dir.iterate();
