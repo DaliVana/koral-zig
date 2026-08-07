@@ -26,6 +26,8 @@ pub const Pass = enum {
     u2p, // calc_u2p inversion sweep (minus nested fixup/bc)
     fixup, // cell_fixup, all flavors
     bc, // set_bc incl. corner fill
+    halo, // MPI halo exchange episodes (Startall+Waitall wait time)
+    collect, // MPI collectives (end-of-step dt fold, scale-height sums)
     correct, // correct_polaraxis
     wavespeeds, // calc_wavespeeds + save_wavespeeds (+ dt reduce)
     sweep, // reconstruction + one-sided fluxes, all dims

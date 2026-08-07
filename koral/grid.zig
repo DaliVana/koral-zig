@@ -29,6 +29,14 @@ pub const Grid = struct {
     dx: f64,
     dy: f64,
     dz: f64,
+    /// Global z-index of this grid's first active z-cell (C: TOK). 0 for a
+    /// serial/global grid. An MPI φ-slab grid keeps the GLOBAL extents and
+    /// spacing and offsets only the *index* inside zl(), so every rank
+    /// computes bit-identical coordinates for the same physical cell — the
+    /// C approach (calc_xb works on i+TOI/TOJ/TOK). Storing a shifted minz
+    /// instead would differ in ulps: minz + (tok+iz)·dz ≠ (minz + tok·dz) + iz·dz.
+    /// x/y are never decomposed (φ-only MPI plan §5), so no ixoff/iyoff exist.
+    izoff: i64 = 0,
 
     pub fn init(opts: struct {
         nx: usize,
@@ -61,6 +69,20 @@ pub const Grid = struct {
             .dy = (opts.maxy - opts.miny) / @as(f64, @floatFromInt(opts.ny)),
             .dz = (opts.maxz - opts.minz) / @as(f64, @floatFromInt(opts.nz)),
         };
+    }
+
+    /// The local grid of one MPI φ-slab: `nz_local` z-cells starting at
+    /// global z-index `tok`. Extents and spacing are COPIED from the global
+    /// grid (never recomputed — MPI plan §5.2 trap 1); only nz, ngz and the
+    /// z-index offset change. x/y stay whole by construction (φ-only plan).
+    pub fn initLocal(global: Grid, tok: usize, nz_local: usize) Grid {
+        std.debug.assert(tok + nz_local <= global.nz);
+        std.debug.assert(global.izoff == 0);
+        var g = global;
+        g.nz = nz_local;
+        g.ngz = if (nz_local > 1) global.ng else 0;
+        g.izoff = @intCast(tok);
+        return g;
     }
 
     /// Padded (storage) dimensions (C: SX = NX + 2*NGCX …).
@@ -120,7 +142,7 @@ pub const Grid = struct {
         return g.miny + @as(f64, @floatFromInt(iy)) * g.dy;
     }
     pub inline fn zl(g: Grid, iz: i64) f64 {
-        return g.minz + @as(f64, @floatFromInt(iz)) * g.dz;
+        return g.minz + @as(f64, @floatFromInt(iz + g.izoff)) * g.dz;
     }
 
     /// Cell size as C computes it — get_size_x(i,dim) = xb(i+1) − xb(i)
@@ -150,6 +172,28 @@ test "grid: dimension collapse matches C (NY=1 → no y-ghosts, SY=1)" {
     try std.testing.expectEqual(@as(usize, 390), g.sx());
     try std.testing.expectEqual(@as(usize, 366), g.sy());
     try std.testing.expectEqual(@as(usize, 1), g.sz());
+}
+
+test "grid: initLocal φ-slab — global-index coordinates are bit-identical" {
+    // The MPI plan's gate-1 coordinate contract: a local slab's zc/zl/cellSize
+    // at local index iz must equal the global grid's at iz+tok TO THE BIT
+    // (irrational extents on purpose — the ulp-sensitive case).
+    const g = Grid.init(.{ .nx = 8, .ny = 6, .nz = 12, .ng = 3, .minx = 0, .maxx = 1, .minz = -std.math.pi / 4.0, .maxz = std.math.pi / 4.0 });
+    const tok: usize = 6;
+    const loc = Grid.initLocal(g, tok, 3);
+    try std.testing.expectEqual(@as(usize, 3), loc.nz);
+    try std.testing.expectEqual(@as(usize, 3), loc.ngz);
+    try std.testing.expectEqual(g.dz, loc.dz);
+    try std.testing.expectEqual(g.minz, loc.minz); // extents stay global
+    var iz: i64 = -3;
+    while (iz < 3 + 3) : (iz += 1) {
+        try std.testing.expectEqual(g.zl(iz + @as(i64, @intCast(tok))), loc.zl(iz));
+        try std.testing.expectEqual(g.zc(iz + @as(i64, @intCast(tok))), loc.zc(iz));
+        try std.testing.expectEqual(g.cellSize(iz + @as(i64, @intCast(tok)), 2), loc.cellSize(iz, 2));
+    }
+    // x/y untouched
+    try std.testing.expectEqual(g.xc(5), loc.xc(5));
+    try std.testing.expectEqual(g.cellCount() / g.sz() * loc.sz(), loc.cellCount());
 }
 
 test "grid: uniform spacing and centers/faces (incl. ghost cells)" {

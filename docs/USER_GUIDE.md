@@ -117,10 +117,35 @@ using it).
 |---|---|
 | `-Doptimize=Debug\|ReleaseSafe\|ReleaseFast\|ReleaseSmall` | Standard Zig optimize mode. Debug builds enable the many `std.debug.assert` bounds checks in `Field.cellOffset` etc. |
 | `-Dtarget=...` | Standard Zig cross-compile target. |
-| `-Dmpi=true` | **Hard build failure** — the MPI backend is not implemented, and `koral/koral.zig` `@compileError`s rather than silently producing a serial binary. |
+| `-Dmpi=true` | Link the system MPI and swap the comm seam to the real backend (`koral/comm/mpi/`). `build.zig` probes `mpicc` for the lib dirs and detects the ABI family (MPICH vs Open MPI) from `mpi.h`; overrides: `-Dmpi-family=mpich\|ompi`, `-Dmpi-lib=<dir>`, `-Dmpi-include=<dir>`. See "Running under MPI" below. |
 | `-Dsilo=true` | Build the optional `.silo` field export (`koral/io/silo.zig`, §4). Compiles LLNL Silo 4.12 from source (PDB driver, no HDF5) via the sibling `silo-zig` package and links it statically — **no VisIt or Silo install needed**. Default off; the Silo source is a lazy, hash-pinned fetch, so a build *without* `-Dsilo` never touches it. |
 | `-Dslow-tests=true` | Enables the slow test bodies (convergence studies, soaks, the full-grid PUFFY t=0 keystone). See §5. |
 | `-Dtest-filter=<substr>` | Passed to `addTest` `.filters`; restrict the single test artifact to tests whose name contains the substring. Repeatable. |
+
+### Running under MPI (P4a — 3D wedges, node-to-node only)
+
+The MPI layer (docs/MPI_PLAN_2026-08-07.md) decomposes **φ only**: `nx/ny/nz`
+in the params file stay the GLOBAL dims, each rank evolves one contiguous
+z-slab of `nz / <ranks>` φ-cells, and 2D runs (`nz = 1`) never decompose.
+`nz` must divide by the rank count with `nz/ranks ≥ 3` (the ghost depth).
+`ntz = 0` (the default) takes the launched world size; a nonzero `ntz` must
+match it. MPI is meant to be inter-node — one rank per node, `nthreads` =
+cores per node.
+
+```sh
+# macOS dev loop: brew install open-mpi, then
+zig build puffy -Dmpi -Doptimize=ReleaseFast
+mpiexec -n 4 zig-out/bin/puffy koral/problems/puffy/puffy3d.toml
+
+# The validation ladder (gates 2–5; gate 1 is in `zig build test`)
+zig build mpi-gates -Dmpi -Doptimize=ReleaseSafe
+for n in 1 2 3 4; do mpiexec -n $n zig-out/bin/mpi-gates || break; done
+```
+
+P4a limits: file output (scalars/KDMP/silo) and `--restart` are disabled at
+more than 1 rank (parallel I/O is P4b); rank 0 prints the heartbeat and the
+per-pass timer table, which gains `halo` (exchange wait) and `collect`
+(collectives) rows.
 
 ### What the `puffy` executable prints
 
@@ -260,6 +285,7 @@ retargets the run without a recompile; see `docs/PUFFY_AGN_DIVERGENCES.md`)
 |---|---|---|
 | `deterministic` | `false` | Reserved determinism flag (currently unused). |
 | `nthreads` | `1` | Persistent worker team for all per-step passes; `1` is the bit-identical serial path (§8). |
+| `ntz` | `0` | MPI φ-ring size (`-Dmpi` builds, 3D only; §2 "Running under MPI"). `0` = auto (the launched rank count); nonzero must match it. `nx/ny/nz` stay global; each rank owns `nz/ntz` φ-cells. |
 
 ### PUFFY example (`koral/problems/puffy/puffy.toml`)
 

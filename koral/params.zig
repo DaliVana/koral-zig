@@ -143,6 +143,12 @@ pub const Params = struct {
     // execution
     deterministic: bool = false,
     nthreads: usize = 1,
+    /// MPI φ-ring size (MPI plan §5: 1 rank per node, φ-only decomposition;
+    /// nx/ny/nz above are GLOBAL dims). 0 = auto (take the launched world
+    /// size); a nonzero value must match it — the double entry makes the
+    /// params file a complete run record. Serial builds require ntz ∈ {0, 1}.
+    /// 3D only: decompose() rejects ntz > 1 when nz == 1.
+    ntz: usize = 0,
 
     pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Params {
         const text = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 << 20));

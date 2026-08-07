@@ -156,6 +156,14 @@ pub fn dynamoDeltaA(dp: Params, a: f64, dt: f64, rhor: f64, risco: f64, c: Dynam
 /// Band-parallel over ix: each worker owns whole columns, so every column's
 /// θ-sum accumulates in serial order — bit-identical at any nthreads.
 pub fn calcScaleHeight(comptime SimT: type, sim: *SimT) void {
+    // MPI plan §7.2: with ntz>1 the θ,φ column spans all ranks — take the
+    // ring-reduced path (partial sums → Allreduce(SUM) → √). The world IS
+    // the φ-ring (φ-only decomposition), matching C's world-Allreduce in
+    // calc_avgs_throughout (mpi.c:3168).
+    if (sim.decomp.ntz > 1) {
+        calcScaleHeightRing(SimT, sim);
+        return;
+    }
     const W = struct {
         fn cols(s: *SimT, ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
             _ = res;
@@ -164,6 +172,55 @@ pub fn calcScaleHeight(comptime SimT: type, sim: *SimT) void {
     };
     // the column worker is infallible — no result to check
     _ = threading.parallelRange(SimT, sim, sim.team, 0, sim.nxi(), W.cols);
+}
+
+/// The ntz>1 scale height: per-radius partial sums over the LOCAL φ wedge
+/// (same iy-outer/iz-inner accumulation order as scaleHeightAtIx), two
+/// pre-√ Allreduce(SUM)s of the nx-length arrays, then the C finalize —
+/// ix==0 keeps the raw (now-global) sum (toi==0 identically, so the local
+/// index test IS C's `gix>0` global test).
+fn calcScaleHeightRing(comptime SimT: type, sim: *SimT) void {
+    const W = struct {
+        fn cols(s: *SimT, ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
+            _ = res;
+            partialSumCols(SimT, s, ix0, ix1);
+        }
+    };
+    _ = threading.parallelRange(SimT, sim, sim.team, 0, sim.nxi(), W.cols);
+    const c = sim.opt.comm.?; // ntz>1 implies a backend (Sim.init check 6)
+    sim.timers.begin(.collect);
+    c.allreduceSum(sim.scaleth_sig);
+    c.allreduceSum(sim.scaleth_sth);
+    sim.timers.end();
+    for (sim.scaleth, sim.scaleth_sig, sim.scaleth_sth, 0..) |*out, sig, sth, ix| {
+        out.* = if (ix > 0) @sqrt(sth / sig) else sth;
+    }
+}
+
+fn partialSumCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
+    const L = SimT.Layout;
+    const rho_i = comptime L.index(.rho);
+    const ny = sim.nyi();
+    const nz = sim.nzi();
+    var ix: i64 = ix0;
+    while (ix < ix1) : (ix += 1) {
+        var sigma: f64 = 0;
+        var sth: f64 = 0;
+        var iy: i64 = 0;
+        while (iy < ny) : (iy += 1) {
+            var iz: i64 = 0;
+            while (iz < nz) : (iz += 1) {
+                const gd = sim.cache.gdet(ix, iy, iz);
+                const th = sim.cache.blGeom(ix, iy, iz).xxvec[2];
+                const rho = sim.p.get(rho_i, ix, iy, iz);
+                const dth = pi / 2.0 - th;
+                sigma += rho * gd;
+                sth += rho * gd * dth * dth;
+            }
+        }
+        sim.scaleth_sig[@intCast(ix)] = sigma;
+        sim.scaleth_sth[@intCast(ix)] = sth;
+    }
 }
 
 /// The per-column scale-height body for ix ∈ [ix0, ix1).
@@ -381,10 +438,14 @@ fn superposeRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) relele.Err
     }
 }
 
-/// C: apply_dynamo (finite.c:1370) — the full per-sub-step sequence.
+/// C: apply_dynamo (finite.c:1370) — the full per-sub-step sequence,
+/// including its MPI order: mpi_exchangedata → calc_avgs_throughout →
+/// set_bc → mimic_dynamo → calc_u2p (the third canonical exchange site,
+/// MPI plan §6.1).
 pub fn applyDynamo(comptime SimT: type, sim: *SimT, t: f64, dt: f64) Error!void {
     const L = SimT.Layout;
     if (comptime !L.hasVar(.b1)) return;
+    sim.exchangeHalos();
     calcScaleHeight(SimT, sim);
     try sim.setBc(t, false);
     try mimicDynamo(SimT, sim, dt);

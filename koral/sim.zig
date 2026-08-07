@@ -55,6 +55,7 @@ const storage = @import("sim/storage.zig");
 const bc = @import("sim/bc.zig");
 const threading = @import("sim/threading.zig");
 const timers_mod = @import("sim/timers.zig");
+const comm_mod = @import("comm/comm.zig");
 
 const Grid = grid_mod.Grid;
 const Geometry = geometry.Geometry;
@@ -175,6 +176,15 @@ pub fn Sim(comptime cfg: config.Config) type {
             /// on the persistent team). 1 ≡ the serial path (bit-identical;
             /// the golden tests run here).
             nthreads: usize = 1,
+            /// MPI plan P4a: the communication backend (comm/comm.zig —
+            /// Serial no-ops by default, Mpi under -Dmpi). null ≡ serial
+            /// semantics; when set, Sim binds the zero-copy exchange
+            /// channels into `p` at init and runs the exchange episodes +
+            /// end-of-step collective. Must outlive the Sim.
+            comm: ?*comm_mod.Backend = null,
+            /// The φ-slab decomposition this Sim's grid is the local piece
+            /// of. null ≡ trivial (grid is global, all faces physical).
+            decomp: ?comm_mod.Decomp = null,
         };
 
         allocator: std.mem.Allocator,
@@ -184,6 +194,10 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// P1: the persistent worker team all per-step passes dispatch on
         /// (sim/threading.zig); null ≡ nthreads<=1 ≡ the serial path.
         team: ?*threading.Team,
+        /// The resolved decomposition (opt.decomp orelse trivial). x/y faces
+        /// are always physical; z faces stop being boundaries when ntz > 1
+        /// (their ghosts come from the exchange — sim/bc.zig gates on this).
+        decomp: comm_mod.Decomp,
 
         // state
         p: FieldT,
@@ -228,6 +242,11 @@ pub fn Sim(comptime cfg: config.Config) type {
         // and scaleth_otg — the per-radius density-weighted scale height.
         dyn_a: field_mod.Field(3),
         scaleth: []f64,
+        // MPI plan §7.2: per-radius partial sums (Σρ√g, Σρ√g·Δθ²) for the
+        // scale-height ring reduction — the pre-√ Allreduce(SUM) operands.
+        // Only the ntz>1 dynamo path touches them; tiny (2·nx doubles).
+        scaleth_sig: []f64,
+        scaleth_sth: []f64,
 
         t: f64 = 0,
         /// C: global_time — frozen at step start, used by set_bc.
@@ -250,6 +269,10 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// implicit-solver diagnostics (C: global_int_slot counters), all
         /// run-cumulative — the driver deltas them for the per-step heartbeat.
         n_radimp_failures: u64 = 0,
+        /// This step's implicit-failure count, MAXed across ranks by the
+        /// end-of-step collective (the C abort path's load-bearing signal;
+        /// == the local per-step delta on serial/1-rank runs).
+        n_radimp_fail_step: u64 = 0,
         n_radimp_iters: u64 = 0,
         n_radimp_solves: u64 = 0,
         /// P0 per-pass wall-clock instrumentation (sim/timers.zig) — always
@@ -302,11 +325,23 @@ pub fn Sim(comptime cfg: config.Config) type {
             //     tests, so this is reachable).
             if (opt.correct_polaraxis and
                 @as(i64, @intCast(g.ny)) <= 2 * opt.nccorrectpolar) return error.InvalidConfig;
+            // (6) MPI consistency: the grid must be the decomposition's local
+            //     slab, the backend's ring must match its ntz, and a real
+            //     split needs a backend (skipped z-face BCs would otherwise
+            //     never be filled by anyone).
+            const dc = opt.decomp orelse comm_mod.Decomp.serial(g);
+            if (dc.local.nz != g.nz or dc.local.izoff != g.izoff) return error.InvalidConfig;
+            if (dc.ntz > 1 and opt.comm == null) return error.InvalidConfig;
+            if (opt.comm) |c| {
+                if (c.size() != dc.ntz) return error.InvalidConfig;
+            }
 
             var self: Self = undefined;
             self.allocator = allocator;
             self.grid = g;
             self.opt = opt;
+            self.decomp = dc;
+            self.n_radimp_fail_step = 0;
             self.t = 0;
             self.time = 0;
             self.dt = 0;
@@ -331,11 +366,17 @@ pub fn Sim(comptime cfg: config.Config) type {
                 .out_coords = if (want_bl) .bl else opt.coords,
                 .mp = opt.mp,
                 .bl_cache = want_bl,
+                // The team exists by now (spawned just above) and the cache
+                // fills are pure per-cell writes — bit-identical threaded.
+                .team = self.team,
             });
 
             inline for (heap_field_names) |name| {
                 @field(self, name) = try FieldT.init(allocator, g);
             }
+            // MPI plan §6.2: the four persistent zero-copy channels bind
+            // directly into p's storage, which never moves after this.
+            if (opt.comm) |c| try c.bindExchange(self.p.data, g, NV);
             for (0..3) |d| {
                 self.pb_l[d] = try FaceT.init(allocator, g, d);
                 self.pb_r[d] = try FaceT.init(allocator, g, d);
@@ -356,6 +397,10 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.dyn_a = try field_mod.Field(3).init(allocator, g);
             self.scaleth = try allocator.alloc(f64, g.nx);
             @memset(self.scaleth, 0);
+            self.scaleth_sig = try allocator.alloc(f64, g.nx);
+            @memset(self.scaleth_sig, 0);
+            self.scaleth_sth = try allocator.alloc(f64, g.nx);
+            @memset(self.scaleth_sth, 0);
 
             // C: set_grid's min-size scan (finite.c:1946-1961), including its
             // quirk of comparing dy/dz against *mdx*.
@@ -380,6 +425,16 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.min_dx = mdx;
             self.min_dy = mdy;
             self.min_dz = mdz;
+            // Init fold (MPI plan §7.3): without it each rank seeds
+            // initTimestepGuess from its own slab's minima and the first dt
+            // diverges across ranks from step 0 (§1.1-5).
+            if (opt.comm) |c| {
+                var fold = [3]f64{ self.min_dx, self.min_dy, self.min_dz };
+                c.allreduceMin(fold[0..]);
+                self.min_dx = fold[0];
+                self.min_dy = fold[1];
+                self.min_dz = fold[2];
+            }
 
             // C: REDUCEORDERATBH threshold. The BL radius depends only on the
             // radial internal coordinate and increases monotonically with the
@@ -403,6 +458,7 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         pub fn deinit(self: *Self) void {
             const allocator = self.allocator;
+            if (self.opt.comm) |c| c.unbindExchange();
             if (self.team) |tm| tm.deinit();
             inline for (heap_field_names) |name| {
                 @field(self, name).deinit();
@@ -421,6 +477,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.rijvisc.deinit();
             self.dyn_a.deinit();
             allocator.free(self.scaleth);
+            allocator.free(self.scaleth_sig);
+            allocator.free(self.scaleth_sth);
             self.cache.deinit();
             self.* = undefined;
         }
@@ -480,6 +538,57 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
         pub fn setEmf(self: *Self, comp: usize, ix: i64, iy: i64, iz: i64, v: f64) void {
             self.emf[comp - 1][self.emfIdx(ix, iy, iz)] = v;
+        }
+
+        // ---- MPI seam (plan §5–§7) ----------------------------------------
+
+        /// C: mpi_isitBC — is this face a physical boundary of this rank's
+        /// slab? Always true serially; only z faces can be interior (φ-only
+        /// decomposition). sim/bc.zig gates every face fill on this.
+        pub fn isPhysicalBoundary(self: *const Self, face: BcFace) bool {
+            return self.decomp.isPhysical(face);
+        }
+
+        /// One halo-exchange episode on the primitives (C: mpi_exchangedata).
+        /// Zero-copy: Startall+Waitall over the persistent channels bound in
+        /// init. No-op serially / at ntz==1. Main thread only (FUNNELED),
+        /// which every call site satisfies (between team regions).
+        pub fn exchangeHalos(self: *Self) void {
+            if (self.opt.comm) |c| {
+                self.timers.begin(.halo);
+                defer self.timers.end();
+                c.exchange();
+            }
+        }
+
+        /// Fold one scalar to the global max (identity serially). Init-time
+        /// use: PUFFY's BETANORM (§1.1-5).
+        pub fn globalMax(self: *Self, v: f64) f64 {
+            if (self.opt.comm) |c| {
+                var buf = [1]f64{v};
+                c.allreduceMax(buf[0..]);
+                return buf[0];
+            }
+            return v;
+        }
+
+        /// The ONE per-step collective (plan §7.1), at the END of step() so
+        /// the driver's next cflDt() reads global values (§1.1-6): a folded
+        /// Allreduce(MAX) of [tstepdenmax, −tstepdenmin, this step's local
+        /// implicit-failure count]. MAX is exactly associative → bitwise
+        /// reproducible at any rank count.
+        fn reduceStepGlobals(self: *Self, fail_before: u64) void {
+            const local_fail = self.n_radimp_failures - fail_before;
+            self.n_radimp_fail_step = local_fail;
+            if (self.opt.comm) |c| {
+                self.timers.begin(.collect);
+                defer self.timers.end();
+                var buf = [3]f64{ self.tstepdenmax, -self.tstepdenmin, @floatFromInt(local_fail) };
+                c.allreduceMax(buf[0..]);
+                self.tstepdenmax = buf[0];
+                self.tstepdenmin = -buf[1];
+                self.n_radimp_fail_step = @intFromFloat(buf[2]);
+            }
         }
 
         /// C: is_cell_corrected_polaraxis (finite.c:6132) — within
@@ -1743,6 +1852,9 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.own_dt = self.cflDt();
             const dt = forced_dt orelse self.own_dt;
             self.dt = dt;
+            // Baseline for the end-of-step failure fold (§7.1): the counter
+            // is run-cumulative, the collective reduces this step's delta.
+            const radimp_fail_at_step_start = self.n_radimp_failures;
 
             // reset wavespeed accumulators for this step
             self.tstepdenmax = -1;
@@ -1773,6 +1885,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.copyFull(&self.ut1, &self.u);
             try self.calcU2p(t);
             try self.doCorrect();
+            self.exchangeHalos(); // C: mpi_exchangedata BEFORE set_bc (problem.c:198-204)
             try self.setBc(t, false);
             try self.opExplicit(t, dt); // F(U(1))
             if (self.opt.dynamo and comptime L.hasVar(.b1)) {
@@ -1799,6 +1912,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.copyFull(&self.ut2, &self.u);
             try self.calcU2p(t);
             try self.doCorrect();
+            self.exchangeHalos(); // C: problem.c:314-320
             try self.setBc(t, false);
             try self.opExplicit(t, dt); // F(U(2))
             if (self.opt.dynamo and comptime L.hasVar(.b1)) {
@@ -1816,10 +1930,17 @@ pub fn Sim(comptime cfg: config.Config) type {
             // ---- final inversion & bookkeeping ----
             try self.calcU2p(t);
             try self.doCorrect();
+            // C: problem.c:386-392 — the THIRD per-step exchange site, and
+            // not optional. `calcRijViscTotal` runs at the TOP of the next
+            // step (before that step's first exchange) and reads z-ghost
+            // primitives over iz ∈ [−1, nz+1); without this the radiative
+            // shear viscosity would consume ghosts a full RK stage stale.
+            self.exchangeHalos();
             try self.setBc(t, false);
 
             self.t = t + dt;
             try self.updateEntropy();
+            self.reduceStepGlobals(radimp_fail_at_step_start);
             self.nstep += 1;
         }
     };

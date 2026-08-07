@@ -6,14 +6,6 @@
 
 const std = @import("std");
 
-comptime {
-    // `-Dmpi` is plumbed through build_options, but no MPI backend exists yet.
-    // Fail the build loudly on misuse — and this read keeps the option from
-    // being dead plumbing until the backend lands.
-    if (@import("build_options").mpi)
-        @compileError("koral: -Dmpi is set but the MPI backend is not implemented; build without it");
-}
-
 pub const config = @import("config.zig");
 pub const Config = config.Config;
 pub const Module = config.Module;
@@ -104,9 +96,15 @@ pub const testing = struct {
 };
 
 pub const comm = struct {
+    pub const seam = @import("comm/comm.zig");
+    /// The comptime-selected backend: Serial by default, Mpi under -Dmpi.
+    pub const Comm = seam.Backend;
+    pub const enabled = seam.enabled;
     pub const serial = @import("comm/serial.zig");
     pub const Serial = serial.Serial;
-    pub const ReduceOp = serial.ReduceOp;
+    pub const decomp = @import("comm/decomp.zig");
+    pub const Decomp = decomp.Decomp;
+    pub const decompose = decomp.decompose;
 };
 
 pub const io = struct {
@@ -129,6 +127,7 @@ test {
     _ = field;
     _ = params;
     _ = comm.serial;
+    _ = comm.decomp;
     _ = geometry;
     _ = math.dual;
     _ = math.linalg;
@@ -191,6 +190,7 @@ test {
     _ = io.silo;
     _ = @import("scalars_tests.zig");
     _ = @import("restart_tests.zig");
+    _ = @import("mpi_abi_tests.zig");
     _ = @import("threading_tests.zig");
     _ = @import("puffystep_golden_tests.zig");
     _ = @import("sim_tests.zig");

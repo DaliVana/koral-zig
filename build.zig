@@ -1,10 +1,117 @@
 const std = @import("std");
 
+/// What `-Dmpi` resolved to at configure time (MPI plan §3.3): the comptime
+/// ABI family baked into build_options, and the lib dirs to link/rpath.
+/// No include paths are ever fed to the compiler — the bindings are
+/// hand-written externs (comm/mpi/core.zig); mpi.h is only *read* here to
+/// detect the family.
+const MpiConfig = struct {
+    family: []const u8,
+    lib_dirs: []const []const u8,
+};
+
+/// Probe order (plan §3.3): explicit -Dmpi-* overrides → `mpicc`
+/// (`--showme:*` for Open MPI, `-show` for MPICH/Intel) → error with
+/// instructions. Family: -Dmpi-family, else grep the found mpi.h for
+/// MPICH_NUMVERSION / OMPI_MAJOR_VERSION.
+fn probeMpi(
+    b: *std.Build,
+    family_opt: ?[]const u8,
+    lib_opt: ?[]const u8,
+    inc_opt: ?[]const u8,
+) !MpiConfig {
+    const io = b.graph.io;
+    var lib_dirs: std.ArrayList([]const u8) = .empty;
+    var inc_dirs: std.ArrayList([]const u8) = .empty;
+    if (lib_opt) |d| try lib_dirs.append(b.allocator, d);
+    if (inc_opt) |d| try inc_dirs.append(b.allocator, d);
+
+    if (lib_dirs.items.len == 0 or (family_opt == null and inc_dirs.items.len == 0)) {
+        const mpicc_found = b.findProgram(&.{"mpicc"}, &.{}) catch {
+            std.debug.print(
+                "build.zig: -Dmpi set but no mpicc found and no -Dmpi-lib given.\n" ++
+                    "  Load the cluster's MPI module first, or pass -Dmpi-lib=<dir-with-libmpi> -Dmpi-family=mpich|ompi.\n",
+                .{},
+            );
+            return error.MpiNotFound;
+        };
+        // findProgram resolves symlinks — but Open MPI's mpicc is a symlink
+        // to opal_wrapper, which picks its personality from argv[0] and
+        // errors when invoked under its real name. Re-append the basename.
+        const mpicc = if (std.fs.path.dirname(mpicc_found)) |dir|
+            b.pathJoin(&.{ dir, "mpicc" })
+        else
+            mpicc_found;
+        // Open MPI answers --showme:*; MPICH/Intel answer -show. Each prints
+        // a gcc-style flag line; we only harvest -L (link+rpath) and -I
+        // (family detection).
+        var outputs: std.ArrayList([]const u8) = .empty;
+        for ([_][]const u8{ "--showme:link", "--showme:compile", "-show" }) |flag| {
+            var code: u8 = 0;
+            const out = b.runAllowFail(&.{ mpicc, flag }, &code, .ignore) catch continue;
+            try outputs.append(b.allocator, out);
+        }
+        for (outputs.items) |out| {
+            var it = std.mem.tokenizeAny(u8, out, " \t\r\n");
+            while (it.next()) |tok| {
+                if (tok.len > 2 and std.mem.startsWith(u8, tok, "-L"))
+                    try lib_dirs.append(b.allocator, tok[2..]);
+                if (tok.len > 2 and std.mem.startsWith(u8, tok, "-I"))
+                    try inc_dirs.append(b.allocator, tok[2..]);
+            }
+        }
+        // last-resort include guess for family detection: <mpicc>/../include
+        if (inc_dirs.items.len == 0) {
+            if (std.fs.path.dirname(mpicc)) |bindir| {
+                if (std.fs.path.dirname(bindir)) |prefix| {
+                    try inc_dirs.append(b.allocator, b.pathJoin(&.{ prefix, "include" }));
+                }
+            }
+        }
+    }
+    if (lib_dirs.items.len == 0) {
+        std.debug.print("build.zig: -Dmpi: could not determine libmpi's directory — pass -Dmpi-lib=<dir>.\n", .{});
+        return error.MpiNotFound;
+    }
+
+    const family = family_opt orelse blk: {
+        for (inc_dirs.items) |dir| {
+            const hpath = b.pathJoin(&.{ dir, "mpi.h" });
+            const src = std.Io.Dir.cwd().readFileAlloc(io, hpath, b.allocator, .limited(8 << 20)) catch continue;
+            if (std.mem.indexOf(u8, src, "MPICH_NUMVERSION") != null) break :blk "mpich";
+            if (std.mem.indexOf(u8, src, "OMPI_MAJOR_VERSION") != null) break :blk "ompi";
+        }
+        std.debug.print("build.zig: -Dmpi: could not detect the ABI family from mpi.h — pass -Dmpi-family=mpich|ompi.\n", .{});
+        return error.MpiFamilyUnknown;
+    };
+    if (!std.mem.eql(u8, family, "mpich") and !std.mem.eql(u8, family, "ompi")) {
+        std.debug.print("build.zig: -Dmpi-family must be 'mpich' or 'ompi' (got '{s}').\n", .{family});
+        return error.MpiFamilyUnknown;
+    }
+    return .{ .family = family, .lib_dirs = lib_dirs.items };
+}
+
+/// Wire MPI into a module: libc (MPI headers' ABI expects it), the lib
+/// dirs (+rpath so binaries find the module-loaded libmpi at runtime), and
+/// -lmpi. Propagates transitively into every exe that imports the module.
+fn linkMpi(m: *std.Build.Module, mc: MpiConfig) void {
+    m.link_libc = true;
+    for (mc.lib_dirs) |d| {
+        m.addLibraryPath(.{ .cwd_relative = d });
+        m.addRPath(.{ .cwd_relative = d });
+    }
+    m.linkSystemLibrary("mpi", .{ .use_pkg_config = .no });
+}
+
 pub fn build(b: *std.Build) !void {
     const io = b.graph.io;
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const use_mpi = b.option(bool, "mpi", "link system MPI (not yet implemented)") orelse false;
+    const use_mpi = b.option(bool, "mpi", "link system MPI (probes mpicc; see -Dmpi-family/-Dmpi-lib/-Dmpi-include)") orelse false;
+    const mpi_family_opt = b.option([]const u8, "mpi-family", "MPI ABI family: mpich | ompi (default: detected from mpi.h)");
+    const mpi_lib_opt = b.option([]const u8, "mpi-lib", "directory containing libmpi (default: parsed from mpicc)");
+    const mpi_include_opt = b.option([]const u8, "mpi-include", "directory containing mpi.h — family detection only, never compiled against");
+    const mpi_cfg: ?MpiConfig = if (use_mpi) try probeMpi(b, mpi_family_opt, mpi_lib_opt, mpi_include_opt) else null;
     const slow_tests = b.option(bool, "slow-tests", "run slow tests (convergence studies, soaks)") orelse false;
 
     // `-Dsilo` builds LLNL Silo 4.12 from source (PDB driver, no HDF5) via the
@@ -31,6 +138,7 @@ pub fn build(b: *std.Build) !void {
 
     const build_opts = b.addOptions();
     build_opts.addOption(bool, "mpi", use_mpi);
+    build_opts.addOption([]const u8, "mpi_family", if (mpi_cfg) |mc| mc.family else "");
     build_opts.addOption(bool, "slow_tests", slow_tests);
     build_opts.addOption(bool, "silo", enable_silo);
     build_opts.addOption([]const u8, "golden_dir", b.pathFromRoot("tests/golden"));
@@ -42,6 +150,7 @@ pub fn build(b: *std.Build) !void {
     });
     koral.addOptions("build_options", build_opts);
     koral.addImport("silo", silo_module);
+    if (mpi_cfg) |mc| linkMpi(koral, mc);
 
     // Library unit tests: `zig build test` (-Dtest-filter=... to select)
     const test_filters = b.option(
@@ -102,6 +211,7 @@ pub fn build(b: *std.Build) !void {
     });
     koral_fast.addOptions("build_options", build_opts);
     koral_fast.addImport("silo", silo_module);
+    if (mpi_cfg) |mc| linkMpi(koral_fast, mc);
     const bench = b.addExecutable(.{
         .name = "bench_implicit",
         .root_module = b.createModule(.{
@@ -135,6 +245,26 @@ pub fn build(b: *std.Build) !void {
     if (b.args) |args| run_res2kdmp.addArgs(args);
     b.step("res2kdmp", "convert a C restart (res####.head/.dat) to a KDMP checkpoint")
         .dependOn(&run_res2kdmp.step);
+
+    // mpi-gates: the MPI validation-ladder harness (plan §10 gates 2-5).
+    // Build with -Dmpi (ideally -Doptimize=ReleaseSafe) and run under
+    // mpiexec at 1..4 ranks; each rank recomputes the serial reference
+    // in-process and compares its slab, so no files are involved. A serial
+    // build still compiles it (the Serial backend degenerates the gates).
+    {
+        const gates = b.addExecutable(.{
+            .name = "mpi-gates",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/mpi_gates.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "koral", .module = koral }},
+            }),
+        });
+        const install_gates = b.addInstallArtifact(gates, .{});
+        b.step("mpi-gates", "build the MPI validation gates harness (run via mpiexec)")
+            .dependOn(&install_gates.step);
+    }
 
     // One executable per koral/problems/<name>/main.zig
     var dir = try b.build_root.handle.openDir(io, "koral/problems", .{ .iterate = true });

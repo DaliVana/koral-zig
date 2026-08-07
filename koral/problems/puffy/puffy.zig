@@ -38,6 +38,7 @@ const thermo = @import("../../physics/thermo.zig");
 const radiation = @import("../../physics/radiation.zig");
 const invert_rad = @import("../../solve/invert_rad.zig");
 const invert = @import("../../solve/invert.zig");
+const threading = @import("../../sim/threading.zig");
 const implicit = @import("../../solve/implicit.zig");
 const opacities = @import("../../physics/opacities.zig");
 const mesa = @import("../../physics/mesa.zig");
@@ -626,7 +627,24 @@ pub fn prepInitCell(
 /// prepinit + init over the domain (leaves the vector potential A_φ in the
 /// B slots, ENTR = calc_Sfromu, p2u). Does NOT fill ghosts — the caller
 /// runs set_bc next, matching ko.c's set_initial_profile → set_bc.
+/// Band-parallel over iy: every cell writes only its own p/u slots and reads
+/// only the (already-built, const) metric cache, so the initialized state is
+/// bit-identical at any thread count. This is the dominant startup cost —
+/// the limotorus solve per cell is heavy in pow/log/exp — and left serial it
+/// ignored `nthreads` entirely.
 pub fn prepInitDomain(comptime SimT: type, sim: *SimT) !void {
+    const W = struct {
+        fn rows(s: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            prepInitRows(SimT, s, iy0, iy1) catch |e| {
+                res.err = e;
+            };
+        }
+    };
+    const res = threading.parallelRange(SimT, sim, sim.team, 0, @intCast(sim.grid.ny), W.rows);
+    if (res.err) |e| return e;
+}
+
+fn prepInitRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) !void {
     const cfg = SimT.Cfg;
     const L = SimT.Layout;
 
@@ -635,13 +653,12 @@ pub fn prepInitDomain(comptime SimT: type, sim: *SimT) !void {
     const tc = torusConsts(mp.a);
 
     const nx: i64 = @intCast(sim.grid.nx);
-    const ny: i64 = @intCast(sim.grid.ny);
     const nz: i64 = @intCast(sim.grid.nz);
 
     var iz: i64 = 0;
     while (iz < nz) : (iz += 1) {
-        var iy: i64 = 0;
-        while (iy < ny) : (iy += 1) {
+        var iy: i64 = iy0;
+        while (iy < iy1) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
                 const geom = sim.cache.fillGeometry(ix, iy, iz);
@@ -661,8 +678,13 @@ pub fn prepInitDomain(comptime SimT: type, sim: *SimT) !void {
 /// fac (postinit.c:78).
 pub fn initAll(comptime SimT: type, sim: *SimT) !f64 {
     try prepInitDomain(SimT, sim);
+    // MPI: each setBc needs exchanged z-ghosts first (its interior-face path
+    // is p2u-of-exchanged-p; before the first exchange the ghost planes are
+    // still the Field.init zeros). No-ops serially.
+    sim.exchangeHalos();
     try sim.setBc(0.0, true);
     try ct.calcBfromA(SimT, sim, true);
+    sim.exchangeHalos(); // domain B changed — refresh ghosts before the re-fill
     try sim.setBc(0.0, true);
     return try postinit(SimT, sim);
 }
@@ -670,19 +692,62 @@ pub fn initAll(comptime SimT: type, sim: *SimT) !f64 {
 /// postinit.c — global β normalization. Returns fac; ghost cells keep their
 /// unscaled B (C does not refresh BCs after postinit).
 pub fn postinit(comptime SimT: type, sim: *SimT) !f64 {
-    const cfg = SimT.Cfg;
     const L = SimT.Layout;
     if (comptime !L.hasVar(.b1)) return 1.0;
 
-    const nx: i64 = @intCast(sim.grid.nx);
     const ny: i64 = @intCast(sim.grid.ny);
+
+    // Pass 1 — the BETANORMFULL max, band-parallel over iy. `tsd_max` is
+    // ChunkResult's max-merged slot, so combining bands is order-insensitive
+    // and therefore bit-identical to the serial scan; clamping at 0 below
+    // reproduces the serial `maxb = 0.0` starting value exactly (the slot's
+    // neutral element is -inf).
+    const MaxW = struct {
+        fn rows(s: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            betaMaxRows(SimT, s, iy0, iy1, res) catch |e| {
+                res.err = e;
+            };
+        }
+    };
+    const mres = threading.parallelRange(SimT, sim, sim.team, 0, ny, MaxW.rows);
+    if (mres.err) |e| return e;
+    var maxb: f64 = @max(0.0, mres.tsd_max);
+
+    // BETANORMFULL is a GLOBAL max (MPI plan §1.1-5): without the fold each
+    // rank normalizes B differently and the field is discontinuous from
+    // step 0. Identity serially; max is exact, so the folded value is
+    // bit-identical to a serial run's.
+    maxb = sim.globalMax(maxb);
+    const fac = @sqrt(maxbeta / maxb);
+
+    // Pass 2 — apply the factor. Per-cell writes only; band-parallel.
+    const ScaleCtx = struct { sim: *SimT, fac: f64 };
+    var sctx = ScaleCtx{ .sim = sim, .fac = fac };
+    const ScaleW = struct {
+        fn rows(c: *ScaleCtx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            betaScaleRows(SimT, c.sim, c.fac, iy0, iy1) catch |e| {
+                res.err = e;
+            };
+        }
+    };
+    const sres = threading.parallelRange(ScaleCtx, &sctx, sim.team, 0, ny, ScaleW.rows);
+    if (sres.err) |e| return e;
+
+    return fac;
+}
+
+/// postinit pass 1 body for iy ∈ [iy0, iy1): the per-cell β = p_mag/p_tot,
+/// accumulated into the chunk's max-merged slot.
+fn betaMaxRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) !void {
+    const cfg = SimT.Cfg;
+    const L = SimT.Layout;
+    const nx: i64 = @intCast(sim.grid.nx);
     const nz: i64 = @intCast(sim.grid.nz);
 
-    var maxb: f64 = 0.0;
     var iz: i64 = 0;
     while (iz < nz) : (iz += 1) {
-        var iy: i64 = 0;
-        while (iy < ny) : (iy += 1) {
+        var iy: i64 = iy0;
+        while (iy < iy1) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
                 var pp: [SimT.nv]f64 = undefined;
@@ -710,17 +775,24 @@ pub fn postinit(comptime SimT: type, sim: *SimT) !f64 {
                 }
 
                 // BETANORMFULL: max over the whole domain
-                if (pmag / ptot > maxb) maxb = pmag / ptot;
+                if (pmag / ptot > res.tsd_max) res.tsd_max = pmag / ptot;
             }
         }
     }
+}
 
-    const fac = @sqrt(maxbeta / maxb);
+/// postinit pass 2 body for iy ∈ [iy0, iy1): scale B by `fac` and refresh
+/// the conserveds.
+fn betaScaleRows(comptime SimT: type, sim: *SimT, fac: f64, iy0: i64, iy1: i64) !void {
+    const cfg = SimT.Cfg;
+    const L = SimT.Layout;
+    const nx: i64 = @intCast(sim.grid.nx);
+    const nz: i64 = @intCast(sim.grid.nz);
 
-    iz = 0;
+    var iz: i64 = 0;
     while (iz < nz) : (iz += 1) {
-        var iy: i64 = 0;
-        while (iy < ny) : (iy += 1) {
+        var iy: i64 = iy0;
+        while (iy < iy1) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
                 var pp: [SimT.nv]f64 = undefined;
@@ -735,8 +807,6 @@ pub fn postinit(comptime SimT: type, sim: *SimT) !f64 {
             }
         }
     }
-
-    return fac;
 }
 
 // ---------------------------------------------------------------------------

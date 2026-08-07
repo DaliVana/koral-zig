@@ -1,39 +1,60 @@
-//! Serial (single-process) communication backend — the default for local
-//! runs; the MPI backend implements the same API later (architecture doc §8).
-//! The numerics only ever talk to this interface.
+//! Serial (single-process) communication backend — the default. Mirrors
+//! comm/mpi/mpi.zig's API as no-ops so the numerics and drivers are written
+//! once against `comm.Backend` (comm/comm.zig selects at comptime on
+//! -Dmpi). Periodic wrap stays a boundary-stage concern here, exactly as a
+//! 1-rank MPI run degenerates to (validation gate 2).
 
 const std = @import("std");
-
-pub const ReduceOp = enum { sum, min, max };
+const Grid = @import("../grid.zig").Grid;
 
 pub const Serial = struct {
-    pub fn init() Serial {
-        return .{};
-    }
+    pub const enabled = false;
 
-    pub fn rank(_: Serial) usize {
-        return 0;
-    }
-
-    pub fn size(_: Serial) usize {
+    pub fn initWorld() !void {}
+    pub fn finalizeWorld() void {}
+    pub fn worldSize() usize {
         return 1;
     }
 
-    /// Single rank: interior halos don't exist; periodic wrap is applied by
-    /// the boundary stage, not here. No-op.
-    pub fn exchangeHalos(_: Serial, comptime T: type, _: []T) void {}
+    pub fn init(ntz: usize) !Serial {
+        if (ntz != 1) return error.RankCountMismatch;
+        return .{};
+    }
+    pub fn deinit(_: *Serial) void {}
 
-    pub fn allreduce(_: Serial, op: ReduceOp, value: f64) f64 {
-        _ = op;
-        return value;
+    pub fn rank(_: *const Serial) usize {
+        return 0;
+    }
+    pub fn size(_: *const Serial) usize {
+        return 1;
     }
 
-    pub fn barrier(_: Serial) void {}
+    pub fn bindExchange(_: *Serial, _: []f64, _: Grid, _: usize) !void {}
+    pub fn unbindExchange(_: *Serial) void {}
+    pub fn exchange(_: *Serial) void {}
+
+    pub fn allreduceMax(_: *const Serial, _: []f64) void {}
+    pub fn allreduceMin(_: *const Serial, _: []f64) void {}
+    pub fn allreduceSum(_: *const Serial, _: []f64) void {}
+    pub fn barrier(_: *const Serial) void {}
+
+    /// Single process: there is no job to tear down, so normal error
+    /// propagation is correct and callers must never reach this. (The MPI
+    /// backend's version never returns — see comm/mpi/mpi.zig.)
+    pub fn abortJob(_: *const Serial, code: u8) noreturn {
+        std.process.exit(code);
+    }
 };
 
 test "serial comm: identity semantics" {
-    const c = Serial.init();
+    try Serial.initWorld();
+    defer Serial.finalizeWorld();
+    var c = try Serial.init(1);
+    defer c.deinit();
     try std.testing.expectEqual(@as(usize, 0), c.rank());
     try std.testing.expectEqual(@as(usize, 1), c.size());
-    try std.testing.expectEqual(@as(f64, 3.5), c.allreduce(.sum, 3.5));
+    var buf = [3]f64{ 1.0, -2.5, 3.0 };
+    c.allreduceMax(buf[0..]); // in-place identity
+    try std.testing.expectEqual([3]f64{ 1.0, -2.5, 3.0 }, buf);
+    try std.testing.expectError(error.RankCountMismatch, Serial.init(4));
 }

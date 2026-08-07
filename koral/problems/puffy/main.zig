@@ -77,6 +77,10 @@ fn options(p: *const koral.Params) SimT.Options {
         .dampradwavespeednearaxis = p.dampradwavespeednearaxis orelse 0,
         .bc_x = .specific,
         .bc_y = .specific,
+        // C: PERIODIC_ZBC (PUFFY define.h:188). Irrelevant in 2D (nz==1 has
+        // no z-ghosts); for 3D wedges this was previously left at the .copy
+        // default — a latent pre-MPI bug (MPI plan §11.1-3), fixed here.
+        .bc_z = .periodic,
         .specific_bc = &puffy.Bc(SimT).calc,
         .nthreads = p.nthreads,
     };
@@ -294,7 +298,11 @@ fn countFixupFlags(s: *const SimT) struct { hd: u64, rad: u64 } {
 ///   * imp# — implicit solves this interval and their mean Newton iterations
 /// No `mpi=` field (shared-memory only — no MPI communication to attribute).
 fn printHeartbeat(s: *const SimT, dt: f64, step_wall_ns: u64, hb: *Heartbeat) void {
-    const ncells: f64 = @floatFromInt(s.grid.nx * s.grid.ny * s.grid.nz);
+    // GLOBAL zone count, as C does (problem.c:856 uses TNX*TNY*TNZ over
+    // rank-0's wall time). Using the local slab would divide the reported
+    // throughput by the rank count and make strong-scaling runs look flat.
+    const g = s.decomp.global;
+    const ncells: f64 = @floatFromInt(g.nx * g.ny * g.nz);
     const wall_s = @as(f64, @floatFromInt(@max(step_wall_ns, 1))) / 1.0e9;
     const znps = ncells / wall_s;
     const tgpd = dt / wall_s * 86400.0;
@@ -321,6 +329,12 @@ fn printHeartbeat(s: *const SimT, dt: f64, step_wall_ns: u64, hb: *Heartbeat) vo
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
+
+    // MPI bracket (plan §6.3): MPI_Init_thread(FUNNELED) before anything —
+    // notably before the Team spawns inside Sim.init. No-ops serially.
+    const Comm = koral.comm.Comm;
+    try Comm.initWorld();
+    defer Comm.finalizeWorld();
 
     // CLI: `puffy [params.toml] [--restart <file|dir>]`. The first positional
     // is the params file; `--restart` (or `-r`) points at a KDMP checkpoint to
@@ -407,8 +421,60 @@ pub fn main(init: std.process.Init) !void {
         return error.InvalidDomain;
     }
 
-    var s = try SimT.init(allocator, puffy.makeGridNz(p.nx, p.ny, p.nz), options(&p));
+    // φ-only decomposition (MPI plan §5): params nx/ny/nz are GLOBAL; each
+    // rank evolves its z-slab of the global grid. Serial builds and 1-rank
+    // runs take the trivial decomposition and behave exactly as before.
+    const wsize = Comm.worldSize();
+    const ntz: usize = if (p.ntz == 0) wsize else p.ntz;
+    if (ntz != wsize) {
+        std.debug.print("puffy: params ntz={d} but the job was launched with {d} rank(s) — they must agree (ntz=0 means auto)\n", .{ p.ntz, wsize });
+        return error.RankCountMismatch;
+    }
+    var comm = try Comm.init(ntz);
+    defer comm.deinit();
+    const is_root = comm.rank() == 0;
+    // From here on a failure may be RANK-LOCAL (a u2p/flux error on one
+    // tile, a NaN in one φ-slab). Returning would run the collective
+    // teardown — MPI_Comm_free then MPI_Finalize's job-wide fence — on the
+    // failing rank while its peers are still blocked in MPI_Waitall or
+    // MPI_Allreduce: the job hangs for its full wall-clock allocation
+    // instead of dying. MPI_Abort kills every rank; it never returns.
+    // (Uniform failures — bad params, an invalid global dt — would exit
+    // cleanly on their own, but routing them here too costs nothing and
+    // removes the "is this error uniform?" judgement call from every site.)
+    errdefer if (ntz > 1) comm.abortJob(1);
+    const grid_global = puffy.makeGridNz(p.nx, p.ny, p.nz);
+    const dc = koral.comm.decompose(grid_global, ntz, comm.rank()) catch |err| {
+        std.debug.print(
+            "puffy: cannot decompose {d}×{d}×{d} over ntz={d}: {s} (φ-only splits need nz % ntz == 0 and nz/ntz ≥ NG={d}; 2D never decomposes)\n",
+            .{ p.nx, p.ny, p.nz, ntz, @errorName(err), grid_global.ng },
+        );
+        return err;
+    };
+    if (ntz > 1 and restart_arg != null) {
+        if (is_root) std.debug.print("puffy: --restart under MPI lands in P4b — run serially or at 1 rank for now\n", .{});
+        return error.MpiRestartNotYetSupported;
+    }
+
+    var opt = options(&p);
+    opt.comm = &comm;
+    opt.decomp = dc;
+    var s = try SimT.init(allocator, dc.local, opt);
     defer s.deinit();
+    if (ntz > 1) {
+        // Every rank announces its own placement — this is what you check
+        // first on a cluster (that the ring is laid out as intended and
+        // each rank got the thread count you asked for), and the lines are
+        // interleaved by the launcher, so each must be self-identifying.
+        std.debug.print(
+            "puffy: rank {d}/{d} owns φ-cells [{d},{d}) of {d} — {d} threads\n",
+            .{ comm.rank(), ntz, dc.tok, dc.tok + @as(i64, @intCast(dc.local.nz)), grid_global.nz, p.nthreads },
+        );
+        if (is_root) std.debug.print(
+            "puffy: MPI φ-ring of {d} ranks × {d} threads; file output (dumps/scalars/silo) is DISABLED under MPI until P4b\n",
+            .{ ntz, p.nthreads },
+        );
+    }
 
     const u = koral.Units.init(p.mass);
     const r_hor = koral.metric.core.rHorizonBL(p.bhspin);
@@ -417,11 +483,11 @@ pub fn main(init: std.process.Init) !void {
             ((@log(puffy.rmax - puffy.mp.mksr0) - @log(puffy.rmin - puffy.mp.mksr0)) / @as(f64, @floatFromInt(p.nx)))
     else
         0.0;
-    std.debug.print(
+    if (is_root) std.debug.print(
         "puffy: NV={d} grid {d}×{d}×{d} (+{d} ghosts) | M={d} M☉ (GM/c³={e:.4}s) a={d} r_h={d:.4} RMIN={d:.4} (~{d:.1} cells inside) RMAX={d:.1} | threads={d} | build={s}\n",
-        .{ L.count, s.grid.nx, s.grid.ny, s.grid.nz, s.grid.ng, p.mass, u.gmc3(), p.bhspin, r_hor, puffy.rmin, cells_inside, puffy.rmax, p.nthreads, @tagName(builtin.mode) },
+        .{ L.count, grid_global.nx, grid_global.ny, grid_global.nz, grid_global.ng, p.mass, u.gmc3(), p.bhspin, r_hor, puffy.rmin, cells_inside, puffy.rmax, p.nthreads, @tagName(builtin.mode) },
     );
-    if (puffy.rmin >= r_hor) {
+    if (is_root and puffy.rmin >= r_hor) {
         std.debug.print(
             "puffy: *** NOTE: RMIN={d:.4} is OUTSIDE the horizon r_h={d:.4}; the plain-copy " ++
                 "inner boundary is not a clean excision. (An explicit params `rmin` override " ++
@@ -429,7 +495,7 @@ pub fn main(init: std.process.Init) !void {
             .{ puffy.rmin, r_hor },
         );
     }
-    if (p.bhspin != 0.0) {
+    if (is_root and p.bhspin != 0.0) {
         std.debug.print(
             "puffy: *** NOTE: a≠0 is UNVALIDATED — C KORAL PUFFY uses BHSPIN=0, so there is " ++
                 "no bit-for-bit oracle at this spin. Treat spinning runs as experiments. ***\n",
@@ -441,7 +507,7 @@ pub fn main(init: std.process.Init) !void {
     // preferred_optimize_mode defaults to Debug too and would break the
     // documented `-Doptimize=ReleaseFast` invocation, so we don't touch the
     // build default; we make an accidental Debug run loud instead.
-    if (builtin.mode == .Debug) {
+    if (is_root and builtin.mode == .Debug) {
         std.debug.print(
             "puffy: *** WARNING: Debug build — expect a many-fold slowdown. " ++
                 "Rebuild with `-Doptimize=ReleaseFast` for production runs. ***\n",
@@ -482,7 +548,7 @@ pub fn main(init: std.process.Init) !void {
     } else {
         const fac = try puffy.initAll(SimT, &s);
         s.initTimestepGuess();
-        std.debug.print("puffy: init done — β-normalization fac = {e:.6}\n", .{fac});
+        if (is_root) std.debug.print("puffy: init done — β-normalization fac = {e:.6}\n", .{fac});
     }
 
     // scalars.dat log + output cadence (DTOUT1 in code time)
@@ -498,7 +564,7 @@ pub fn main(init: std.process.Init) !void {
         (@floor(s.t / p.dtout1) + 1.0) * p.dtout1
     else
         p.tstart + p.dtout1;
-    {
+    if (ntz == 1) {
         const row = try scalarRow(&s, 0.0);
         try dump.appendScalarLine(&log, allocator, row);
         writeScalars(io, p.out_dir, log.items);
@@ -539,8 +605,8 @@ pub fn main(init: std.process.Init) !void {
         };
         const step_end = koral.sim.nowNs();
 
-        // C-style throttled per-step heartbeat (~1 Hz wall clock).
-        if (step_end - hb.last_ns > heartbeat_interval_ns) {
+        // C-style throttled per-step heartbeat (~1 Hz wall clock; rank 0).
+        if (is_root and step_end - hb.last_ns > heartbeat_interval_ns) {
             printHeartbeat(&s, dt, step_end - step_t0, &hb);
             hb.last_ns = step_end;
         }
@@ -552,32 +618,59 @@ pub fn main(init: std.process.Init) !void {
         const step_due = p.nout_step > 0 and s.nstep % p.nout_step == 0;
         if (time_due or step_due or s.nstep >= p.nstep_max) {
             out_idx += 1;
-            const row = try scalarRow(&s, dt);
-            try dump.appendScalarLine(&log, allocator, row);
-            writeScalars(io, p.out_dir, log.items);
-            // The KDMP dump is the restart checkpoint (C writes it every
-            // DTOUT1), so emit it on every output frame — a `--restart` on this
-            // out_dir then continues from the newest one.
-            writePrimDump(io, p.out_dir, allocator, &s, out_idx);
-            writeSiloDump(io, p.out_dir, allocator, &s, out_idx);
-            std.debug.print(
-                "puffy: t={d:.2} nstep={d} dt={e:.3} | Ṁ={e:.3} L={e:.3} H/R={d:.3} β⁻¹={e:.3} | nan={d} hdfix={d} radimpfail={d}\n",
-                .{ s.t, s.nstep, dt, row.mdot, row.radlum, row.scaleheight, row.max_pmag_ptot, row.n_nan, row.n_hd_fixup, row.n_radimp_fail },
-            );
-            // P0 (parallelization plan §7): per-pass wall-clock table for
-            // the steps since the previous output row.
-            s.timers.printReport();
-            s.timers.reset();
-            if (row.n_nan > 0) {
-                std.debug.print("puffy: NaN detected — aborting\n", .{});
-                // Non-zero exit so batch scripts / CI treat a NaN-poisoned run
-                // as a failure rather than success (P1 correctness).
-                return error.NanDetected;
+            if (ntz == 1) {
+                const row = try scalarRow(&s, dt);
+                try dump.appendScalarLine(&log, allocator, row);
+                writeScalars(io, p.out_dir, log.items);
+                // The KDMP dump is the restart checkpoint (C writes it every
+                // DTOUT1), so emit it on every output frame — a `--restart` on this
+                // out_dir then continues from the newest one.
+                writePrimDump(io, p.out_dir, allocator, &s, out_idx);
+                writeSiloDump(io, p.out_dir, allocator, &s, out_idx);
+                std.debug.print(
+                    "puffy: t={d:.2} nstep={d} dt={e:.3} | Ṁ={e:.3} L={e:.3} H/R={d:.3} β⁻¹={e:.3} | nan={d} hdfix={d} radimpfail={d}\n",
+                    .{ s.t, s.nstep, dt, row.mdot, row.radlum, row.scaleheight, row.max_pmag_ptot, row.n_nan, row.n_hd_fixup, row.n_radimp_fail },
+                );
+                // P0 (parallelization plan §7): per-pass wall-clock table for
+                // the steps since the previous output row.
+                s.timers.printReport();
+                s.timers.reset();
+                if (row.n_nan > 0) {
+                    std.debug.print("puffy: NaN detected — aborting\n", .{});
+                    // Non-zero exit so batch scripts / CI treat a NaN-poisoned run
+                    // as a failure rather than success (P1 correctness).
+                    return error.NanDetected;
+                }
+            } else {
+                // P4a: no file output under MPI (§8 lands in P4b) — keep the
+                // cadence for the timer table (rank 0, halo/collect visible)
+                // and a rank-local NaN sentinel so blow-ups still abort.
+                const diag = collectDiag(&s);
+                // Fold the NaN scan across the ring so every rank makes the
+                // SAME abort decision and they leave together through the
+                // normal path. A rank-local `return` here would strand the
+                // others in the next collective (the errdefer MPI_Abort
+                // above is the backstop, but a coordinated exit gives a
+                // clean status and flushes everyone's diagnostics). Every
+                // rank reaches this branch on the same step: the cadence
+                // keys off s.t/s.nstep, which the end-of-step fold keeps
+                // globally identical.
+                const any_nan = s.globalMax(@floatFromInt(diag.n_nan)) > 0;
+                if (is_root) {
+                    std.debug.print("puffy: t={d:.2} nstep={d} dt={e:.3} | rank0 nan={d} hdfix={d} failstep={d}\n", .{ s.t, s.nstep, dt, diag.n_nan, diag.n_hd_fixup, s.n_radimp_fail_step });
+                    s.timers.printReport();
+                }
+                s.timers.reset();
+                if (any_nan) {
+                    if (diag.n_nan > 0)
+                        std.debug.print("puffy: NaN detected on rank {d} ({d} cells) — aborting\n", .{ comm.rank(), diag.n_nan });
+                    return error.NanDetected;
+                }
             }
             if (time_due) next_out += p.dtout1;
         }
     }
-    std.debug.print("puffy: done (t={d}, {d} steps)\n", .{ s.t, s.nstep });
+    if (is_root) std.debug.print("puffy: done (t={d}, {d} steps)\n", .{ s.t, s.nstep });
 }
 
 comptime {

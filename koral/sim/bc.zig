@@ -26,10 +26,22 @@ pub const BcFace = enum { xlo, xhi, ylo, yhi, zlo, zhi };
 /// C: set_bc (finite.c:2805) — ghost cells (no corners), then for MHD
 /// ("MPI4CORNERS") builds the 2D corner surfaces + diagonals
 /// (finite.c:3203-3403; serial, so mpi_isitBC ≡ 1).
+///
+/// MPI (plan §5.2, φ-only decomposition — x/y faces are ALWAYS physical):
+/// when ntz>1 the z faces are interior. Mirroring C's gating exactly:
+///  * z-ghost faces: p2u only, from the exchanged primitives
+///    (finite.c:2862-2870, the `mpi_isitBC(BCtype)==0` branch);
+///  * corner fill: x-y edge tubes still run over the FULL z-span
+///    (finite.c:3865+ — both their faces are physical), x-z/y-z tubes and
+///    the 8 corner cubes are skipped (forcorners(ZBC*)==0, perz==1);
+///  * then C's "corners in the middle" pass (finite.c:4463+/4569+): the
+///    x-BC and y-BC are applied INTO the z-ghost slices, overwriting the
+///    exchange-delivered transverse ghost columns with fresh local fills.
 pub fn setBc(comptime SimT: type, sim: *SimT, t: f64, ifinit: bool) Error!void {
     const g = &sim.grid;
     const Ctx = BcCtx(SimT);
     var ctx = Ctx{ .sim = sim, .t = t, .ifinit = ifinit };
+    const z_physical = sim.isPhysicalBoundary(.zlo); // == .zhi (whole ring)
 
     // x boundaries (ghost columns, domain rows) — banded over iy
     if (g.ngx > 0) {
@@ -41,9 +53,12 @@ pub fn setBc(comptime SimT: type, sim: *SimT, t: f64, ifinit: bool) Error!void {
         const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nxi(), yFacesWorker(SimT));
         if (res.err) |e| return e;
     }
-    // z boundaries — banded over ix
+    // z boundaries — banded over ix; interior z faces get p2u-of-exchanged-p
     if (g.ngz > 0) {
-        const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nxi(), zFacesWorker(SimT));
+        const res = if (z_physical)
+            threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nxi(), zFacesWorker(SimT))
+        else
+            threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nxi(), zGhostP2uWorker(SimT));
         if (res.err) |e| return e;
     }
 
@@ -51,7 +66,8 @@ pub fn setBc(comptime SimT: type, sim: *SimT, t: f64, ifinit: bool) Error!void {
         if (g.ny > 1 and g.nz == 1) {
             try fillCorners2d(SimT, sim);
         } else if (g.nz > 1 and g.ny > 1) {
-            try fillCorners3d(SimT, sim);
+            try fillCorners3d(SimT, sim, z_physical);
+            if (!z_physical) try fillMiddleCornersZ(SimT, sim, t, ifinit);
         } else if (g.nz > 1) {
             // x-z plane (TNY==1 && TNZ>1): no target needs it (finite.c:3406).
             @panic("Sim.setBc: x-z 2D corner filling not implemented");
@@ -142,6 +158,38 @@ fn zFacesBand(comptime SimT: type, c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!vo
             while (i <= ngz) : (i += 1) {
                 try setBcCell(SimT, sim, ix, iy, -i, c.t, c.ifinit, .zlo);
                 try setBcCell(SimT, sim, ix, iy, nz - 1 + i, c.t, c.ifinit, .zhi);
+            }
+        }
+    }
+}
+
+/// MPI z-interior variant of the z-face pass (C finite.c:2862-2870, the
+/// `mpi_isitBC(BCtype)==0` branch): the exchange already deposited fresh
+/// primitives in the z-ghost planes; recompute only the conserveds there.
+/// Same cell set as zFacesBand (domain ix/iy — corners are treated later).
+fn zGhostP2uWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+    return struct {
+        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
+            zGhostP2uBand(SimT, c, ix0, ix1) catch |e| {
+                res.err = e;
+            };
+        }
+    }.w;
+}
+
+fn zGhostP2uBand(comptime SimT: type, c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!void {
+    const sim = c.sim;
+    const ny = sim.nyi();
+    const nz = sim.nzi();
+    const ngz: i64 = @intCast(sim.grid.ngz);
+    var iy: i64 = 0;
+    while (iy < ny) : (iy += 1) {
+        var ix: i64 = ix0;
+        while (ix < ix1) : (ix += 1) {
+            var i: i64 = 1;
+            while (i <= ngz) : (i += 1) {
+                try p2uCell(SimT, sim, ix, iy, -i);
+                try p2uCell(SimT, sim, ix, iy, nz - 1 + i);
             }
         }
     }
@@ -470,12 +518,18 @@ fn fillCornerCube(comptime SimT: type, sim: *SimT, x_hi: bool, y_hi: bool, z_hi:
 }
 
 /// finite.c:3673-4228 — full-3D (TNY>1 && TNZ>1) total-corner filling.
-fn fillCorners3d(comptime SimT: type, sim: *SimT) Error!void {
+/// `z_physical` mirrors C's mpi_isitBC_forcorners(ZBC*) gating: with z
+/// interior (ntz>1, periodic ring) only the x-y tubes run — still over the
+/// FULL z ghost span, on the exchange-delivered z-ghost planes — while the
+/// x-z/y-z tubes and all 8 cubes are skipped (their z face is exchanged,
+/// finite.c:3956+/4046+/4134+ gates are false).
+fn fillCorners3d(comptime SimT: type, sim: *SimT, z_physical: bool) Error!void {
     // elongated corners along z (x-y corners, all iz)
     try fillEdgeTube(SimT, sim, 0, false, 1, false, 2);
     try fillEdgeTube(SimT, sim, 0, false, 1, true, 2);
     try fillEdgeTube(SimT, sim, 0, true, 1, false, 2);
     try fillEdgeTube(SimT, sim, 0, true, 1, true, 2);
+    if (!z_physical) return;
     // elongated corners along y (x-z corners, all iy)
     try fillEdgeTube(SimT, sim, 0, false, 2, false, 1);
     try fillEdgeTube(SimT, sim, 0, false, 2, true, 1);
@@ -495,4 +549,97 @@ fn fillCorners3d(comptime SimT: type, sim: *SimT) Error!void {
     try fillCornerCube(SimT, sim, true, false, true);
     try fillCornerCube(SimT, sim, false, true, true);
     try fillCornerCube(SimT, sim, true, true, true);
+}
+
+/// C's 3D "corners in the middle" pass for a physical x/y face meeting the
+/// exchanged z faces (finite.c:4463-4556 / 4569-4662): the x-BC is applied
+/// at every (x-ghost, domain-y, z-ghost) cell and the y-BC at every
+/// (domain-x, y-ghost, z-ghost) cell — overwriting the neighbor's stale
+/// transverse ghost columns delivered by the exchange with a fresh local
+/// fill. C's block order (all four XBC±/ZBC± first, then YBC±/ZBC±) is
+/// kept; setBcCell routes to the same specific/copy/periodic logic as
+/// set_bc_core with the face's BCtype.
+/// Band-parallel like every other face pass: the x-blocks band over iy and
+/// the y-blocks over ix, so each band writes only ghost cells carrying its
+/// own index and reads only domain cells (which this pass never writes) —
+/// bit-identical to serial at any thread count.
+///
+/// Threading this is not a micro-optimization. Its cost is
+/// O((nx+ny)·ng²) per call × ~13 calls/step and, unlike every other pass,
+/// does NOT shrink as φ-slabs get thinner — so left serial it becomes the
+/// dominant Amdahl term of an MPI run (measured: 74 ms of a 317 ms step at
+/// 3 ranks, i.e. 23%, on a 64×60×24 wedge).
+fn fillMiddleCornersZ(comptime SimT: type, sim: *SimT, t: f64, ifinit: bool) Error!void {
+    const Ctx = BcCtx(SimT);
+    var ctx = Ctx{ .sim = sim, .t = t, .ifinit = ifinit };
+    // XBCLO/XBCHI × ZBCLO/ZBCHI (finite.c:4463+): domain iy, x-ghost, z-ghost
+    {
+        const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nyi(), midXWorker(SimT));
+        if (res.err) |e| return e;
+    }
+    // YBCLO/YBCHI × ZBCLO/ZBCHI (finite.c:4569+): domain ix, y-ghost, z-ghost
+    {
+        const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nxi(), midYWorker(SimT));
+        if (res.err) |e| return e;
+    }
+}
+
+fn midXWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+    return struct {
+        fn w(c: *BcCtx(SimT), iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            midXBand(SimT, c, iy0, iy1) catch |e| {
+                res.err = e;
+            };
+        }
+    }.w;
+}
+
+fn midXBand(comptime SimT: type, c: *BcCtx(SimT), iy0: i64, iy1: i64) Error!void {
+    const sim = c.sim;
+    const nx = sim.nxi();
+    const nz = sim.nzi();
+    const ng: i64 = @intCast(sim.grid.ng);
+    var iy: i64 = iy0;
+    while (iy < iy1) : (iy += 1) {
+        var i: i64 = 1;
+        while (i <= ng) : (i += 1) {
+            var j: i64 = 1;
+            while (j <= ng) : (j += 1) {
+                try setBcCell(SimT, sim, -i, iy, -j, c.t, c.ifinit, .xlo);
+                try setBcCell(SimT, sim, -i, iy, nz - 1 + j, c.t, c.ifinit, .xlo);
+                try setBcCell(SimT, sim, nx - 1 + i, iy, -j, c.t, c.ifinit, .xhi);
+                try setBcCell(SimT, sim, nx - 1 + i, iy, nz - 1 + j, c.t, c.ifinit, .xhi);
+            }
+        }
+    }
+}
+
+fn midYWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+    return struct {
+        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
+            midYBand(SimT, c, ix0, ix1) catch |e| {
+                res.err = e;
+            };
+        }
+    }.w;
+}
+
+fn midYBand(comptime SimT: type, c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!void {
+    const sim = c.sim;
+    const ny = sim.nyi();
+    const nz = sim.nzi();
+    const ng: i64 = @intCast(sim.grid.ng);
+    var ix: i64 = ix0;
+    while (ix < ix1) : (ix += 1) {
+        var i: i64 = 1;
+        while (i <= ng) : (i += 1) {
+            var j: i64 = 1;
+            while (j <= ng) : (j += 1) {
+                try setBcCell(SimT, sim, ix, -i, -j, c.t, c.ifinit, .ylo);
+                try setBcCell(SimT, sim, ix, -i, nz - 1 + j, c.t, c.ifinit, .ylo);
+                try setBcCell(SimT, sim, ix, ny - 1 + i, -j, c.t, c.ifinit, .yhi);
+                try setBcCell(SimT, sim, ix, ny - 1 + i, nz - 1 + j, c.t, c.ifinit, .yhi);
+            }
+        }
+    }
 }

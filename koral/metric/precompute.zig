@@ -19,6 +19,7 @@ const Geometry = @import("../geometry.zig").Geometry;
 const metric = @import("metric.zig");
 const coco = @import("coco.zig");
 const config = @import("../config.zig");
+const threading = @import("../sim/threading.zig");
 
 pub const Coords = config.Coords;
 pub const MetricParams = metric.MetricParams;
@@ -157,6 +158,18 @@ pub const MetricCache = struct {
         /// precompute the per-cell BL (OUTCOORDS) geometry sidecar. Requires
         /// out_coords == .bl and a Kerr `coords` (the cocoN(.bl) target).
         bl_cache: bool = false,
+        /// Worker team for the three fill sweeps. null = serial (the default,
+        /// and what every test/tool gets). Every cell/face writes only its own
+        /// slots and reads nothing another band writes, so the filled cache is
+        /// BIT-IDENTICAL at any thread count.
+        ///
+        /// Worth threading: this runs once per Sim but is pure per-cell metric
+        /// evaluation over the whole padded grid (Christoffels + their FD gdet
+        /// trace correction + a Jacobian, plus 3 face sweeps and optionally the
+        /// BL sidecar). Left serial it ignored `nthreads` entirely and cost ~2×
+        /// a 60-step run on a 64×60×24 wedge — a startup cost that grows
+        /// linearly with the grid and would dominate a 3D production launch.
+        team: ?*threading.Team = null,
     };
 
     pub fn init(allocator: std.mem.Allocator, grid: Grid, opts: InitOpts) !MetricCache {
@@ -193,9 +206,9 @@ pub const MetricCache = struct {
             }
         }
 
-        self.fillCenters(opts.modify_kris);
-        if (opts.faces) self.fillFaces();
-        if (opts.bl_cache) self.fillBl();
+        self.fillCenters(opts.modify_kris, opts.team);
+        if (opts.faces) self.fillFaces(opts.team);
+        if (opts.bl_cache) self.fillBl(opts.team);
         return self;
     }
 
@@ -268,16 +281,42 @@ pub const MetricCache = struct {
         dst_gcon[off + 3 * 5 + 4] = d.gttpert;
     }
 
-    fn fillCenters(self: *MetricCache, modify_kris: bool) void {
+    /// The three sweeps band over a FLATTENED (iz, iy) plane-row index rather
+    /// than over iz: a production 2D grid has nz == 1, so banding on iz would
+    /// hand the whole cache to one worker. Flattening keeps the serial
+    /// traversal order within a band (iy fastest, then iz) so memory locality
+    /// is unchanged, and gives ~(ny+2·ngy)·(nz+2·ngz) units of work to split.
+    const RowCtx = struct { cache: *MetricCache, modify_kris: bool = false };
+
+    /// Rows in the padded (iz, iy) plane, and the row-index → (iz, iy) map.
+    fn rowCount(grid: *const Grid) i64 {
+        return @intCast((grid.ny + 2 * grid.ngy) * (grid.nz + 2 * grid.ngz));
+    }
+    fn rowToZY(grid: *const Grid, k: i64) struct { iz: i64, iy: i64 } {
+        const ny_tot: i64 = @intCast(grid.ny + 2 * grid.ngy);
+        return .{
+            .iz = @divFloor(k, ny_tot) - @as(i64, @intCast(grid.ngz)),
+            .iy = @mod(k, ny_tot) - @as(i64, @intCast(grid.ngy)),
+        };
+    }
+
+    fn fillCenters(self: *MetricCache, modify_kris: bool, team: ?*threading.Team) void {
+        var ctx = RowCtx{ .cache = self, .modify_kris = modify_kris };
+        _ = threading.parallelRange(RowCtx, &ctx, team, 0, rowCount(&self.grid), centersRows);
+    }
+
+    fn centersRows(c: *RowCtx, k0: i64, k1: i64, res: *threading.ChunkResult) void {
+        _ = res; // infallible
+        const self = c.cache;
         const grid = &self.grid;
-        var iz: i64 = -@as(i64, @intCast(grid.ngz));
-        while (iz < @as(i64, @intCast(grid.nz + grid.ngz))) : (iz += 1) {
-            var iy: i64 = -@as(i64, @intCast(grid.ngy));
-            while (iy < @as(i64, @intCast(grid.ny + grid.ngy))) : (iy += 1) {
-                var ix: i64 = -@as(i64, @intCast(grid.ngx));
-                while (ix < @as(i64, @intCast(grid.nx + grid.ngx))) : (ix += 1) {
-                    self.fillCell(ix, iy, iz, modify_kris);
-                }
+        const ngx: i64 = @intCast(grid.ngx);
+        const nxh: i64 = @intCast(grid.nx + grid.ngx);
+        var k = k0;
+        while (k < k1) : (k += 1) {
+            const zy = rowToZY(grid, k);
+            var ix: i64 = -ngx;
+            while (ix < nxh) : (ix += 1) {
+                self.fillCell(ix, zy.iy, zy.iz, c.modify_kris);
             }
         }
     }
@@ -319,23 +358,41 @@ pub const MetricCache = struct {
     /// Fill the BL (OUTCOORDS) geometry sidecar over every cell incl. ghosts.
     /// Each entry equals geometryBLat(&grid, coords, mp, ix, iy, iz) exactly —
     /// same cocoN → geometryAt(.bl) chain — so cached reads are bit-identical.
-    fn fillBl(self: *MetricCache) void {
+    fn fillBl(self: *MetricCache, team: ?*threading.Team) void {
+        var ctx = RowCtx{ .cache = self };
+        _ = threading.parallelRange(RowCtx, &ctx, team, 0, rowCount(&self.grid), blRows);
+    }
+
+    fn blRows(c: *RowCtx, k0: i64, k1: i64, res: *threading.ChunkResult) void {
+        _ = res; // infallible
+        const self = c.cache;
         const grid = &self.grid;
-        var iz: i64 = -@as(i64, @intCast(grid.ngz));
-        while (iz < @as(i64, @intCast(grid.nz + grid.ngz))) : (iz += 1) {
-            var iy: i64 = -@as(i64, @intCast(grid.ngy));
-            while (iy < @as(i64, @intCast(grid.ny + grid.ngy))) : (iy += 1) {
-                var ix: i64 = -@as(i64, @intCast(grid.ngx));
-                while (ix < @as(i64, @intCast(grid.nx + grid.ngx))) : (ix += 1) {
-                    const xx = [4]f64{ 0, grid.xc(ix), grid.yc(iy), grid.zc(iz) };
-                    const xxbl = coco.cocoN(xx, self.coords, .bl, self.mp);
-                    self.bl_geom[self.cellIndex(ix, iy, iz)] = geometryAt(.bl, self.mp, xxbl);
-                }
+        const ngx: i64 = @intCast(grid.ngx);
+        const nxh: i64 = @intCast(grid.nx + grid.ngx);
+        var k = k0;
+        while (k < k1) : (k += 1) {
+            const zy = rowToZY(grid, k);
+            var ix: i64 = -ngx;
+            while (ix < nxh) : (ix += 1) {
+                const xx = [4]f64{ 0, grid.xc(ix), grid.yc(zy.iy), grid.zc(zy.iz) };
+                const xxbl = coco.cocoN(xx, self.coords, .bl, self.mp);
+                self.bl_geom[self.cellIndex(ix, zy.iy, zy.iz)] = geometryAt(.bl, self.mp, xxbl);
             }
         }
     }
 
-    fn fillFaces(self: *MetricCache) void {
+    fn fillFaces(self: *MetricCache, team: ?*threading.Team) void {
+        // One extra row/plane per dimension here (faces run to n+ng
+        // INCLUSIVE), so this sweep has its own row count/map.
+        const grid = &self.grid;
+        const rows: i64 = @intCast((grid.ny + 2 * grid.ngy + 1) * (grid.nz + 2 * grid.ngz + 1));
+        var ctx = RowCtx{ .cache = self };
+        _ = threading.parallelRange(RowCtx, &ctx, team, 0, rows, facesRows);
+    }
+
+    fn facesRows(c: *RowCtx, k0: i64, k1: i64, res: *threading.ChunkResult) void {
+        _ = res; // infallible
+        const self = c.cache;
         const grid = &self.grid;
         const ngx: i64 = @intCast(grid.ngx);
         const ngy: i64 = @intCast(grid.ngy);
@@ -343,11 +400,13 @@ pub const MetricCache = struct {
         const nxh: i64 = @intCast(grid.nx + grid.ngx);
         const nyh: i64 = @intCast(grid.ny + grid.ngy);
         const nzh: i64 = @intCast(grid.nz + grid.ngz);
+        const ny_tot: i64 = nyh + ngy + 1;
 
-        var iz: i64 = -ngz;
-        while (iz <= nzh) : (iz += 1) {
-            var iy: i64 = -ngy;
-            while (iy <= nyh) : (iy += 1) {
+        var k = k0;
+        while (k < k1) : (k += 1) {
+            const iz = @divFloor(k, ny_tot) - ngz;
+            const iy = @mod(k, ny_tot) - ngy;
+            {
                 var ix: i64 = -ngx;
                 while (ix <= nxh) : (ix += 1) {
                     // x-face at (xl(ix), yc, zc) exists for all cell (iy,iz)
@@ -448,6 +507,7 @@ pub const MetricCache = struct {
     }
 
     /// C: fill_geometry_face (metric.c:1971) — left face of cell in `dim`.
+    // (test below pins the threaded fills' bit-identity)
     pub fn fillGeometryFace(self: *const MetricCache, ix: i64, iy: i64, iz: i64, dim: usize) Geometry {
         const grid = &self.grid;
         const xxvec: [4]f64 = switch (dim) {
@@ -464,3 +524,91 @@ pub const MetricCache = struct {
         );
     }
 };
+
+//
+// ---- threading gate ------------------------------------------------------
+//
+
+/// Compare by BIT PATTERN, not by `==`. Ghost cells outside the coordinate
+/// map (e.g. BL geometry inside the horizon) legitimately hold NaN, and
+/// NaN != NaN would fail a value compare even when both fills produced the
+/// identical bits — which is exactly the property under test.
+fn expectSameBits(a: []const f64, b: []const f64) !void {
+    try std.testing.expectEqual(a.len, b.len);
+    for (a, b, 0..) |x, y, i| {
+        if (@as(u64, @bitCast(x)) != @as(u64, @bitCast(y))) {
+            std.debug.print("metric cache mismatch at [{d}]: {x} vs {x}\n", .{ i, @as(u64, @bitCast(x)), @as(u64, @bitCast(y)) });
+            return error.TestExpectedEqual;
+        }
+    }
+}
+
+test "metric cache: threaded fills are bit-identical to serial" {
+    // The cache is filled once per Sim and feeds EVERY downstream number, so
+    // a threaded fill that differed by one ulp would silently break the
+    // serial-golden contract. Each cell/face writes only its own slots and
+    // reads nothing another band writes, so this must hold exactly — assert
+    // it directly rather than relying on the transitive step-level gates.
+    const a = std.testing.allocator;
+    // 3D with ghosts on all axes, and MKS2 + BL sidecar so all three sweeps
+    // (centers incl. the Christoffel FD correction, faces, BL) are exercised.
+    const g = Grid.init(.{
+        .nx = 12, .ny = 10, .nz = 6, .ng = 3,
+        .minx = 0.5, .maxx = 3.5, .miny = 0.001, .maxy = 0.999,
+        .minz = -0.7853981633974483, .maxz = 0.7853981633974483,
+    });
+    const opts = MetricCache.InitOpts{
+        .coords = .mks2,
+        .out_coords = .bl,
+        .mp = .{ .a = 0.7, .mksr0 = 0.0, .mksh0 = 0.6 },
+        .bl_cache = true,
+    };
+
+    var serial = try MetricCache.init(a, g, opts);
+    defer serial.deinit();
+
+    var team = try threading.Team.init(a, 4);
+    defer team.deinit();
+    var threaded = try MetricCache.init(a, g, .{
+        .coords = opts.coords, .out_coords = opts.out_coords, .mp = opts.mp,
+        .bl_cache = opts.bl_cache, .team = team,
+    });
+    defer threaded.deinit();
+
+    try expectSameBits(serial.g, threaded.g);
+    try expectSameBits(serial.gcon, threaded.gcon);
+    try expectSameBits(serial.kris, threaded.kris);
+    try expectSameBits(serial.dxdx_my2out, threaded.dxdx_my2out);
+    for (0..3) |d| {
+        try expectSameBits(serial.gb[d].?, threaded.gb[d].?);
+        try expectSameBits(serial.gconb[d].?, threaded.gconb[d].?);
+    }
+    // The BL sidecar is a struct array — compare field-wise.
+    try std.testing.expectEqual(serial.bl_geom.len, threaded.bl_geom.len);
+    for (serial.bl_geom, threaded.bl_geom) |sg, tg| {
+        try expectSameBits(&.{ sg.gdet, sg.alpha, sg.gttpert }, &.{ tg.gdet, tg.alpha, tg.gttpert });
+        try expectSameBits(&sg.xxvec, &tg.xxvec);
+        for (0..4) |i| {
+            try expectSameBits(&sg.gg[i], &tg.gg[i]);
+            try expectSameBits(&sg.GG[i], &tg.GG[i]);
+        }
+    }
+}
+
+test "metric cache: threaded fills cover a 2D grid too (nz == 1)" {
+    // Production 2D is nz==1: banding on iz would give ONE band and silently
+    // leave the cache serial. The flattened (iz,iy) row index is what makes
+    // this case parallel — check it still lands on identical bits.
+    const a = std.testing.allocator;
+    const g = Grid.init(.{ .nx = 16, .ny = 14, .nz = 1, .ng = 3, .minx = 0.5, .maxx = 3.5, .miny = 0.001, .maxy = 0.999 });
+    const opts = MetricCache.InitOpts{ .coords = .mks2, .out_coords = .mks2, .mp = .{ .a = 0.0 } };
+    var serial = try MetricCache.init(a, g, opts);
+    defer serial.deinit();
+    var team = try threading.Team.init(a, 4);
+    defer team.deinit();
+    var threaded = try MetricCache.init(a, g, .{ .coords = opts.coords, .out_coords = opts.out_coords, .mp = opts.mp, .team = team });
+    defer threaded.deinit();
+    try expectSameBits(serial.g, threaded.g);
+    try expectSameBits(serial.kris, threaded.kris);
+    for (0..3) |d| try expectSameBits(serial.gb[d].?, threaded.gb[d].?);
+}
