@@ -90,7 +90,8 @@ natural conserved scale.
       B²-floors, γ-ceiling); golden agreement 1e-13..1e-14, solver
       success/failure outcomes match C record-for-record
 - [x] M4 — reconstruction + LAXF + wavespeeds: avg2point (donor,
-      minmod-θ, non-uniform PPM incl. near-boundary order reduction),
+      minmod-θ, non-uniform PPM incl. near-boundary order reduction; since
+      restructured into `koral/fv/recon.zig`'s `Scheme`/`reconstruct` API),
       gas wavespeeds (fluid-frame c_s²+v_A²−c_s²v_A² boosted per direction,
       co-going clamps), f_flux_prime (cancellation-free energy row, M1
       radiative rows; Rijvisc lands in M12), LAXF/HLL face combination;
@@ -182,7 +183,7 @@ natural conserved scale.
       8e-7; measured plateau ~2e-9 — implicit Newton threshold noise —
       and 2.9e-12 for the LTE pulse)
 - [x] M11 — PUFFY problem code: the limotorus initial conditions
-      (koral/problems/puffy.zig — tools.c's lamBL/rmidlam bisections at 5ε
+      (koral/problems/puffy/puffy.zig — tools.c's lamBL/rmidlam bisections at 5ε
       and the ln f integral, with gsl_integration_qags replaced by
       koral/math/quad.zig adaptive Gauss–Kronrod 21 at rtol 1e-12),
       prepinit's atmosphere + LTE pressure-split quartic + prad_ff2lab +
@@ -243,9 +244,13 @@ natural conserved scale.
       dφ→2π for an axisymmetric slice. **Threading** (opt-in, opt.nthreads): the
       per-cell inversions (calc_u2p / op_implicit) dispatch row-parallel over
       std.Thread — disjoint rows, `*const` geometry reads — proven bit-identical
-      to serial by a determinism gate; the golden tests all run serial.
+      to serial by a determinism gate; the golden tests all run serial. (Since
+      superseded by the persistent worker team + dynamic tiles covering the
+      whole explicit path — see Post-M13 performance below.)
       **Output** (koral/io/dump.zig): a minimal KDMP primitive snapshot +
-      scalars.dat text series (HDF5/SILO stay deferred). Theory gates
+      scalars.dat text series (SILO landed in M14; the KDMP later grew a v2
+      header with nstep/out_idx and became the restart checkpoint; HDF5 stays
+      deferred). Theory gates
       (scalars_tests.zig): closed forms for mass / Ṁ / magnetization on a
       uniform MINK box; the threading determinism check. C goldens
       (-Dslow-tests): (a) harness_scalars.c — mass / Ṁ / H match calc_scalars
@@ -288,7 +293,10 @@ full inverse+Christoffel `compute`; and the hot leaf accessors are `inline`. Bit
 `/usr/bin/time -l`): **−7% instructions retired** (deterministic), **−3.7% stepping wall
 single-thread / −6.1% at nthreads=12**, total wall −4%; per-phase `fixup` −96%, `stage` −80%,
 `fluxes` −41%, `update` −22%, `sweep` −9%, init −4.7%. The implicit radiation solver (~60% of the
-step) was deliberately left untouched (deferred review item), which bounds the whole-step figure.
+step) was deliberately left untouched in this pass, which bounds the whole-step figure. (Addressed
+later: the FD Jacobian's four perturbed residuals now batch through a `@Vector(4, f64)` path —
+`ImplicitParams.simd_jacobian`, default on, gated bit-for-bit by `simd_tests.zig` and timed by the
+`bench-implicit` build step.)
 Two review items were consciously deferred (the sweep face-geometry carry — marginal, the geometry is
 a cache read; and the wavespeed/implicit state-sharing — invasive with an FP-shape trap the review
 itself flags); see the P2 tier notes.
@@ -300,6 +308,40 @@ its allocator so `deinit()` matches `Field.deinit`; the golden-file readers guar
 `errdefer` on the vars alloc, and return `error.BadGoldenFile` instead of panicking on a corrupt file;
 the `Scal` wavespeed enum is grouped per-dimension so a flux pass reads one contiguous run; the
 per-problem build uses a single install artifact; and `-Dmpi` (which has no backend) now `@compileError`s
-instead of silently building serial. Dead code removed: `state.zig`'s unused `State(cfg)` stub and four
+instead of silently building serial (the guard lives in `koral/koral.zig`). Dead code removed:
+`state.zig`'s unused `State(cfg)` stub and four
 write-only `Geometry` cell-identity fields (`ix/iy/iz/ifacedim` — `rijviscFace` takes its `dim`
 explicitly). Byte-identical (`-Dslow-tests`: 215/216).
+
+**PUFFY AGN retargeting (2026-07-09):** `Params` grew a large group of *optional* physics
+overrides (`?T = null` = keep the compiled preset) consumed by the driver's
+`applyPhysicsOverrides`: implicit tolerances + the `OPDAMPINIMPLICIT` opacity-damping retry
+ladder, `DORADIMPFIXUPS`, `REDUCEORDERATBH`, `DAMPRADWAVESPEEDNEARAXIS`, opacity-channel
+toggles (`bremsstrahlung`/`kleinnishina`/`synchrotron_bridge`/`scattering`), the ZAMO
+magnetization-floor frame (`B2FloorFrameZAMO`, isentropic, fluid-frame backup), composition
+(`hfrac`/`hefrac` → full μ formulas), and torus/atmosphere constants (`lt_kappa`, `maxbeta`,
+`rhoatmmin`, `atm_*`). **MESA Rosseland opacity tables** (`koral/physics/mesa.zig`,
+`data/mesa_tables/a09_z0.02_x0.7.data`, params key `mesa_table`): bilinear log–log lookup in
+(logT, logR = logρ − 3logT + 18), replacing the free-free Rosseland channels (minus the
+Thomson part) exactly as C's `MESA_KAPPA`. All of this powers `puffy_agn.toml` (10⁹ M☉,
+MKSR0 = −1.5, scattering off) — every deliberate divergence from the C reference run is
+catalogued in `docs/PUFFY_AGN_DIVERGENCES.md`. The validated 10 M☉ constants and goldens are
+untouched (unset keys keep `.puffy` presets).
+
+**Test hardening + golden reorganization (2026-07-15):** new isolated invariant gates for the
+M12 physics — `dynamo_tests.zig` (the per-cell dynamo law `dynamoDeltaA` extracted as a pure
+function) and `radvisc_tests.zig` (`shearFromGradients` extracted from `calcShearLab`;
+σ symmetry and σ·u = 0 on analytic velocity fields). `build.zig` now *enforces* test
+registration at configure time (`error.UnregisteredTestFile` if a `koral/*_tests.zig` is
+missing from `koral.zig`'s `test {}`), and the golden readers/tests were consolidated on
+`koral/testing/golden.zig` helpers. `sim_tests.zig`, `restart_tests.zig`, `simd_tests.zig`
+round out the suite (~30 test files).
+
+**`fv/` + math reorganization (2026-08-07):** the finite-volume kernels moved under
+`koral/fv/` — `koral/recon/recon.zig` was rewritten as `koral/fv/recon.zig` (tagged-union
+`Scheme = {donor, linear{θ}, ppm}`, `reconstruct`/`reconstructN`, `comptime T`-generic over
+`f64`/`@Vector`), and `koral/riemann/laxf.zig` moved to `koral/fv/laxf.zig`. The 4×4
+determinant/inverse left `math/dual.zig` for the new `koral/math/linalg.zig` (`det4`/`inv4`,
+generic over `Dual(N)`; `Dual(0)` gives the plain-f64 instantiation), `dual.zig` became the
+generic `Dual(comptime N)`, and `metric/metric.zig` shrank to the assembly logic
+(`MetricParams` now defined in `forms.zig`). Bit-identical; goldens unchanged.

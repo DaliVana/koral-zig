@@ -33,10 +33,15 @@ PHYSICS.md is the authority on the physics itself.
 ## 1. What koral-zig is, and its design philosophy
 
 koral-zig is a Zig 0.16 reimplementation of the **KORAL** general-relativistic
-radiation-MHD C code, targeting the **PUFFY** radiative-MHD accretion torus: a 2D
-axisymmetric disk around a 10 M☉ Schwarzschild black hole in modified Kerr-Schild
-(MKS2) coordinates, evolving ideal MHD coupled to M1-closure radiation with thermal
-Comptonization, radiative shear viscosity, and a mean-field "mimic" dynamo.
+radiation-MHD C code, targeting the **PUFFY** radiative-MHD accretion torus: a disk
+around a black hole in modified Kerr-Schild (MKS2) coordinates, evolving ideal MHD
+coupled to M1-closure radiation with thermal Comptonization, radiative shear viscosity,
+and a mean-field "mimic" dynamo. The reference configuration is the 2D axisymmetric
+10 M☉ Schwarzschild torus (`puffy.toml`), but the problem is runtime-retargetable:
+`puffy.zig` exposes `pub var mass` / `pub var rmin` and `rminForSpin(a)` (RMIN tracks
+the Kerr horizon), and presets exist for 3D (`puffy3d.toml`), Sgr A*
+(`puffy3d_sgra.toml`, mass = 4.297e6), a spinning Sgr A* (`puffy3d_sgra_spin.toml`,
+bhspin = 0.9375), and a 10⁹ M☉ AGN with MESA opacities (`puffy_agn.toml`).
 
 ### The C-diffability contract
 
@@ -99,19 +104,29 @@ There are two kinds of top-level artifact:
 
 - **The `koral` library** (`koral/…`) — all the physics and numerics, rooted at
   `koral/koral.zig`.
-- **Problem executables** (`PROBLEMS/<name>/main.zig`) — thin drivers that pick a
+- **Problem executables** (`koral/problems/<name>/main.zig`) — thin drivers that pick a
   comptime `Config`, load runtime `Params`, build a `Sim`, run the time loop, and write
-  output. Currently the only problem is `PROBLEMS/puffy/`.
+  output. Currently the only problem is `koral/problems/puffy/` (with its `.toml`
+  presets alongside).
 
-`build.zig` discovers every subdirectory of `PROBLEMS/` and, per directory, builds one
-executable importing `koral`, plus `<name>` (build) and `run-<name>` (build & run) steps.
-A single `test` step (`zig build test`) runs one `addTest` over the whole `koral` module.
+`build.zig` discovers every subdirectory of `koral/problems/` and, per directory, builds
+one executable importing `koral`, plus `<name>` (build) and `run-<name>` (build & run)
+steps. A single `test` step (`zig build test`) runs one `addTest` over the whole `koral`
+module; `-Dtest-filter` narrows it and `-Dslow-tests` enables the full-grid keystones.
+A configure-time guard fails the build with `error.UnregisteredTestFile` if any
+`koral/*_tests.zig` is missing from `koral.zig`'s `test {}` block. Other build products:
+`-Dsilo` builds LLNL Silo from the lazy `silo` dependency and enables `.silo` export
+(`koral/io/silo_disabled.zig` is the comptime stub otherwise), `bench-implicit` builds
+the ReleaseFast implicit-solver benchmark (`tools/bench_implicit.zig`), and `res2kdmp`
+builds the C-restart → KDMP checkpoint converter (`tools/res2kdmp.zig`).
 
 ### `koral.zig` is the namespace root
 
 `koral/koral.zig` re-exports every subsystem (config, layout, units, grid, field, params,
-state, geometry, math, metric, relele, frames, p2u, physics.\*, solve.\*, recon, riemann,
-sim, magn, problems, testing, comm, io) and its `test {}` block imports every module and
+geometry, math.\* — dual, quad, linalg, misc, simd —, metric.\*, relele, frames, p2u,
+physics.\* — including `physics.mhd`, which is `physics/bfield.zig`, and `physics.mesa` —,
+solve.\*, `fv` — recon + laxf —, sim, magn, problems, testing, comm, io — scalars, dump,
+silo) and its `test {}` block imports every module and
 every test file, so the single test artifact contains the entire suite. A problem driver
 does `const koral = @import("koral");` and reaches everything through it.
 
@@ -119,17 +134,18 @@ does `const koral = @import("koral");` and reaches everything through it.
 
 ```
   ┌─────────────────────────────────────────────────────────────────────┐
-  │ PROBLEMS/puffy/main.zig   (driver: Config + Params → Sim → time loop) │
+  │ koral/problems/puffy/main.zig (driver: Config + Params → Sim → loop)  │
   └───────────────┬─────────────────────────────────────────────────────┘
                   │  imports koral
   ┌───────────────▼─────────────────────────────────────────────────────┐
   │ sim.zig  — Sim(cfg): owns all state buffers, orchestrates the step    │
+  │   (+ sim/storage · sim/bc · sim/threading · sim/timers)               │
   └── calls ──┬───────────┬───────────┬──────────┬──────────┬────────────┘
              │           │           │          │          │
     ┌────────▼──┐  ┌─────▼────┐ ┌────▼─────┐ ┌──▼──────┐ ┌─▼──────────┐
-    │ recon/    │  │ physics/ │ │ solve/   │ │ magn/   │ │ metric/    │
-    │ riemann/  │  │ hydro    │ │ invert   │ │ ct      │ │ metric     │
-    │           │  │ mhd      │ │ invert_  │ │ dynamo  │ │ coco       │
+    │ fv/       │  │ physics/ │ │ solve/   │ │ magn/   │ │ metric/    │
+    │ recon     │  │ hydro    │ │ invert   │ │ ct      │ │ metric     │
+    │ laxf      │  │ bfield   │ │ invert_  │ │ dynamo  │ │ coco       │
     │           │  │ radiation│ │  rad     │ │         │ │ precompute │
     │           │  │ wavesp.  │ │ implicit │ │         │ │ (MetricC.) │
     │           │  │ flux     │ │          │ │         │ │            │
@@ -137,17 +153,19 @@ does `const koral = @import("koral");` and reaches everything through it.
     │           │  │ opacities│ │          │ │         │ │            │
     │           │  │ radforce │ │          │ │         │ │            │
     │           │  │ radvisc  │ │          │ │         │ │            │
+    │           │  │ mesa     │ │          │ │         │ │            │
     └─────┬─────┘  └────┬─────┘ └────┬─────┘ └───┬─────┘ └─────┬──────┘
           └─────────────┴─── relele / frames / p2u ───┴─────────────┘
                                     │
   ┌─────────────────────────────────▼───────────────────────────────────┐
   │ Foundation (leaf infra, only std + intra-foundation imports):         │
-  │  config · layout · grid · field · units · params · state · geometry   │
-  │  math/dual · comm/serial · testing/*                                  │
+  │  config · layout · grid · field · units · params · geometry           │
+  │  math/dual · math/linalg · math/misc · math/simd · comm/serial        │
+  │  testing/*                                                            │
   └───────────────────────────────────────────────────────────────────────┘
 ```
 
-`config.zig` is imported by `layout`, `state`, `geometry`; `grid.zig` by `field`; the
+`config.zig` is imported by `layout` and `geometry`; `grid.zig` by `field`; the
 whole foundation is consumed by `sim.zig` and every physics/solve/flux module. The
 foundation itself calls almost nothing outward — it is leaf infrastructure.
 
@@ -243,8 +261,8 @@ pub fn init(opts: struct { nx, ny=1, nz=1, ng, minx, maxx, miny=0, maxy=1, minz=
 pub fn sx(g) usize;   // padded storage dim = nx + 2*ngx   (SX = NX + 2*NGCX)
 pub fn cellCount(g) usize;   // sx*sy*sz — total stored cells incl. ghosts
 pub fn xc(g, ix: i64) f64;   // cell CENTER = 0.5*(xl(ix)+xl(ix+1))   ← ulp-match, not min+(i+.5)dx
-pub fn xl(g, ix: i64) f64;   // left FACE = minx + ix*dx
-pub fn size(g, i: i64, dim: usize) f64;  // per-cell size = xl(i+1)-xl(i)  (used everywhere in evolution)
+pub fn xl(g, ix: i64) f64;   // left FACE = minx + ix*dx   (yc/zc, yl/zl are the y/z analogues)
+pub fn cellSize(g, i: i64, dim: usize) f64;  // per-cell size = xl(i+1)-xl(i)  (used everywhere in evolution)
 ```
 
 **Dimension collapse:** a dimension of size 1 gets zero ghosts and `SX/SY/SZ = 1`; callers
@@ -324,8 +342,20 @@ pub fn parse(a, text) !Params;      // line-based TOML subset: strip comments, s
 
 Fields are grouped: physical (`mass, bhspin, gam`), grid (`nx, ny, nz`), domain
 (`rmin, rmax, mksr0, mksh0, miny/maxy/minz/maxz`), run control (`tstart, tmax, nstep_max,
-tsteplim, dtout1, dtout2, out_dir`), floors/ceilings, and execution (`deterministic,
-nthreads`). `parseValue` dispatches on the field type (`f64`/`usize`/`bool`/`[]const u8`).
+tsteplim, dtout1, dtout2, nout_step, out_dir`), floors/ceilings, and execution
+(`deterministic, nthreads`). `parseValue` dispatches on the field type
+(`f64`/`usize`/`bool`/`[]const u8`).
+
+On top of these sits a large group of **optional physics overrides** (all `?T = null` —
+"unset" means "keep the compiled preset"), added for the AGN / Sgr A* presets: implicit
+tolerances (`radimpeps`, `radimpmaxiter`), opacity damping (`opdamp_maxlevels`,
+`opdamp_factor`), fixup/order toggles (`doradimpfixups`, `reduceorderatbh`,
+`dampradwavespeednearaxis`), opacity channels (`bremsstrahlung`, `kleinnishina`,
+`synchrotron_bridge`, `scattering`, `mesa_table`), floor knobs (`zamo_floor_frame`,
+`eerhoratiomin/max`, `eeuuratiomin/max`, `gammamaxrad`, `rhoatmmin`), composition
+(`hfrac`, `hefrac`), and torus/atmosphere constants (`lt_kappa`, `maxbeta`, `atm_tgas`,
+`atm_trad_init`, `atm_erad_factor`). The problem driver applies non-null values onto the
+compiled defaults at startup.
 
 ### 3.7 Per-cell derived state — `radforce.RadState`
 
@@ -345,20 +375,24 @@ transforms.
 
 ### 4.1 Dual-number automatic differentiation
 
-`math/dual.zig` defines `Dual3`, a forward-AD scalar carrying a value plus three spatial
-partials ∂/∂(x1,x2,x3). Because the metric is **stationary** (∂_t g = 0) only three
-derivative slots are needed. All arithmetic and transcendentals (`sin, cos, tan, exp, log,
-sqrt, atan`) propagate exact derivatives by the chain rule. This replaces KORAL's giant
-Mathematica-exported closed-form derivative expressions: you write each covariant metric
-once, evaluate it in `Dual3`, and get both g and ∂g/∂xⁱ for free.
+`math/dual.zig` defines the generic `Dual(comptime N)`, a forward-AD scalar carrying a
+value plus `N` partials, with `Dual3 = Dual(3)` as the metric workhorse — three spatial
+partials ∂/∂(x1,x2,x3), because the metric is **stationary** (∂_t g = 0). All arithmetic
+and transcendentals (`sin, cos, tan, exp, log, sqrt, atan`) propagate exact derivatives by
+the chain rule. This replaces KORAL's giant Mathematica-exported closed-form derivative
+expressions: you write each covariant metric once, evaluate it in `Dual3`, and get both g
+and ∂g/∂xⁱ for free. The 4×4 determinant/inverse live in `math/linalg.zig` (`det4`,
+`inv4`), generic over any `Dual(N)` — `Dual(0)` instantiates a plain-f64 version with a
+bit-identical value chain, so the dual and scalar metric paths share one implementation.
 
 ### 4.2 Metric forms and assembly
 
 `metric/forms.zig` writes each covariant metric `gcovMink/gcovBl/gcovKs/gcovMks2` as a
-closed-form `[4][4]Dual3` expression. `metric/metric.zig::compute` is the workhorse
-(C `calc_metric`): `gcovDual` seeds x1,x2,x3 as independent dual variables (x0=t is
-constant), dispatches to the right form, computes the determinant and inverse in dual
-arithmetic, then fills:
+closed-form `[4][4]Dual3` expression, and defines `MetricParams` (re-exported by
+`metric.zig`). `metric/metric.zig::compute` is the workhorse (C `calc_metric`):
+`gcovDual` seeds x1,x2,x3 as independent dual variables (x0=t is constant), dispatches to
+the right form, computes the determinant and inverse via `linalg.det4`/`linalg.inv4` in
+dual arithmetic, then fills:
 
 ```zig
 gcov, gcon, gdet = @sqrt(-det.v),
@@ -370,7 +404,8 @@ gttpert.
 `MetricParams { a, mksr0, mksh0 }` carries BH spin and the MKS2 offsets (PUFFY: a=0,
 mksr0=0.1, mksh0=0.9). MKS2 is the exact pushforward of Kerr-Schild through the diagonal
 map `r = R0 + e^{x1}`, `θ = θ(x2)`, with the derivatives coming from `Dual3` rather than a
-transcribed Mathematica export.
+transcribed Mathematica export. `metric.zig` also hosts the Kerr radii helpers
+`rHorizonBL(a)` and `rIscoBL(a)`, used by the PUFFY driver and `rminForSpin`.
 
 ### 4.3 The MetricCache: centers, faces, and the Christoffel correction
 
@@ -428,12 +463,21 @@ per-cell integer `flags`, the face flux/state stores (`flb`, `fl_l`, `fl_r`, `pb
 cfg.has(.mhd)` (mirrors C's `MPI4CORNERS`) makes MHD sweeps reach ±1 ghost row and fill 2D
 corners; `base_order` (0/1/2) comes from `cfg.reconstruction`.
 
+`sim.zig` itself is a facade over four support modules it re-exports: `sim/storage.zig`
+(`FaceStore`, the `Flag`/`Scal` enums and slot tables), `sim/bc.zig` (all boundary-
+condition logic, [§9](#9-boundary-conditions-and-polar-axis-correction)),
+`sim/threading.zig` (the worker team, [§10](#10-the-threading-model)), and
+`sim/timers.zig` — always-on per-pass wall-clock self-time instrumentation (`Pass`,
+`PassTimers`; a pass stack prevents nested timed calls from double-counting) that
+`step()` feeds via `timers.begin/end` and the driver prints at scalar cadence.
+
 `Options` carries the runtime configuration: `coords`, metric params `mp`, `gam`,
 `tsteplim`, `minmod_theta`, `floors` (`FloorParams`), `rad` (`RadParams`), `opac`
 (`?radforce.Params`; **null ≡ SKIPRADSOURCE** — no implicit operator), `implicit`
 (`ImplicitParams`), fixup toggles, `correct_polaraxis`/`nccorrectpolar`, `radviscosity` +
-`radvisc` params, `dynamo` + params, per-axis `bc_x/bc_y/bc_z`, `specific_bc`, and
-`nthreads`.
+`radvisc` params, `dynamo` + params, `reduceorderatbh` (C `REDUCEORDERATBH`: drop one
+reconstruction order inside the BL horizon), `dampradwavespeednearaxis`, per-axis
+`bc_x/bc_y/bc_z`, `specific_bc` + its opaque `bc_ctx` user pointer, and `nthreads`.
 
 `Sim.init` **validates its runtime preconditions** up front and returns
 `error.InvalidConfig` (not a `std.debug.assert`, so ReleaseFast is covered) rather than
@@ -462,9 +506,10 @@ buffers. Understanding them is the key to reading `step()`:
 | `drt1` | 1st implicit **stage derivative** `(u − ut0)/(dt·γ)` — the radiative-source increment rate |
 | `drt2` | 2nd implicit stage derivative `(u − uforget)/(dt·γ)` |
 | `uforget` | `u` just **before the 2nd implicit** operator (the base for `drt2`) |
-| `ptm1` | primitive snapshot handed to the implicit solver as its previous-primitives seed (`FORCEUEQPINIMPLICIT` regenerates `u` from it) |
-| `ppostimplicit` | primitives right **after** an implicit operator (bookkeeping for electrons; unused downstream at this milestone) |
 | `u_bak`, `p_bak` | full-grid backups used by `cellFixup` while it averages flagged cells from their neighbours |
+
+(C also keeps `ptm1` and `ppostimplicit` snapshots around the implicit operator; both are
+write-only on this path — no Zig consumer — so they were dropped.)
 
 `stageDeriv(dst, a, b, δ)` computes `dst = (1/δ)·a + (−1/δ)·b`; `stageCombine(dst, a, f1,
 b, f2, c)` computes `dst = a + f1·b + f2·c`. Both run over the domain in the exact C
@@ -484,14 +529,12 @@ the same `cflDt()` so the two cannot drift. The wavespeed accumulators are then 
 step(dt):
   ── 1st implicit ─────────────────────────────────────────────
   ut0  ← u                       (snapshot U^n)
-  ptm1 ← p
   opImplicit(t, dt·γ)            → advances u,p by the radiative source  [U^(1)]
-  ppostimplicit ← p
   drt1 ← (u − ut0)/(dt·γ)        (implicit stage derivative)
 
   ── 1st explicit ─────────────────────────────────────────────
   ut1  ← u
-  calcU2p();  doCorrect();  setBc(t,false)
+  calcU2p(t);  doCorrect();  setBc(t,false)
   opExplicit(t, dt)             → writes F(U^(1)) into u via flux divergence + metric source
   if dynamo: applyDynamo(t, dt)
   copyEntropyCount()
@@ -502,16 +545,14 @@ step(dt):
 
   ── 2nd implicit ─────────────────────────────────────────────
   uforget ← u
-  calcU2p()
-  ptm1 ← p
+  calcU2p(t)
   doCorrect()
   opImplicit(t, γ·dt)           [U^(2)]
-  ppostimplicit ← p
   drt2 ← (u − uforget)/(dt·γ)
 
   ── 2nd explicit ─────────────────────────────────────────────
   ut2 ← u
-  calcU2p();  doCorrect();  setBc(t,false)
+  calcU2p(t);  doCorrect();  setBc(t,false)
   opExplicit(t, dt)             → F(U^(2))
   if dynamo: applyDynamo(t, dt)
   dut2 ← (u − ut2)/dt
@@ -521,9 +562,12 @@ step(dt):
   u = u   + (dt/2)·(drt1 + drt2)      (add implicit average)
 
   ── finalise ─────────────────────────────────────────────────
-  calcU2p();  doCorrect();  setBc(t,false)
+  calcU2p(t);  doCorrect();  setBc(t,false)
   t += dt;  updateEntropy();  nstep += 1
 ```
+
+(C additionally copies `p → ptm1` before each implicit and `p → ppostimplicit` after —
+write-only on this path, dropped; see the buffer table above.)
 
 `opImplicit` is a structural no-op when the config has no radiation or `opt.opac == null`
 (SKIPRADSOURCE) — the copies still happen but the source solve is skipped.
@@ -544,7 +588,9 @@ opExplicit(dt):
   2. sweep(0), sweep(1), sweep(2)   per direction (skipped if nDim ≤ 1):
        for each face:
          load 3- or 5-point primitive stencil along dim (±2 only if base_order>1)
-         recon.avg2point(...)  → left/right face-biased primitive states  (pl, pr)
+         pick the recon.Scheme from base_order minus any local order reduction
+           (boundary reduction; REDUCEORDERATBH inside the BL horizon)
+         recon.reconstructN(NV, scheme, stencil, dx5) → left/right face states (pl, pr)
          invert.checkFloorsMhd on each reconstructed state
          flux_mod.fFluxPrime(pl, dim, geom, gam) → ffl        one-sided flux vectors
          flux_mod.fFluxPrime(pr, dim, geom, gam) → ffr
@@ -688,6 +734,15 @@ asserted out. `ImplicitParams` has `.cdefault` and `.puffy` presets plus four PU
 switches (`start_with_bisect`, `scale_jacobian`, `allow_rad_ceiling`,
 `allow_entr_in_4dprim`).
 
+Two later additions: `ImplicitParams.simd_jacobian` (default **on**) batches the four
+perturbed residual evaluations of the FD Jacobian through the `@Vector(4, f64)` twin
+`residualG` — gated bit-for-bit against the scalar path by `koral/simd_tests.zig`, and
+timed by the `bench-implicit` build step. And the whole 6-rung ladder can be wrapped in
+an outer **opacity-damping loop** (`opdamp_maxlevels`/`opdamp_factor`, C
+`OPDAMPINIMPLICIT`): each level retries the ladder with the four-force scaled by
+`opdamp_factor^-level`; level 0 (the default `opdamp_maxlevels = 0`) is bit-identical to
+the plain single pass.
+
 ### 6.4 Fixups
 
 `cellFixup(which)` (C `cell_fixup`) averages cells flagged by the inversion/implicit passes
@@ -703,16 +758,20 @@ immediately when nothing carries `which` — the common case — skipping the fo
 
 ## 7. Reconstruction and Riemann flux
 
-`koral/recon/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`,
-`koral/riemann/laxf.zig`.
+`koral/fv/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`,
+`koral/fv/laxf.zig`.
 
-**Reconstruction** turns cell averages into left/right face states. `avg2point(NV, um2,
-um1, uc0, up1, up2, dx5, base_order, param, theta)` loops `avg2pointScalar` over each
-variable. The effective order is `param ≥ base_order ? 0 : base_order − param` (boundary
-order reduction; the interior sweep passes `param = 0`). Order 1 is `linearMinmod`
-(minmod-θ limiter, PUFFY θ=1.5); order 2 is `ppm` (Colella & Woodward, non-uniform widths);
-order 0 is donor cell. Both linear and PPM silently fall back to donor cell at local
-extrema, so reconstruction order is not globally uniform.
+**Reconstruction** turns cell averages into left/right face states. The scheme is a
+tagged union `recon.Scheme = { donor, linear{theta}, ppm }` with `Scheme.radius()`
+(0/1/2) giving the stencil depth; `reconstruct(comptime T, scheme, u: [5]T, dx: [5]T)`
+produces the face pair for one variable and `reconstructN(NV, ...)` loops it over the
+state vector. The sweep picks the scheme per face from `base_order` minus any local
+order reduction (boundary reduction, and `REDUCEORDERATBH` inside the BL horizon —
+PPM → linear → donor). Order 1 is minmod-θ (PUFFY θ=1.5); order 2 is PPM (Colella &
+Woodward, non-uniform widths); order 0 is donor cell. Both linear and PPM silently fall
+back to donor cell at local extrema, so reconstruction order is not globally uniform.
+The kernel is `comptime T`-generic (`f64` or `@Vector(W, f64)`, limiter branches via
+`simd.select`) and lane-for-lane bit-identical to scalar.
 
 **Wavespeeds.** `lrCore(ucon, GG, wspeed2s, dims)` is the shared HARM characteristic-speed
 core (used by *both* gas and radiation): given a fluid-frame wavespeed² per direction, it
@@ -798,10 +857,11 @@ for each ghost depth. Per-axis behaviour is `BcKind`:
   letting the BC swallow it (`catch unreachable` → panic in safe builds, UB in ReleaseFast).
 
 After filling a ghost cell's primitives, `setBcCell` runs p2u to derive its conserveds.
-If `wide` (MHD) and 2D (`ny>1, nz==1`), `setBc` calls `fillCorners2d` to fill the ghost
-corners (copying one-cell surfaces from adjacent domain rows/columns and averaging the two
-diagonal cells). **3D corner filling `@panic`s — it is not implemented** (no target needs
-it yet).
+If `wide` (MHD), `setBc` fills the ghost corners: `fillCorners2d` for the 2D x-y case
+(`ny>1, nz==1`) and `fillCorners3d` for 3D (`ny>1, nz>1`), copying one-cell surfaces
+from adjacent domain rows/columns and averaging diagonal cells. The only unimplemented
+case is the x-z 2D layout (`ny==1, nz>1`), which `@panic`s (no target needs it). All of
+this lives in `koral/sim/bc.zig`, re-exported by `sim.zig`.
 
 **Polar-axis correction.** When `opt.correct_polaraxis` is set, `doCorrect` →
 `correctPolaraxis` overwrites the `nccorrectpolar` most-polar rows at each θ-edge from a
@@ -821,7 +881,7 @@ The z faces are `unreachable` (TNZ=1).
 ## 10. The threading model
 
 Threading is a persistent **worker team** (`sim/threading.zig::Team`), created once in
-`Sim.init` and owned for the run. `Team.init(nthreads)` spawns `nthreads−1` helper OS threads that
+`Sim.init` and owned for the run. `Team.init(allocator, nthreads)` spawns `nthreads−1` helper OS threads that
 park on a hand-rolled futex (atomic wait/wake — Zig 0.16 moved `Mutex`/`Condition` behind the
 `std.Io` event loop, so the team uses the same primitive `std.Io.Threaded` would use internally);
 the main thread participates in every region. `nthreads ≤ 1` leaves `team = null` and every
@@ -880,6 +940,16 @@ All golden readers return `error.SkipZigTest` when the file is absent, so the su
 green on a machine that never ran the oracle. `DevTracker` accumulates the worst normalised
 deviation `dev = |c−z|/max(1, |c|, |z|)` per quantity class and reports the observed max.
 
+Registration of test files in `koral.zig`'s `test {}` block is no longer purely by
+convention: `build.zig` scans `koral/*_tests.zig` at configure time and fails with
+`error.UnregisteredTestFile` if any is missing an `@import`. The suite now spans ~30
+files — beyond the ones discussed above it includes `sim_tests.zig` (`Sim.init`
+precondition rejection), `restart_tests.zig` (KDMP round-trip), `simd_tests.zig`
+(scalar↔SIMD bit-identity), `dynamo_tests.zig`/`radvisc_tests.zig` (M12 dynamo-law and
+shear-algebra invariants), `scalars_tests.zig`, `polaraxis_tests.zig`, and golden suites
+per subsystem (`metric`, `state`, `flux`, `rad`, `opac`, `implicit`, `visc`, `dynamo`,
+`step`, `puffy`).
+
 ### 11.2 The file formats
 
 - **KGLD** — function-level golden: header `"KGLD" | version | nrec | nin | nout`, then
@@ -916,19 +986,20 @@ deviations are **expected**, not regressions — a real bug shows far above that
 | Subsystem | Primary files |
 | --- | --- |
 | **Foundation** (config, layout, storage, units, params, geometry, comm) | `koral/config.zig`, `koral/layout.zig`, `koral/grid.zig`, `koral/field.zig`, `koral/units.zig`, `koral/params.zig`, `koral/geometry.zig`, `koral/koral.zig`, `koral/comm/serial.zig` |
-| **Metric / coordinates** | `koral/math/dual.zig`, `koral/metric/forms.zig`, `koral/metric/metric.zig`, `koral/metric/coco.zig`, `koral/metric/precompute.zig` |
+| **Math utilities** | `koral/math/dual.zig`, `koral/math/linalg.zig`, `koral/math/simd.zig`, `koral/math/misc.zig`, `koral/math/quad.zig` |
+| **Metric / coordinates** | `koral/metric/forms.zig`, `koral/metric/metric.zig`, `koral/metric/coco.zig`, `koral/metric/precompute.zig` |
 | **Velocity / index / boost algebra** | `koral/relele.zig`, `koral/frames.zig` |
 | **Primitive↔conserved (forward + inverse)** | `koral/p2u.zig`, `koral/solve/invert.zig` |
-| **Gas thermodynamics + MHD stress-energy** | `koral/physics/hydro.zig`, `koral/physics/mhd.zig` |
+| **Gas thermodynamics + MHD stress-energy** | `koral/physics/hydro.zig`, `koral/physics/bfield.zig` (exported as `koral.physics.mhd`) |
 | **M1 radiation core + inversion** | `koral/physics/radiation.zig`, `koral/solve/invert_rad.zig` |
-| **Opacities / thermodynamics / four-force** | `koral/physics/thermo.zig`, `koral/physics/opacities.zig`, `koral/physics/radforce.zig`, `koral/units.zig` |
+| **Opacities / thermodynamics / four-force** | `koral/physics/thermo.zig`, `koral/physics/opacities.zig`, `koral/physics/mesa.zig`, `koral/physics/radforce.zig`, `koral/units.zig` |
 | **Implicit radiation-gas source solver** | `koral/solve/implicit.zig` |
-| **Reconstruction + wavespeeds + flux + Riemann** | `koral/recon/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`, `koral/riemann/laxf.zig` |
-| **Evolution driver** | `koral/sim.zig` |
+| **Reconstruction + wavespeeds + flux + Riemann** | `koral/fv/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`, `koral/fv/laxf.zig` |
+| **Evolution driver** | `koral/sim.zig`, `koral/sim/storage.zig`, `koral/sim/bc.zig`, `koral/sim/threading.zig`, `koral/sim/timers.zig` |
 | **Constrained transport + dynamo + radiative viscosity** | `koral/magn/ct.zig`, `koral/magn/dynamo.zig`, `koral/physics/radvisc.zig` |
-| **PUFFY problem (IC, driver, quadrature)** | `koral/problems/puffy.zig`, `PROBLEMS/puffy/main.zig`, `koral/math/quad.zig` |
-| **Diagnostics + output** | `koral/io/scalars.zig`, `koral/io/dump.zig` |
-| **Build + oracle + goldens** | `build.zig`, `tools/gen_golden.sh`, `koral/testing/golden.zig`, `koral/testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/**` |
+| **PUFFY problem (IC, driver, quadrature, presets)** | `koral/problems/puffy/puffy.zig`, `koral/problems/puffy/main.zig`, `koral/problems/puffy/*.toml`, `koral/math/quad.zig` |
+| **Diagnostics + output** | `koral/io/scalars.zig`, `koral/io/dump.zig`, `koral/io/silo.zig` (+ `silo_disabled.zig` stub) |
+| **Build + oracle + goldens + tools** | `build.zig`, `tools/gen_golden.sh`, `tools/res2kdmp.zig`, `tools/bench_implicit.zig`, `koral/testing/golden.zig`, `koral/testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/**` |
 
 ### Starting points for common tasks
 
@@ -940,8 +1011,10 @@ deviations are **expected**, not regressions — a real bug shows far above that
 - **Add a reconstruction / flux / integrator / coordinate system** → extend the relevant
   `Config` enum; kernels dispatch on it at comptime.
 - **Change floors or implicit tolerances** → the `FloorParams` / `RadParams` /
-  `ImplicitParams` presets in `solve/invert*.zig` and `solve/implicit.zig`.
-- **Instantiate a new problem** → create `PROBLEMS/<name>/main.zig` picking a `Config`,
-  loading `Params`, and supplying init/boundary hooks; `build.zig` auto-discovers it.
+  `ImplicitParams` presets in `solve/invert*.zig` and `solve/implicit.zig`; most are also
+  runtime-overridable from the params file (the optional-override group in §3.6).
+- **Instantiate a new problem** → create `koral/problems/<name>/main.zig` picking a
+  `Config`, loading `Params`, and supplying init/boundary hooks; `build.zig`
+  auto-discovers it.
 - **Regenerate goldens after a koral_lite change** → run `tools/gen_golden.sh` and commit
   `tests/golden/**` + `manifest.json` ([§11](#11-testing-and-the-oracle)).
