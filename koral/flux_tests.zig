@@ -6,10 +6,10 @@ const config = @import("config.zig");
 const layout = @import("layout.zig");
 const relele = @import("relele.zig");
 const hydro = @import("physics/hydro.zig");
-const recon = @import("recon/recon.zig");
+const recon = @import("fv/recon.zig");
 const wavespeeds = @import("physics/wavespeeds.zig");
 const fluxmod = @import("physics/flux.zig");
-const laxf_mod = @import("riemann/laxf.zig");
+const laxf_mod = @import("fv/laxf.zig");
 const precompute = @import("metric/precompute.zig");
 const metric = @import("metric/metric.zig");
 
@@ -47,17 +47,17 @@ test "recon: linear data is reconstructed exactly" {
     // uniform grid: both the θ-limited linear scheme and PPM are exact
     const dx_u: [5]f64 = @splat(1.0);
     const s = linStencil(0.3, -1.7, dx_u);
-    for ([_]u8{ 1, 2 }) |order| {
-        const f = recon.avg2pointScalar(s.u, dx_u, order, 1.5);
-        try expectClose(f.ul, 0.3 + -1.7 * s.xl, 1e-15);
-        try expectClose(f.ur, 0.3 + -1.7 * s.xr, 1e-15);
+    for ([_]recon.Scheme{ .{ .linear = .{ .theta = 1.5 } }, .ppm }) |scheme| {
+        const f = recon.reconstruct(f64, scheme, s.u, dx_u);
+        try expectClose(f.left, 0.3 + -1.7 * s.xl, 1e-15);
+        try expectClose(f.right, 0.3 + -1.7 * s.xr, 1e-15);
     }
     // mildly non-uniform grid: PPM stays exact on linear data
     const dx_n = [5]f64{ 1.0, 1.2, 0.9, 1.1, 0.8 };
     const sn = linStencil(-0.2, 0.9, dx_n);
-    const fn2 = recon.avg2pointScalar(sn.u, dx_n, 2, 1.5);
-    try expectClose(fn2.ul, -0.2 + 0.9 * sn.xl, 1e-14);
-    try expectClose(fn2.ur, -0.2 + 0.9 * sn.xr, 1e-14);
+    const fn2 = recon.reconstruct(f64, .ppm, sn.u, dx_n);
+    try expectClose(fn2.left, -0.2 + 0.9 * sn.xl, 1e-14);
+    try expectClose(fn2.right, -0.2 + 0.9 * sn.xr, 1e-14);
 }
 
 test "recon: PPM reproduces a monotone parabola exactly from cell averages" {
@@ -67,9 +67,9 @@ test "recon: PPM reproduces a monotone parabola exactly from cell averages" {
         const a = 1.0 + @as(f64, @floatFromInt(i));
         u[i] = ((a + 1.0) * (a + 1.0) * (a + 1.0) - a * a * a) / 3.0;
     }
-    const f = recon.avg2pointScalar(u, @splat(1.0), 2, 1.5);
-    try expectClose(f.ul, 9.0, 1e-13); // left face of cell [3,4] at x=3
-    try expectClose(f.ur, 16.0, 1e-13); // right face at x=4
+    const f = recon.reconstruct(f64, .ppm, u, @splat(1.0));
+    try expectClose(f.left, 9.0, 1e-13); // left face of cell [3,4] at x=3
+    try expectClose(f.right, 16.0, 1e-13); // right face at x=4
 }
 
 test "recon: face values never leave the stencil range (fuzz)" {
@@ -86,12 +86,12 @@ test "recon: face values never leave the stencil range (fuzz)" {
             lo = @min(lo, v);
             hi = @max(hi, v);
         }
-        for ([_]u8{ 0, 1, 2 }) |order| {
-            const f = recon.avg2pointScalar(u, dx, order, 1.5);
-            try std.testing.expect(f.ul >= lo - 1e-14 and f.ul <= hi + 1e-14);
-            try std.testing.expect(f.ur >= lo - 1e-14 and f.ur <= hi + 1e-14);
+        for ([_]recon.Scheme{ .donor, .{ .linear = .{ .theta = 1.5 } }, .ppm }) |scheme| {
+            const f = recon.reconstruct(f64, scheme, u, dx);
+            try std.testing.expect(f.left >= lo - 1e-14 and f.left <= hi + 1e-14);
+            try std.testing.expect(f.right >= lo - 1e-14 and f.right <= hi + 1e-14);
             // limited parabola keeps u0 between its own face values
-            try std.testing.expect((f.ur - u[2]) * (u[2] - f.ul) >= -1e-15);
+            try std.testing.expect((f.right - u[2]) * (u[2] - f.left) >= -1e-15);
         }
     }
 }
@@ -112,15 +112,16 @@ test "recon: mirror symmetry (linear bitwise; PPM to a few ulp)" {
         const um = [5]f64{ u[4], u[3], u[2], u[1], u[0] };
         const dxm = [5]f64{ dx[4], dx[3], dx[2], dx[1], dx[0] };
 
-        const fl = recon.avg2pointScalar(u, dx, 1, 1.5);
-        const flm = recon.avg2pointScalar(um, dxm, 1, 1.5);
-        try std.testing.expectEqual(fl.ul, flm.ur);
-        try std.testing.expectEqual(fl.ur, flm.ul);
+        const lin = recon.Scheme{ .linear = .{ .theta = 1.5 } };
+        const fl = recon.reconstruct(f64, lin, u, dx);
+        const flm = recon.reconstruct(f64, lin, um, dxm);
+        try std.testing.expectEqual(fl.left, flm.right);
+        try std.testing.expectEqual(fl.right, flm.left);
 
-        const fp = recon.avg2pointScalar(u, dx, 2, 1.5);
-        const fpm = recon.avg2pointScalar(um, dxm, 2, 1.5);
-        try expectClose(fp.ul, fpm.ur, 1e-13);
-        try expectClose(fp.ur, fpm.ul, 1e-13);
+        const fp = recon.reconstruct(f64, .ppm, u, dx);
+        const fpm = recon.reconstruct(f64, .ppm, um, dxm);
+        try expectClose(fp.left, fpm.right, 1e-13);
+        try expectClose(fp.right, fpm.left, 1e-13);
     }
 }
 

@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const Dual3 = @import("../math/dual.zig").Dual3;
+const linalg = @import("../math/linalg.zig");
 const forms = @import("forms.zig");
 const config = @import("../config.zig");
 
@@ -59,50 +60,11 @@ pub fn gcovDual(coords: Coords, mp: MetricParams, x: [4]f64) [4][4]Dual3 {
     };
 }
 
-fn det3(m: [4][4]Dual3, r: [3]usize, c: [3]usize) Dual3 {
-    const t0 = m[r[0]][c[0]].mul(m[r[1]][c[1]].mul(m[r[2]][c[2]]).sub(m[r[1]][c[2]].mul(m[r[2]][c[1]])));
-    const t1 = m[r[0]][c[1]].mul(m[r[1]][c[0]].mul(m[r[2]][c[2]]).sub(m[r[1]][c[2]].mul(m[r[2]][c[0]])));
-    const t2 = m[r[0]][c[2]].mul(m[r[1]][c[0]].mul(m[r[2]][c[1]]).sub(m[r[1]][c[1]].mul(m[r[2]][c[0]])));
-    return t0.sub(t1).add(t2);
-}
-
-const others = [4][3]usize{
-    .{ 1, 2, 3 },
-    .{ 0, 2, 3 },
-    .{ 0, 1, 3 },
-    .{ 0, 1, 2 },
-};
-
-fn det4(m: [4][4]Dual3) Dual3 {
-    var d = Dual3.constant(0);
-    var sign: f64 = 1.0;
-    for (0..4) |j| {
-        const minor = det3(m, others[0], others[j]);
-        d = d.add(m[0][j].mul(minor).scale(sign));
-        sign = -sign;
-    }
-    return d;
-}
-
-/// Inverse of a symmetric 4×4 in dual arithmetic (adjugate / det).
-fn inv4(m: [4][4]Dual3, det: Dual3) [4][4]Dual3 {
-    var out: [4][4]Dual3 = undefined;
-    for (0..4) |i| {
-        for (0..4) |j| {
-            // cofactor C_ji / det (matrix symmetric ⇒ inverse symmetric)
-            const minor = det3(m, others[j], others[i]);
-            const sign: f64 = if ((i + j) % 2 == 0) 1.0 else -1.0;
-            out[i][j] = minor.scale(sign).div(det);
-        }
-    }
-    return out;
-}
-
 /// Full metric data at one point (C: the per-cell part of calc_metric).
 pub fn compute(coords: Coords, mp: MetricParams, x: [4]f64) CoordData {
     const g = gcovDual(coords, mp, x);
-    const det = det4(g);
-    const ginv = inv4(g, det);
+    const det = linalg.det4(Dual3, g);
+    const ginv = linalg.inv4(Dual3, g, det);
 
     var out: CoordData = undefined;
     for (0..4) |i| {
@@ -143,7 +105,7 @@ pub fn compute(coords: Coords, mp: MetricParams, x: [4]f64) CoordData {
 /// everything else compute() built (P2 #9).
 pub fn gdetAt(coords: Coords, mp: MetricParams, x: [4]f64) f64 {
     const g = gcovDual(coords, mp, x);
-    return @sqrt(-det4(g).v);
+    return @sqrt(-linalg.det4(Dual3, g).v);
 }
 
 /// ∂_m g_ab from the dual derivatives (∂_t = 0).

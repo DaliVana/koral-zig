@@ -5,7 +5,7 @@
 const std = @import("std");
 const config = @import("config.zig");
 const layout = @import("layout.zig");
-const recon = @import("recon/recon.zig");
+const recon = @import("fv/recon.zig");
 const wavespeeds = @import("physics/wavespeeds.zig");
 const fluxmod = @import("physics/flux.zig");
 const gold = @import("testing/golden.zig");
@@ -26,11 +26,16 @@ test "golden: avg2point (donor/minmod-θ/PPM, order reduction) vs C" {
         const dx = [5]f64{ r.in[5], r.in[6], r.in[7], r.in[8], r.in[9] };
         const param: u8 = @intFromFloat(r.in[10]);
         const theta = r.in[11];
-        // PUFFY: INT_ORDER = 2, reduced by param
-        const eff: u8 = if (param >= 2) 0 else 2 - param;
-        const f = recon.avg2pointScalar(u, dx, eff, theta);
-        t.add(r.out[0], f.ul, ir);
-        t.add(r.out[1], f.ur, ir);
+        // PUFFY: INT_ORDER = 2, reduced by param (the caller-side policy
+        // sim.zig applies via base_order -| reduce)
+        const scheme: recon.Scheme = switch (@as(u8, 2) -| param) {
+            0 => .donor,
+            1 => .{ .linear = .{ .theta = theta } },
+            else => .ppm,
+        };
+        const f = recon.reconstruct(f64, scheme, u, dx);
+        t.add(r.out[0], f.left, ir);
+        t.add(r.out[1], f.right, ir);
     }
     try t.check(1e-14, "avg2point");
 }

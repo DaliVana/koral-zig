@@ -87,7 +87,7 @@ pub fn gk21(f: anytype, a: f64, b: f64) Panel {
     };
 }
 
-pub const QuadResult = struct {
+pub const Result = struct {
     value: f64,
     abserr: f64,
     /// false when max_segments was exhausted before the tolerance was met —
@@ -102,7 +102,7 @@ const Segment = struct { a: f64, b: f64, value: f64, abserr: f64 };
 /// Adaptive GK21 over [a, b] (either orientation) to
 /// max(epsabs, epsrel·|I|), splitting the worst segment first — the same
 /// strategy qags uses, minus the extrapolation stage.
-pub fn integrate(f: anytype, a: f64, b: f64, epsabs: f64, epsrel: f64) QuadResult {
+pub fn integrate(f: anytype, a: f64, b: f64, epsabs: f64, epsrel: f64) Result {
     if (a == b) return .{ .value = 0.0, .abserr = 0.0, .converged = true };
 
     var segs: [max_segments]Segment = undefined;

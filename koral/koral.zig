@@ -39,8 +39,10 @@ pub const Geometry = geometry.Geometry;
 
 pub const math = struct {
     pub const dual = @import("math/dual.zig");
+    pub const Dual = dual.Dual;
     pub const Dual3 = dual.Dual3;
     pub const quad = @import("math/quad.zig");
+    pub const linalg = @import("math/linalg.zig");
     pub const misc = @import("math/misc.zig");
     pub const simd = @import("math/simd.zig");
 };
@@ -78,10 +80,10 @@ pub const solve = struct {
     pub const implicit = @import("solve/implicit.zig");
 };
 
-pub const recon = @import("recon/recon.zig");
 
-pub const riemann = struct {
-    pub const laxf = @import("riemann/laxf.zig");
+pub const fv = struct {
+    pub const recon = @import("fv/recon.zig");
+    pub const laxf = @import("fv/laxf.zig");
 };
 
 pub const sim = @import("sim.zig");
@@ -129,6 +131,7 @@ test {
     _ = comm.serial;
     _ = geometry;
     _ = math.dual;
+    _ = math.linalg;
     _ = math.simd;
     _ = metric.core;
     _ = metric.forms;
@@ -148,8 +151,8 @@ test {
     _ = physics.mesa;
     _ = physics.radforce;
     _ = physics.radvisc;
-    _ = recon;
-    _ = riemann.laxf;
+    _ = fv.recon;
+    _ = fv.laxf;
     _ = sim;
     _ = magn.ct;
     _ = magn.dynamo;

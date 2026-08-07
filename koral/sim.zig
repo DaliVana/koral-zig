@@ -40,7 +40,7 @@ const relele = @import("relele.zig");
 const hydro = @import("physics/hydro.zig");
 const flux_mod = @import("physics/flux.zig");
 const wavespeeds = @import("physics/wavespeeds.zig");
-const recon = @import("recon/recon.zig");
+const recon = @import("fv/recon.zig");
 const invert = @import("solve/invert.zig");
 const invert_rad = @import("solve/invert_rad.zig");
 const implicit = @import("solve/implicit.zig");
@@ -48,7 +48,7 @@ const radiation = @import("physics/radiation.zig");
 const radforce = @import("physics/radforce.zig");
 const radvisc_mod = @import("physics/radvisc.zig");
 const p2u_mod = @import("p2u.zig");
-const laxf_mod = @import("riemann/laxf.zig");
+const laxf_mod = @import("fv/laxf.zig");
 const ct = @import("magn/ct.zig");
 const dynamo_mod = @import("magn/dynamo.zig");
 const storage = @import("sim/storage.zig");
@@ -1170,10 +1170,15 @@ pub fn Sim(comptime cfg: config.Config) type {
             // for cells whose center is inside the BL horizon (reduce_order_check,
             // finite.c:14). cell[0] is the radial index. REDUCEMINMODTHETA is
             // still off.
-            const reconstr_par: u8 = if (cell[0] <= self.reduce_order_ix_max) 1 else 0;
-            const f = recon.avg2point(NV, pm2, pm1, p0, pp1, pp2, dx5, base_order, reconstr_par, self.opt.minmod_theta);
-            var pl = f.ul;
-            var pr = f.ur;
+            const reduce: u8 = if (cell[0] <= self.reduce_order_ix_max) 1 else 0;
+            const scheme: recon.Scheme = switch (base_order -| reduce) {
+                0 => .donor,
+                1 => .{ .linear = .{ .theta = self.opt.minmod_theta } },
+                else => .ppm,
+            };
+            const f = recon.reconstructN(NV, scheme, .{ pm2, pm1, p0, pp1, pp2 }, dx5);
+            var pl = f.left;
+            var pr = f.right;
 
             var ffl: [NV]f64 = undefined;
             var ffr: [NV]f64 = undefined;
