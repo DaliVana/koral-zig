@@ -12,6 +12,11 @@ pub const Serial = struct {
 
     pub fn initWorld() !void {}
     pub fn finalizeWorld() void {}
+    /// Single process: normal error propagation is correct, so callers
+    /// gate this on a multi-rank world and never reach it here.
+    pub fn abortWorld(code: u8) noreturn {
+        std.process.exit(code);
+    }
     pub fn worldSize() usize {
         return 1;
     }
@@ -50,6 +55,7 @@ pub const Serial = struct {
         return error.SerialHasNoMpiIo;
     }
     pub fn fileClose(_: *const Serial, _: *File) void {}
+    pub fn fileSync(_: *const Serial, _: *File) void {}
     pub fn fileSize(_: *const Serial, _: *File) u64 {
         return 0;
     }

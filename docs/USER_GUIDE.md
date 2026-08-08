@@ -153,7 +153,12 @@ I/O under MPI (P4b, plan §8):
   **byte-identical** to a serial run's checkpoint (gate 6 pins this), so
   `--restart` works at ANY rank count in both directions: a serial/1-rank
   checkpoint restarts at N ranks and vice versa, and the plain serial binary
-  reads MPI-written files.
+  reads MPI-written files. A checkpoint interrupted mid-write (walltime kill)
+  is **rejected, not silently loaded**: the 44-byte header is written last,
+  after a sync, so it doubles as a completion marker — an incomplete file
+  fails with `BadMagic`, a short one with `Truncated`, on every rank. This
+  matters because `--restart <dir>` picks the *newest* checkpoint, which is
+  exactly the one a kill leaves partial.
 * **silo** — still serial-only at write time; convert MPI-run checkpoints
   with `zig build kdmp2silo -Dsilo -Doptimize=ReleaseFast -- <params.toml>
   <prims#####.kdmp | dumps-dir> [out-dir]` (same params file as the run, so

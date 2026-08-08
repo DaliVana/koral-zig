@@ -665,6 +665,13 @@ fn writeKdmpCollective(comptime SimT: type, allocator: std.mem.Allocator, comm: 
 
 /// The driver's loadPrimDumpMpi sequence: collective header + slab read.
 fn readKdmpCollective(comptime SimT: type, allocator: std.mem.Allocator, comm: *Comm, s: *SimT, path: [*:0]const u8) !koral.io.dump.DumpHeader {
+    // Rank-local allocation BEFORE the collective open, as the driver does:
+    // a failure between open and close would run the deferred collective
+    // fileClose while the peers block in read_at_all.
+    const body64 = try allocator.alloc(f64, koral.io.dump.primBodySize(SimT, s) / 8);
+    defer allocator.free(body64);
+    const body = std.mem.sliceAsBytes(body64);
+
     var f = try comm.fileOpenRead(path);
     defer comm.fileClose(&f);
     // Length guard, exactly as the driver does it (a collective read is
@@ -680,9 +687,6 @@ fn readKdmpCollective(comptime SimT: type, allocator: std.mem.Allocator, comm: *
     if (h.nx != g.nx or h.ny != g.ny or h.nz != g.nz or h.nv != SimT.nv)
         return error.DimMismatch;
     if (fsize < koral.io.dump.bodyOffset(g.nx, g.ny, SimT.nv, g.nz)) return error.Truncated;
-    const body64 = try allocator.alloc(f64, koral.io.dump.primBodySize(SimT, s) / 8);
-    defer allocator.free(body64);
-    const body = std.mem.sliceAsBytes(body64);
     comm.fileReadAtAll(&f, koral.io.dump.bodyOffset(g.nx, g.ny, SimT.nv, @intCast(s.decomp.tok)), body);
     try koral.io.dump.loadPrimBody(SimT, s, body);
     return h;
@@ -804,6 +808,28 @@ fn gate6(allocator: std.mem.Allocator, io: std.Io, comm: *Comm, dc: koral.comm.D
         g.expect(false, "truncated checkpoint was accepted", .{});
     } else |err| {
         g.expect(err == error.Truncated, "truncated checkpoint gave {s}, want Truncated", .{@errorName(err)});
+    }
+
+    // (6e) an INTERRUPTED COLLECTIVE checkpoint must also be rejected — and
+    // 6d above cannot see this case. `fileCreate` calls MPI_File_set_size
+    // (MPI has no truncate-on-open), so a checkpoint killed mid-write is
+    // FULL-LENGTH with unwritten regions reading back as zero holes: every
+    // length-based check passes. What catches it is the writer's ordering —
+    // body, sync, then the header last as a completion marker — so an
+    // interrupted file has no magic. Simulate exactly that: create the file
+    // at final size and close it without writing anything.
+    const path_p = scratch_dir ++ "/gate6_partial.kdmp";
+    {
+        const gg = dc.global;
+        var pf = try comm.fileCreate(path_p, koral.io.dump.bodyOffset(gg.nx, gg.ny, SimM.nv, gg.nz));
+        comm.fileClose(&pf);
+    }
+    comm.barrier();
+    if (readKdmpCollective(SimM, allocator, comm, &s2, path_p)) |_| {
+        g.expect(false, "interrupted (full-length, header-less) checkpoint was accepted", .{});
+    } else |err| {
+        // Length alone cannot reject it, so this MUST fail on the marker.
+        g.expect(err == error.BadMagic, "interrupted checkpoint gave {s}, want BadMagic", .{@errorName(err)});
     }
 
     comm.barrier();

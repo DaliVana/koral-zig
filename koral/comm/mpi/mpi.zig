@@ -26,7 +26,9 @@ fn check(rc: c_int, what: []const u8) void {
     if (rc != abi.success) {
         std.debug.print("koral/mpi: {s} failed (rc={d}) — aborting\n", .{ what, rc });
         _ = core.MPI_Abort(abi.commWorld(), 1);
-        unreachable;
+        // MPI_Abort is specified not to return; `unreachable` here would be
+        // UB in ReleaseFast if it ever did. Same belt-and-braces as abortJob.
+        std.process.exit(1);
     }
 }
 
@@ -56,6 +58,18 @@ pub const Mpi = struct {
         var provided: c_int = 0;
         check(core.MPI_Init_thread(null, null, abi.thread_funneled, &provided), "MPI_Init_thread");
         if (provided < abi.thread_funneled) return error.MpiThreadLevelTooLow;
+    }
+
+    /// Tear the job down before a communicator exists — the startup window
+    /// between `initWorld` and the driver's `errdefer abortJob`. A
+    /// rank-local failure there (an unreadable params file or opacity
+    /// table on this node, a bad allocation) would otherwise return
+    /// through `defer finalizeWorld`, and `MPI_Finalize` is a job-wide
+    /// fence: the peers, already inside `MPI_Cart_create`, would wait out
+    /// the entire wall-clock allocation.
+    pub fn abortWorld(code: u8) noreturn {
+        _ = core.MPI_Abort(abi.commWorld(), code);
+        std.process.exit(code);
     }
 
     pub fn finalizeWorld() void {
@@ -188,6 +202,15 @@ pub const Mpi = struct {
         check(core.MPI_File_close(&f.fh), "MPI_File_close");
     }
 
+    /// Force written data out to storage. COLLECTIVE — every rank calls it.
+    /// Used to order a checkpoint's body before its header (see the driver's
+    /// writePrimDumpMpi): without that ordering the header can reach disk
+    /// while the body it describes does not.
+    pub fn fileSync(self: *const Mpi, f: *File) void {
+        _ = self;
+        check(core.MPI_File_sync(f.fh), "MPI_File_sync");
+    }
+
     /// Size of an open file in bytes.
     ///
     /// This is how a short/corrupt checkpoint is detected, and the choice of
@@ -207,12 +230,23 @@ pub const Mpi = struct {
     /// (a whole KDMP body can exceed the 2 GiB c_int byte limit; /8 keeps
     /// every realistic slab in range), anything else as raw bytes.
     fn rwCount(len: usize) struct { count: c_int, dt: abi.RawDatatype } {
-        if (len % 8 == 0) {
-            std.debug.assert(len / 8 <= std.math.maxInt(c_int));
-            return .{ .count = @intCast(len / 8), .dt = abi.dtDouble() };
+        // Hard checks, not asserts: these are compiled out in ReleaseFast —
+        // exactly the build a production checkpoint runs under — leaving an
+        // @intCast that is UB on overflow. A grid past the count limit must
+        // fail loudly, not silently write the wrong number of elements.
+        const n: usize = if (len % 8 == 0) len / 8 else len;
+        if (n > std.math.maxInt(c_int)) {
+            std.debug.print(
+                "koral/mpi: transfer of {d} bytes exceeds the MPI element-count limit — aborting\n",
+                .{len},
+            );
+            _ = core.MPI_Abort(abi.commWorld(), 1);
+            std.process.exit(1);
         }
-        std.debug.assert(len <= std.math.maxInt(c_int));
-        return .{ .count = @intCast(len), .dt = abi.dtByte() };
+        return if (len % 8 == 0)
+            .{ .count = @intCast(n), .dt = abi.dtDouble() }
+        else
+            .{ .count = @intCast(n), .dt = abi.dtByte() };
     }
 
     /// Collective write at a per-rank offset (every rank must call, each

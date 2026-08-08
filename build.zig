@@ -278,6 +278,25 @@ pub fn build(b: *std.Build) !void {
     b.step("kdmp2silo", "convert KDMP checkpoints to .silo for VisIt (needs -Dsilo)")
         .dependOn(&run_kdmp2silo.step);
 
+    // kdmp2png: GRRT-render a KDMP checkpoint into a PNG image — null
+    // geodesics through the run's Kerr/MKS2 metric + radiative transfer from
+    // its own opacities and M1 radiation field (koral/render/render.zig).
+    // Build with -Doptimize=ReleaseFast; a 512² frame renders in ~a minute.
+    const kdmp2png = b.addExecutable(.{
+        .name = "kdmp2png",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/kdmp2png.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "koral", .module = koral }},
+        }),
+    });
+    b.installArtifact(kdmp2png);
+    const run_kdmp2png = b.addRunArtifact(kdmp2png);
+    if (b.args) |args| run_kdmp2png.addArgs(args);
+    b.step("kdmp2png", "GRRT-render a KDMP checkpoint to PNG")
+        .dependOn(&run_kdmp2png.step);
+
     // mpi-gates: the MPI validation-ladder harness (plan §10 gates 2-6).
     // Build with -Dmpi (ideally -Doptimize=ReleaseSafe) and run under
     // mpiexec at 1..4 ranks; each rank recomputes the serial reference

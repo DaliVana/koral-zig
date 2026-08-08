@@ -72,7 +72,6 @@ pub const solve = struct {
     pub const implicit = @import("solve/implicit.zig");
 };
 
-
 pub const fv = struct {
     pub const recon = @import("fv/recon.zig");
     pub const laxf = @import("fv/laxf.zig");
@@ -112,6 +111,8 @@ pub const io = struct {
     pub const dump = @import("io/dump.zig");
     pub const silo = @import("io/silo.zig");
 };
+
+pub const render = @import("render/render.zig");
 
 test {
     // Pull in all module tests. Test files live flat in koral/ next to the
@@ -188,6 +189,9 @@ test {
     _ = io.scalars;
     _ = io.dump;
     _ = io.silo;
+    _ = render;
+    _ = render.image;
+    _ = @import("render_tests.zig");
     _ = @import("scalars_tests.zig");
     _ = @import("restart_tests.zig");
     _ = @import("mpi_abi_tests.zig");

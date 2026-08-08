@@ -163,6 +163,20 @@ fn writePrimDumpMpi(out_dir: []const u8, allocator: std.mem.Allocator, s: *const
         std.debug.print("puffy: rank {d} cannot MPI-create {s}: {s}\n", .{ comm.rank(), path, @errorName(err) });
         return err;
     };
+    // Body FIRST, header LAST — the 44-byte header is the completion
+    // marker. `fileCreate` sets the file to its final length up front
+    // (MPI has no truncate-on-open, so `MPI_File_set_size` is how a stale
+    // file is overwritten), which means a checkpoint interrupted mid-write
+    // is FULL-LENGTH with unwritten regions reading back as zero holes —
+    // length alone can never distinguish it from a complete one. Writing
+    // the magic last does: a killed checkpoint has no valid header, so
+    // `parseDumpHeader` rejects it with BadMagic on every rank. The sync
+    // between the two is what makes the marker mean anything — without it
+    // the header may reach storage while the body it describes has not.
+    // (The final bytes are unchanged, so the file stays byte-identical to
+    // a serial run's — gate 6a still holds.)
+    comm.fileWriteAtAll(&f, dump.bodyOffset(g.nx, g.ny, SimT.nv, @intCast(s.decomp.tok)), body);
+    comm.fileSync(&f); // collective
     if (comm.rank() == 0) {
         var hdr: [dump.header_size]u8 = undefined;
         _ = dump.writeDumpHeader(&hdr, .{
@@ -176,7 +190,6 @@ fn writePrimDumpMpi(out_dir: []const u8, allocator: std.mem.Allocator, s: *const
         });
         comm.fileWriteAt(&f, 0, hdr[0..]);
     }
-    comm.fileWriteAtAll(&f, dump.bodyOffset(g.nx, g.ny, SimT.nv, @intCast(s.decomp.tok)), body);
     comm.fileClose(&f);
 }
 
@@ -186,21 +199,39 @@ fn writePrimDumpMpi(out_dir: []const u8, allocator: std.mem.Allocator, s: *const
 /// φ-slab. A serial-written checkpoint restarts at any rank count and
 /// vice versa (gate 6b).
 fn loadPrimDumpMpi(allocator: std.mem.Allocator, s: *SimT, comm: *koral.comm.Comm, path: []const u8) !dump.DumpHeader {
+    // Everything that can fail RANK-LOCALLY happens before the first
+    // collective. Once `fileOpenRead` returns, this rank is committed to
+    // the sequence open → read → read → close, and a `try` that unwound
+    // mid-sequence would run the `defer`red collective `fileClose` while
+    // the peers still sit in `read_at_all` — a hang, and one the driver's
+    // errdefer cannot rescue because the rank never reaches it. Below,
+    // every remaining failure derives from bytes all ranks read
+    // identically, so the ring always leaves together.
     var pbuf: [1024]u8 = undefined;
     const pathz = try std.fmt.bufPrintZ(&pbuf, "{s}", .{path});
+    const body64 = try allocator.alloc(f64, dump.primBodySize(SimT, s) / 8);
+    defer allocator.free(body64);
+    const body = std.mem.sliceAsBytes(body64);
+
     var f = try comm.fileOpenRead(pathz);
     defer comm.fileClose(&f);
 
-    // Length check FIRST — the serial path gets this free (it reads the
-    // whole file and compares the byte count), but a collective read is
-    // sized by the caller's buffer, not the file: MPI reads what is there,
-    // reports the shortfall only in a status we pass IGNORE for, and
-    // returns SUCCESS. Without this, a checkpoint truncated by a walltime
-    // kill loads its tail from uninitialized heap as primitives — and
-    // `--restart <dir>` picks the NEWEST checkpoint, which is exactly the
-    // file such a kill leaves partial. Verified: pre-guard, a 200 KB-short
-    // file restarted "successfully" and then died as `NanInFlux`, pointing
-    // the blame at the physics.
+    // Length check first — a collective read is sized by the caller's
+    // buffer, not the file: MPI reads what is there, reports the shortfall
+    // only in a status we pass IGNORE for, and returns SUCCESS. Without
+    // this, a SHORT file loads its tail from uninitialized heap as
+    // primitives (verified: a 200 KB-short checkpoint restarted
+    // "successfully" and died a step later as `NanInFlux`, blaming the
+    // physics), where the serial loader rejects it outright.
+    //
+    // SCOPE — easy to over-trust, so state it: this catches files short in
+    // LENGTH (a serial-written checkpoint cut off by a kill, a partial
+    // copy, an empty file). It CANNOT catch one THIS program's own MPI
+    // writer left incomplete: `fileCreate` pre-sizes the file to its final
+    // length before any body byte lands, so an interrupted collective
+    // write leaves a full-length file of zero holes. That case is caught
+    // instead by the header-written-last completion marker in
+    // `writePrimDumpMpi` — it fails `parseDumpHeader` just below.
     const fsize = comm.fileSize(&f);
     if (fsize < dump.header_size) return error.Truncated;
 
@@ -216,9 +247,6 @@ fn loadPrimDumpMpi(allocator: std.mem.Allocator, s: *SimT, comm: *koral.comm.Com
     // numbers, so the ring accepts or rejects as one.
     if (fsize < dump.bodyOffset(g.nx, g.ny, SimT.nv, g.nz)) return error.Truncated;
 
-    const body64 = try allocator.alloc(f64, dump.primBodySize(SimT, s) / 8);
-    defer allocator.free(body64);
-    const body = std.mem.sliceAsBytes(body64);
     comm.fileReadAtAll(&f, dump.bodyOffset(g.nx, g.ny, SimT.nv, @intCast(s.decomp.tok)), body);
     try dump.loadPrimBody(SimT, s, body);
     return h;
@@ -386,6 +414,15 @@ pub fn main(init: std.process.Init) !void {
     const Comm = koral.comm.Comm;
     try Comm.initWorld();
     defer Comm.finalizeWorld();
+    // The ring is not built yet, but the hazard already exists: from here
+    // on, a RANK-LOCAL failure (this node cannot read the params file or
+    // the opacity table, an allocation fails) would return through the
+    // `defer finalizeWorld` above — and MPI_Finalize is a job-wide fence,
+    // so the peers advancing into MPI_Cart_create would block for the full
+    // wall-clock allocation. `abortWorld` closes that startup window; the
+    // `errdefer comm.abortJob` below takes over once the ring exists.
+    const world = Comm.worldSize();
+    errdefer if (world > 1) Comm.abortWorld(1);
 
     // CLI: `puffy [params.toml] [--restart <file|dir>]`. The first positional
     // is the params file; `--restart` (or `-r`) points at a KDMP checkpoint to
@@ -475,7 +512,7 @@ pub fn main(init: std.process.Init) !void {
     // φ-only decomposition (MPI plan §5): params nx/ny/nz are GLOBAL; each
     // rank evolves its z-slab of the global grid. Serial builds and 1-rank
     // runs take the trivial decomposition and behave exactly as before.
-    const wsize = Comm.worldSize();
+    const wsize = world; // queried once, at the top
     const ntz: usize = if (p.ntz == 0) wsize else p.ntz;
     if (ntz != wsize) {
         std.debug.print("puffy: params ntz={d} but the job was launched with {d} rank(s) — they must agree (ntz=0 means auto)\n", .{ p.ntz, wsize });
@@ -582,9 +619,15 @@ pub fn main(init: std.process.Init) !void {
     var out_idx: u32 = 0;
     var restarted = false;
     if (restart_arg) |arg| {
-        // Each rank resolves independently — a directory picks the lexical
+        // Each rank resolves independently. A directory picks the lexical
         // max, which is deterministic regardless of iteration order, so the
-        // ring always agrees on the file.
+        // ring agrees whenever it sees the same directory — but that is an
+        // assumption about the filesystem, not a guarantee (node-local
+        // scratch, a half-synced copy, a frame landing mid-scan). The
+        // agreement fold after the load turns a silent divergence into a
+        // clean error; without it, ranks would restart from DIFFERENT
+        // checkpoints and integrate a physically inconsistent state with
+        // nothing to signal it.
         const file = try resolveRestartPath(io, allocator, arg);
         defer allocator.free(file);
         const h = blk: {
@@ -604,6 +647,25 @@ pub fn main(init: std.process.Init) !void {
                 return err;
             };
         };
+        // Every rank must have restarted from the SAME checkpoint. Fold the
+        // header both ways: max == min ⇔ all ranks agree, and since all
+        // ranks compare the same two vectors they accept or reject as one
+        // (so the errdefer abort below fires everywhere, never on a subset).
+        if (ntz > 1) {
+            const hv = [3]f64{ h.t, @floatFromInt(h.nstep), @floatFromInt(h.out_idx) };
+            var hi = hv;
+            var lo = hv;
+            comm.allreduceMax(hi[0..]);
+            comm.allreduceMin(lo[0..]);
+            if (!std.mem.eql(f64, hi[0..], lo[0..])) {
+                if (is_root) std.debug.print(
+                    "puffy: ranks restarted from DIFFERENT checkpoints (t {e}..{e}, nstep {d}..{d}) — " ++
+                        "the restart path must name the same file on every node\n",
+                    .{ lo[0], hi[0], @as(u64, @intFromFloat(lo[1])), @as(u64, @intFromFloat(hi[1])) },
+                );
+                return error.RestartRankDisagreement;
+            }
+        }
         s.t = h.t;
         s.nstep = h.nstep;
         out_idx = h.out_idx;
