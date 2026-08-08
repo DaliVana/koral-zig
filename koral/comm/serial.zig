@@ -38,6 +38,25 @@ pub const Serial = struct {
     pub fn allreduceSum(_: *const Serial, _: []f64) void {}
     pub fn barrier(_: *const Serial) void {}
 
+    /// MPI-IO mirror so drivers compile against either backend. Statically
+    /// reachable but dynamically dead: every caller is behind an `ntz > 1`
+    /// branch, and Serial.init rejects ntz != 1 — a serial run does file
+    /// I/O through plain std.Io (the golden path), never through these.
+    pub const File = struct {};
+    pub fn fileCreate(_: *const Serial, _: [*:0]const u8, _: u64) !File {
+        return error.SerialHasNoMpiIo;
+    }
+    pub fn fileOpenRead(_: *const Serial, _: [*:0]const u8) !File {
+        return error.SerialHasNoMpiIo;
+    }
+    pub fn fileClose(_: *const Serial, _: *File) void {}
+    pub fn fileSize(_: *const Serial, _: *File) u64 {
+        return 0;
+    }
+    pub fn fileWriteAtAll(_: *const Serial, _: *File, _: u64, _: []const u8) void {}
+    pub fn fileWriteAt(_: *const Serial, _: *File, _: u64, _: []const u8) void {}
+    pub fn fileReadAtAll(_: *const Serial, _: *File, _: u64, _: []u8) void {}
+
     /// Single process: there is no job to tear down, so normal error
     /// propagation is correct and callers must never reach this. (The MPI
     /// backend's version never returns — see comm/mpi/mpi.zig.)

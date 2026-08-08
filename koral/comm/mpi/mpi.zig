@@ -159,6 +159,85 @@ pub const Mpi = struct {
         check(core.MPI_Barrier(self.cart), "MPI_Barrier");
     }
 
+    // ---- MPI-IO (plan §8.1: collective KDMP checkpoints) ---------------
+
+    /// An open MPI file handle. Opened/closed collectively on the ring.
+    pub const File = struct { fh: abi.RawFile };
+
+    /// Collectively create (or truncate) `path` at exactly `total` bytes.
+    /// A failed open returns an error — it is uniform across ranks (the
+    /// open is collective), so normal propagation stays coordinated.
+    pub fn fileCreate(self: *const Mpi, path: [*:0]const u8, total: u64) !File {
+        var fh: abi.RawFile = undefined;
+        const rc = core.MPI_File_open(self.cart, path, abi.mode_create | abi.mode_wronly, abi.infoNull(), &fh);
+        if (rc != abi.success) return error.MpiFileOpen;
+        check(core.MPI_File_set_size(fh, @intCast(total)), "MPI_File_set_size");
+        return .{ .fh = fh };
+    }
+
+    /// Collectively open `path` read-only (restart).
+    pub fn fileOpenRead(self: *const Mpi, path: [*:0]const u8) !File {
+        var fh: abi.RawFile = undefined;
+        const rc = core.MPI_File_open(self.cart, path, abi.mode_rdonly, abi.infoNull(), &fh);
+        if (rc != abi.success) return error.MpiFileOpen;
+        return .{ .fh = fh };
+    }
+
+    pub fn fileClose(self: *const Mpi, f: *File) void {
+        _ = self;
+        check(core.MPI_File_close(&f.fh), "MPI_File_close");
+    }
+
+    /// Size of an open file in bytes.
+    ///
+    /// This is how a short/corrupt checkpoint is detected, and the choice of
+    /// *size* over a per-transfer status count is deliberate: every rank gets
+    /// the same answer, so every rank reaches the same accept/reject decision
+    /// and they stay collectively in step. A per-rank status count could have
+    /// one rank error out of the sequence while its peers proceed into the
+    /// next collective — trading a corrupt restart for a job-wide hang.
+    pub fn fileSize(self: *const Mpi, f: *File) u64 {
+        _ = self;
+        var n: abi.Offset = 0;
+        check(core.MPI_File_get_size(f.fh, &n), "MPI_File_get_size");
+        return @intCast(n);
+    }
+
+    /// Pick count/datatype for a transfer: 8-byte multiples go as doubles
+    /// (a whole KDMP body can exceed the 2 GiB c_int byte limit; /8 keeps
+    /// every realistic slab in range), anything else as raw bytes.
+    fn rwCount(len: usize) struct { count: c_int, dt: abi.RawDatatype } {
+        if (len % 8 == 0) {
+            std.debug.assert(len / 8 <= std.math.maxInt(c_int));
+            return .{ .count = @intCast(len / 8), .dt = abi.dtDouble() };
+        }
+        std.debug.assert(len <= std.math.maxInt(c_int));
+        return .{ .count = @intCast(len), .dt = abi.dtByte() };
+    }
+
+    /// Collective write at a per-rank offset (every rank must call, each
+    /// with its own slab). Failure mid-write is unrecoverable → abort.
+    pub fn fileWriteAtAll(self: *const Mpi, f: *File, offset: u64, bytes: []const u8) void {
+        _ = self;
+        const c = rwCount(bytes.len);
+        check(core.MPI_File_write_at_all(f.fh, @intCast(offset), bytes.ptr, c.count, c.dt, abi.statusIgnore()), "MPI_File_write_at_all");
+    }
+
+    /// Non-collective write (rank 0's 44-byte global header).
+    pub fn fileWriteAt(self: *const Mpi, f: *File, offset: u64, bytes: []const u8) void {
+        _ = self;
+        const c = rwCount(bytes.len);
+        check(core.MPI_File_write_at(f.fh, @intCast(offset), bytes.ptr, c.count, c.dt, abi.statusIgnore()), "MPI_File_write_at");
+    }
+
+    /// Collective read at a per-rank offset (identical offsets are legal —
+    /// the header read passes offset 0 on every rank).
+    pub fn fileReadAtAll(self: *const Mpi, f: *File, offset: u64, bytes: []u8) void {
+        _ = self;
+        const c = rwCount(bytes.len);
+        check(core.MPI_File_read_at_all(f.fh, @intCast(offset), bytes.ptr, c.count, c.dt, abi.statusIgnore()), "MPI_File_read_at_all");
+    }
+
     /// Tear the whole job down NOW; never returns.
     ///
     /// This is the only safe way to leave a run from a RANK-LOCAL failure.

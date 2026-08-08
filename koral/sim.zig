@@ -74,6 +74,7 @@ pub const BcFace = bc.BcFace;
 pub const FaceStore = storage.FaceStore;
 pub const Flag = storage.Flag;
 pub const PassTimers = timers_mod.PassTimers;
+pub const Pass = timers_mod.Pass;
 /// Monotonic wall clock in ns (sim/timers.zig) — re-exported so the run
 /// driver can time steps / throttle the heartbeat with the same clock.
 pub const nowNs = timers_mod.nowNs;
@@ -176,6 +177,12 @@ pub fn Sim(comptime cfg: config.Config) type {
             /// on the persistent team). 1 ≡ the serial path (bit-identical;
             /// the golden tests run here).
             nthreads: usize = 1,
+            /// P4b node-width hardening: bind each team thread (main
+            /// included) to one cpu of the process affinity mask — the
+            /// cgroup cpuset under Slurm, so the binding stays inside the
+            /// allocation. Linux only; inert elsewhere. No FP effect
+            /// (scheduling never changes any written value).
+            pin_threads: bool = false,
             /// MPI plan P4a: the communication backend (comm/comm.zig —
             /// Serial no-ops by default, Mpi under -Dmpi). null ≡ serial
             /// semantics; when set, Sim binds the zero-copy exchange
@@ -353,7 +360,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.n_radimp_iters = 0;
             self.n_radimp_solves = 0;
             self.timers = .{};
-            self.team = if (opt.nthreads > 1) try threading.Team.init(allocator, opt.nthreads) else null;
+            self.team = if (opt.nthreads > 1) try threading.Team.init(allocator, opt.nthreads, opt.pin_threads) else null;
 
             // The dynamo / radviscosity passes work in BL (OUTCOORDS): build
             // the per-cell BL geometry sidecar and point the my2out Jacobian
@@ -371,20 +378,33 @@ pub fn Sim(comptime cfg: config.Config) type {
                 .team = self.team,
             });
 
+            // The big per-cell stores are allocated raw and zeroed THROUGH
+            // THE TEAM (P4b NUMA first-touch): the first write to each page
+            // then happens on a worker, spreading the pages across the
+            // node's memory controllers instead of concentrating them on
+            // the main thread's. Zeros are zeros — bit-identical serially
+            // (team == null degenerates to one whole-range memset).
             inline for (heap_field_names) |name| {
-                @field(self, name) = try FieldT.init(allocator, g);
+                @field(self, name) = try FieldT.initUninitialized(allocator, g);
+                threading.parallelZero(self.team, @field(self, name).data);
             }
             // MPI plan §6.2: the four persistent zero-copy channels bind
             // directly into p's storage, which never moves after this.
             if (opt.comm) |c| try c.bindExchange(self.p.data, g, NV);
             for (0..3) |d| {
-                self.pb_l[d] = try FaceT.init(allocator, g, d);
-                self.pb_r[d] = try FaceT.init(allocator, g, d);
-                self.fl_l[d] = try FaceT.init(allocator, g, d);
-                self.fl_r[d] = try FaceT.init(allocator, g, d);
-                self.flb[d] = try FaceT.init(allocator, g, d);
+                self.pb_l[d] = try FaceT.initUninitialized(allocator, g, d);
+                self.pb_r[d] = try FaceT.initUninitialized(allocator, g, d);
+                self.fl_l[d] = try FaceT.initUninitialized(allocator, g, d);
+                self.fl_r[d] = try FaceT.initUninitialized(allocator, g, d);
+                self.flb[d] = try FaceT.initUninitialized(allocator, g, d);
+                threading.parallelZero(self.team, self.pb_l[d].data);
+                threading.parallelZero(self.team, self.pb_r[d].data);
+                threading.parallelZero(self.team, self.fl_l[d].data);
+                threading.parallelZero(self.team, self.fl_r[d].data);
+                threading.parallelZero(self.team, self.flb[d].data);
             }
-            self.scal = try field_mod.Field(n_scal).init(allocator, g);
+            self.scal = try field_mod.Field(n_scal).initUninitialized(allocator, g);
+            threading.parallelZero(self.team, self.scal.data);
             self.flags = try allocator.alloc(i32, g.cellCount() * n_flags);
             @memset(self.flags, 0);
             const ncorn = (g.nx + 1) * (g.ny + 1) * (g.nz + 1);
@@ -392,9 +412,12 @@ pub fn Sim(comptime cfg: config.Config) type {
                 self.emf[c] = try allocator.alloc(f64, ncorn);
                 @memset(self.emf[c], 0);
             }
-            self.vecpot = try field_mod.Field(6).init(allocator, g);
-            self.rijvisc = try field_mod.Field(16).init(allocator, g);
-            self.dyn_a = try field_mod.Field(3).init(allocator, g);
+            self.vecpot = try field_mod.Field(6).initUninitialized(allocator, g);
+            threading.parallelZero(self.team, self.vecpot.data);
+            self.rijvisc = try field_mod.Field(16).initUninitialized(allocator, g);
+            threading.parallelZero(self.team, self.rijvisc.data);
+            self.dyn_a = try field_mod.Field(3).initUninitialized(allocator, g);
+            threading.parallelZero(self.team, self.dyn_a.data);
             self.scaleth = try allocator.alloc(f64, g.nx);
             @memset(self.scaleth, 0);
             self.scaleth_sig = try allocator.alloc(f64, g.nx);
@@ -567,6 +590,18 @@ pub fn Sim(comptime cfg: config.Config) type {
             if (self.opt.comm) |c| {
                 var buf = [1]f64{v};
                 c.allreduceMax(buf[0..]);
+                return buf[0];
+            }
+            return v;
+        }
+
+        /// Fold one scalar to the global sum (identity serially). Output-
+        /// cadence use: diagnostic counters that must print as true totals,
+        /// not per-rank values (plan §8.3 / review §10.2 n_radimp_fail).
+        pub fn globalSum(self: *Self, v: f64) f64 {
+            if (self.opt.comm) |c| {
+                var buf = [1]f64{v};
+                c.allreduceSum(buf[0..]);
                 return buf[0];
             }
             return v;

@@ -46,95 +46,9 @@ const r_scale: f64 = 15.0;
 /// step already exceeds the interval.
 const heartbeat_interval_ns: u64 = 1_000_000_000;
 
-fn options(p: *const koral.Params) SimT.Options {
-    // The physics param sets come from the puffy module's overridable state
-    // (defaults = the validated `.puffy` constants; `applyPhysicsOverrides`
-    // below may retarget them from the params file — the puffy_agn.toml preset).
-    // `puffy.channels` already carries the synchrotron-bridge flag and the MESA
-    // table pointer (set by applyPhysicsOverrides / main).
-    var opac = koral.physics.radforce.Params.puffyMassChan(p.mass, puffy.composition, puffy.channels);
-    // koral_lite_puffy leaves PR_KAPPAES undefined ⇒ calc_kappaes ≡ 0. The AGN
-    // preset turns scattering off (puffy.scattering=false), zeroing both the
-    // scattering opacity and the Compton four-force term (∝ κ_es).
-    if (!puffy.scattering) opac.kappaes = .none;
-    return .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.gam,
-        .tsteplim = p.tsteplim,
-        .floors = puffy.floor_params,
-        .rad = puffy.rad_params,
-        .opac = opac,
-        .implicit = puffy.impl_params,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .radviscosity = true,
-        .dynamo = true,
-        // C: DORADIMPFIXUPS / REDUCEORDERATBH / DAMPRADWAVESPEEDNEARAXIS — off
-        // in the validated build, retargeted by the AGN preset (null = off).
-        .do_radimp_fixups = p.doradimpfixups orelse false,
-        .reduceorderatbh = p.reduceorderatbh orelse false,
-        .dampradwavespeednearaxis = p.dampradwavespeednearaxis orelse 0,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        // C: PERIODIC_ZBC (PUFFY define.h:188). Irrelevant in 2D (nz==1 has
-        // no z-ghosts); for 3D wedges this was previously left at the .copy
-        // default — a latent pre-MPI bug (MPI plan §11.1-3), fixed here.
-        .bc_z = .periodic,
-        .specific_bc = &puffy.Bc(SimT).calc,
-        .nthreads = p.nthreads,
-    };
-}
-
-/// Apply the optional params-file physics overrides onto the puffy module's
-/// overridable state. Every override is `null` (→ keep the validated `.puffy`
-/// value) unless the file sets it, so a plain `puffy.toml` run is unchanged and
-/// the `puffy_agn.toml` preset retargets to the koral_lite_puffy configuration.
-/// Called once at startup BEFORE `options()`/`makeGridNz`/`initAll` so the whole
-/// chain (grid extents, torus, opacities, floors, solver) agrees. Note: several
-/// koral_lite_puffy settings are NOT ports and cannot be matched here — see
-/// docs/PUFFY_AGN_DIVERGENCES.md.
-fn applyPhysicsOverrides(p: *const koral.Params) void {
-    // MKS2 coordinate shape
-    if (p.mksr0) |v| puffy.mp.mksr0 = v;
-    if (p.mksh0) |v| puffy.mp.mksh0 = v;
-    // torus entropy constant / β-norm target / atmosphere floors
-    if (p.lt_kappa) |v| puffy.lt_kappa = v;
-    if (p.maxbeta) |v| puffy.maxbeta = v;
-    if (p.rhoatmmin) |v| puffy.rhoatmmin = v;
-    if (p.atm_tgas) |v| puffy.atm_tgas = v;
-    if (p.atm_trad_init) |v| puffy.atm_trad_init = v;
-    if (p.atm_erad_factor) |v| puffy.atm_erad_factor = v;
-    // gas composition: giving hfrac switches to the formula-based μ's (no MU_*
-    // override), matching koral_lite_puffy's HFRAC/HEFRAC/MFRAC path.
-    if (p.hfrac) |h| puffy.composition = .{ .hfrac = h, .hefrac = p.hefrac orelse 0.0 };
-    // opacity channels
-    if (p.bremsstrahlung) |b| puffy.channels.bremsstrahlung = b;
-    if (p.kleinnishina) |b| puffy.channels.kleinnishina = b;
-    if (p.synchrotron_bridge) |b| puffy.channels.synchrotron_bridge = b;
-    if (p.scattering) |s| puffy.scattering = s;
-    // magnetic floor frame (C: B2RHOFLOORFRAME)
-    if (p.zamo_floor_frame) |z| puffy.floor_params.b2rhofloorframe = if (z) .zamoframe else .driftframe;
-    // implicit opacity-damping ladder (C: OPDAMPINIMPLICIT / OPDAMPMAXLEVELS / OPDAMPFACTOR)
-    if (p.opdamp_maxlevels) |n| puffy.impl_params.opdamp_maxlevels = n;
-    if (p.opdamp_factor) |v| puffy.impl_params.opdamp_factor = v;
-    // rmhd floors / ceilings
-    if (p.rhofloor) |v| puffy.floor_params.rhofloor = v;
-    if (p.uurhoratiomin) |v| puffy.floor_params.uurhoratiomin = v;
-    if (p.uurhoratiomax) |v| puffy.floor_params.uurhoratiomax = v;
-    if (p.b2rhoratiomax) |v| puffy.floor_params.b2rhoratiomax = v;
-    if (p.b2uuratiomax) |v| puffy.floor_params.b2uuratiomax = v;
-    if (p.gammamaxhd) |v| puffy.floor_params.gammamaxhd = v;
-    // radiation caps / floors
-    if (p.gammamaxrad) |v| puffy.rad_params.gammamaxrad = v;
-    if (p.eerhoratiomin) |v| puffy.rad_params.eerhoratiomin = v;
-    if (p.eerhoratiomax) |v| puffy.rad_params.eerhoratiomax = v;
-    if (p.eeuuratiomin) |v| puffy.rad_params.eeuuratiomin = v;
-    if (p.eeuuratiomax) |v| puffy.rad_params.eeuuratiomax = v;
-    // implicit rad–gas solver
-    if (p.radimpeps) |v| puffy.impl_params.eps = v;
-    if (p.radimpmaxiter) |v| puffy.impl_params.maxiter = v;
-}
+// The Sim.Options construction and the params-file physics overrides live in
+// puffy.zig (simOptions / applyPhysicsOverrides) so kdmp2silo reconstructs a
+// checkpoint's exact configuration from the same code path as this driver.
 
 /// Domain diagnostics for one output row (finite/NaN + fixup counters).
 const Diag = struct {
@@ -165,30 +79,38 @@ fn collectDiag(s: *const SimT) Diag {
     return d;
 }
 
-/// Compute the scalar row for the current state.
+/// Compute the scalar row for the current state — globally folded (MPI
+/// plan §8.3): each rank sums its slab and two collectives (one SUM with
+/// the counters riding along, one MAX) make every rank return the same
+/// row. Serially / at 1 rank the folds are identity and the values are
+/// BITWISE the pre-MPI ones. The counter columns are true ring totals
+/// (review §10.2: n_radimp_fail previously printed a rank-local value).
+/// Every rank must call this at the same point — it is collective.
 fn scalarRow(s: *SimT, dt: f64) !dump.ScalarRow {
     const r_horizon = koral.metric.core.rHorizonBL(s.opt.mp.a);
     const ix_h = scalars.radialShellIndex(SimT, s, r_horizon);
     const ix_l = scalars.radialShellIndex(SimT, s, r_lum);
-    const mass = scalars.totalMass(SimT, s);
-    const mdot = -(try scalars.mdot(SimT, s, ix_h)); // >0 for accretion
-    const lum = try scalars.lum(SimT, s, ix_l);
-    const h = scalars.scaleHeightAt(SimT, s, r_scale);
-    const maxb = try scalars.maxPmagPtot(SimT, s);
     const diag = collectDiag(s);
+    var counts = [3]f64{
+        @floatFromInt(diag.n_hd_fixup),
+        @floatFromInt(s.n_radimp_failures),
+        @floatFromInt(diag.n_nan),
+    };
+    const gs = try scalars.globalScalars(SimT, s, ix_h, ix_l, r_scale, counts[0..]);
     return .{
         .t = s.t,
         .dt = dt,
         .nstep = s.nstep,
-        .mass = mass,
-        .mdot = mdot,
-        .radlum = lum.radlum,
-        .totallum = lum.totallum,
-        .scaleheight = h,
-        .max_pmag_ptot = maxb,
-        .n_hd_fixup = diag.n_hd_fixup,
-        .n_radimp_fail = s.n_radimp_failures,
-        .n_nan = diag.n_nan,
+        .mass = gs.mass,
+        .mdot = -gs.mdot, // >0 for accretion (negation is FP-exact, so the
+        // fold-then-negate order matches serial's negate-the-total bitwise)
+        .radlum = gs.radlum,
+        .totallum = gs.totallum,
+        .scaleheight = gs.scaleheight,
+        .max_pmag_ptot = gs.max_pmag_ptot,
+        .n_hd_fixup = @intFromFloat(counts[0]),
+        .n_radimp_fail = @intFromFloat(counts[1]),
+        .n_nan = @intFromFloat(counts[2]),
     };
 }
 
@@ -212,6 +134,94 @@ fn writePrimDump(io: std.Io, out_dir: []const u8, allocator: std.mem.Allocator, 
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes[0..n] }) catch |err| {
         std.debug.print("puffy: cannot write {s}: {s}\n", .{ path, @errorName(err) });
     };
+}
+
+/// The ntz>1 checkpoint path (MPI plan §8.1): rank 0 writes the 44-byte
+/// header with GLOBAL dims, then every rank issues one collective
+/// `write_at_all` of its contiguous φ-slab at the closed-form offset. The
+/// file is byte-identical to what a serial run writes (gate 6a pins this),
+/// so checkpoints are mutually readable at any rank count.
+///
+/// Returns an error rather than swallowing one: every failure below is
+/// RANK-LOCAL (a per-rank allocation, this rank's path formatting), and
+/// bailing out silently would leave this rank outside a collective
+/// sequence its peers are already blocked in (`MPI_File_open`, then
+/// `write_at_all`) — a job-wide hang. Propagating instead lets the
+/// driver's `errdefer comm.abortJob` tear the job down, the same
+/// discipline every other rank-local failure here follows.
+fn writePrimDumpMpi(out_dir: []const u8, allocator: std.mem.Allocator, s: *const SimT, comm: *koral.comm.Comm, idx: u32) !void {
+    const g = s.decomp.global;
+    const body64 = try allocator.alloc(f64, dump.primBodySize(SimT, s) / 8);
+    defer allocator.free(body64);
+    const body = std.mem.sliceAsBytes(body64);
+    _ = dump.serializePrimBody(SimT, s, body);
+
+    var buf: [1024]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&buf, "{s}/prims{d:0>5}.kdmp", .{ out_dir, idx });
+    const total = dump.bodyOffset(g.nx, g.ny, SimT.nv, g.nz); // header + whole body
+    var f = comm.fileCreate(path, total) catch |err| {
+        std.debug.print("puffy: rank {d} cannot MPI-create {s}: {s}\n", .{ comm.rank(), path, @errorName(err) });
+        return err;
+    };
+    if (comm.rank() == 0) {
+        var hdr: [dump.header_size]u8 = undefined;
+        _ = dump.writeDumpHeader(&hdr, .{
+            .nx = @intCast(g.nx),
+            .ny = @intCast(g.ny),
+            .nz = @intCast(g.nz),
+            .nv = @intCast(SimT.nv),
+            .t = s.t,
+            .nstep = s.nstep,
+            .out_idx = idx,
+        });
+        comm.fileWriteAt(&f, 0, hdr[0..]);
+    }
+    comm.fileWriteAtAll(&f, dump.bodyOffset(g.nx, g.ny, SimT.nv, @intCast(s.decomp.tok)), body);
+    comm.fileClose(&f);
+}
+
+/// Collective restart read (plan §8.1 — read is symmetric): every rank
+/// reads the header at offset 0 (identical offsets are legal in
+/// read_at_all), validates it against the GLOBAL grid, then reads its own
+/// φ-slab. A serial-written checkpoint restarts at any rank count and
+/// vice versa (gate 6b).
+fn loadPrimDumpMpi(allocator: std.mem.Allocator, s: *SimT, comm: *koral.comm.Comm, path: []const u8) !dump.DumpHeader {
+    var pbuf: [1024]u8 = undefined;
+    const pathz = try std.fmt.bufPrintZ(&pbuf, "{s}", .{path});
+    var f = try comm.fileOpenRead(pathz);
+    defer comm.fileClose(&f);
+
+    // Length check FIRST — the serial path gets this free (it reads the
+    // whole file and compares the byte count), but a collective read is
+    // sized by the caller's buffer, not the file: MPI reads what is there,
+    // reports the shortfall only in a status we pass IGNORE for, and
+    // returns SUCCESS. Without this, a checkpoint truncated by a walltime
+    // kill loads its tail from uninitialized heap as primitives — and
+    // `--restart <dir>` picks the NEWEST checkpoint, which is exactly the
+    // file such a kill leaves partial. Verified: pre-guard, a 200 KB-short
+    // file restarted "successfully" and then died as `NanInFlux`, pointing
+    // the blame at the physics.
+    const fsize = comm.fileSize(&f);
+    if (fsize < dump.header_size) return error.Truncated;
+
+    var hdr: [dump.header_size]u8 = undefined;
+    comm.fileReadAtAll(&f, 0, hdr[0..]);
+    const h = try dump.parseDumpHeader(hdr[0..]);
+    const g = s.decomp.global;
+    if (h.nx != g.nx or h.ny != g.ny or h.nz != g.nz or h.nv != SimT.nv)
+        return error.DimMismatch;
+
+    // Header validated ⇒ the exact file size is determined. Same `<`
+    // comparison the serial loader uses. Every rank tests the same two
+    // numbers, so the ring accepts or rejects as one.
+    if (fsize < dump.bodyOffset(g.nx, g.ny, SimT.nv, g.nz)) return error.Truncated;
+
+    const body64 = try allocator.alloc(f64, dump.primBodySize(SimT, s) / 8);
+    defer allocator.free(body64);
+    const body = std.mem.sliceAsBytes(body64);
+    comm.fileReadAtAll(&f, dump.bodyOffset(g.nx, g.ny, SimT.nv, @intCast(s.decomp.tok)), body);
+    try dump.loadPrimBody(SimT, s, body);
+    return h;
 }
 
 /// Resolve the `--restart` argument to a concrete KDMP file path (caller owns
@@ -268,6 +278,15 @@ const Heartbeat = struct {
     prev_fail: u64 = 0,
     prev_iters: u64 = 0,
     prev_solves: u64 = 0,
+    /// ntz>1: implicit failures accumulated from the END-OF-STEP FOLD
+    /// (`Sim.n_radimp_fail_step`, a ring MAX), summed over this interval by
+    /// the main loop. This is the one heartbeat number that sees the whole
+    /// ring, and it costs nothing — the fold already happens every step.
+    /// It answers "is any rank in trouble", which the rank-local delta
+    /// cannot: a blow-up confined to another rank's φ-slab is invisible to
+    /// rank 0. (As a MAX-of-per-step it is a lower bound on the true total;
+    /// scalars.dat carries the exact SUM-folded count.)
+    ring_fail: u64 = 0,
 };
 
 /// Cells currently flagged for a HD / radiation u2p fixup — a snapshot of the
@@ -296,7 +315,22 @@ fn countFixupFlags(s: *const SimT) struct { hd: u64, rad: u64 } {
 ///   * tgpd — simulated GM/c³ per wall-day (projected reach at this speed)
 ///   * fail# — this interval's {radimp failures, HD fixups, rad fixups}
 ///   * imp# — implicit solves this interval and their mean Newton iterations
-/// No `mpi=` field (shared-memory only — no MPI communication to attribute).
+///   * mpi= — ntz>1 only (plan §8.3): the share of stepping wall-clock spent
+///     in MPI (halo exchange + collectives) since the last output row, from
+///     the PassTimers buckets — comm cost is visible from day one.
+///
+/// SCOPE under MPI: only the leading `fail#` number is ring-global (the
+/// end-of-step fold, accumulated by the caller); `znps` is the global zone
+/// count as C reports it; **everything else on this line is rank 0's own
+/// slab**, which the trailing `(r0)` marks. The exact global counters are
+/// in scalars.dat, folded at the output cadence.
+///
+/// Do NOT "fix" the remaining columns by adding a collective here: this
+/// function is called under `if (is_root and <wall-clock throttle>)`, so
+/// only rank 0 reaches it, and only on some steps — a collective inside
+/// would be entered by one rank alone and deadlock the job instantly. Any
+/// global value this line wants must be folded on the every-rank path (as
+/// `n_radimp_fail_step` already is) and merely *read* here.
 fn printHeartbeat(s: *const SimT, dt: f64, step_wall_ns: u64, hb: *Heartbeat) void {
     // GLOBAL zone count, as C does (problem.c:856 uses TNX*TNY*TNZ over
     // rank-0's wall time). Using the local slab would divide the reported
@@ -316,10 +350,27 @@ fn printHeartbeat(s: *const SimT, dt: f64, step_wall_ns: u64, hb: *Heartbeat) vo
         0;
     const fx = countFixupFlags(s);
 
-    std.debug.print(
-        "st #{d:>6} t={e:.5} dt={e:.2} znps={d:.0} tgpd={e:.2} fail# {d} {d} {d} imp# {d} it {d:.1}\n",
-        .{ s.nstep, s.t, dt, znps, tgpd, d_fail, fx.hd, fx.rad, d_solves, avg_it },
-    );
+    if (s.decomp.ntz > 1) {
+        // MPI share of the stepping wall since the last output reset.
+        var total_ns: u64 = 0;
+        for (s.timers.ns) |v| total_ns += v;
+        const comm_ns = s.timers.ns[@intFromEnum(koral.sim.Pass.halo)] +
+            s.timers.ns[@intFromEnum(koral.sim.Pass.collect)];
+        const mpi_pct: f64 = if (total_ns > 0)
+            100.0 * @as(f64, @floatFromInt(comm_ns)) / @as(f64, @floatFromInt(total_ns))
+        else
+            0;
+        std.debug.print(
+            "st #{d:>6} t={e:.5} dt={e:.2} znps={d:.0} tgpd={e:.2} fail# {d} {d} {d}(r0) imp# {d} it {d:.1}(r0) mpi={d:.1}%\n",
+            .{ s.nstep, s.t, dt, znps, tgpd, hb.ring_fail, fx.hd, fx.rad, d_solves, avg_it, mpi_pct },
+        );
+        hb.ring_fail = 0;
+    } else {
+        std.debug.print(
+            "st #{d:>6} t={e:.5} dt={e:.2} znps={d:.0} tgpd={e:.2} fail# {d} {d} {d} imp# {d} it {d:.1}\n",
+            .{ s.nstep, s.t, dt, znps, tgpd, d_fail, fx.hd, fx.rad, d_solves, avg_it },
+        );
+    }
 
     hb.prev_fail = s.n_radimp_failures;
     hb.prev_iters = s.n_radimp_iters;
@@ -372,12 +423,12 @@ pub fn main(init: std.process.Init) !void {
 
     // MASS and BHSPIN are the physical scales the params file may retarget
     // (e.g. the Sagittarius A* presets: ~4.3e6 M☉, and a ≈ 0.5–0.9). Set them
-    // before options()/initAll so the whole chain agrees: MASS drives the
+    // before simOptions()/initAll so the whole chain agrees: MASS drives the
     // torus thermo/opacity/radiation-floor unit scale (consts()/atmConsts()
-    // and — via options() → radforce.puffyMassChan(p.mass, …) — the stepping
+    // and — via simOptions() → radforce.puffyMassChan(p.mass, …) — the stepping
     // opacity);
     // BHSPIN (mp.a) drives the metric, the limotorus construction, and the
-    // dynamo's horizon/ISCO/Ωₖ. options() copies puffy.mp into the sim, so mp.a
+    // dynamo's horizon/ISCO/Ωₖ. simOptions() copies puffy.mp into the sim, so mp.a
     // must be set first. RMIN is recomputed from the spin BEFORE makeGridNz so
     // the inner radial boundary stays inside the shrinking Kerr horizon (a
     // params `rmin > 0` is an explicit override; otherwise rminForSpin keeps
@@ -393,12 +444,12 @@ pub fn main(init: std.process.Init) !void {
     // puffy.toml sets none of these and runs exactly as before; puffy_agn.toml
     // retargets to the koral_lite_puffy AGN config. This can set mp.mksr0, so
     // it must run before rminForSpin/makeGridNz (both read mp.mksr0).
-    applyPhysicsOverrides(&p);
+    puffy.applyPhysicsOverrides(&p);
     puffy.rmin = if (p.rmin > 0.0) p.rmin else puffy.rminForSpin(p.bhspin);
     if (p.rmax > 0.0) puffy.rmax = p.rmax; // else keep the fiducial 500 M
 
     // Load the MESA Rosseland opacity table (C: MESA_KAPPA) and point the
-    // opacity channels at it BEFORE options()/init read `puffy.channels`. Owned
+    // opacity channels at it BEFORE simOptions()/init read `puffy.channels`. Owned
     // here for the whole run; freed on return. The file is chosen to match the
     // gas composition (hfrac→X, mfrac→Z) — see koral_lite_puffy's exact-match
     // get_MESA_opacity_filename; here it is given explicitly in the toml.
@@ -451,16 +502,23 @@ pub fn main(init: std.process.Init) !void {
         );
         return err;
     };
-    if (ntz > 1 and restart_arg != null) {
-        if (is_root) std.debug.print("puffy: --restart under MPI lands in P4b — run serially or at 1 rank for now\n", .{});
-        return error.MpiRestartNotYetSupported;
-    }
-
-    var opt = options(&p);
+    var opt = puffy.simOptions(SimT, &p);
     opt.comm = &comm;
     opt.decomp = dc;
     var s = try SimT.init(allocator, dc.local, opt);
     defer s.deinit();
+    if (p.pin_threads) {
+        // Self-identifying per rank (cluster gate 7: the affinity report is
+        // the first thing to check — that each rank got its own cpuset and
+        // the team is bound inside it).
+        if (s.team) |tm| {
+            if (tm.pinnedWidth()) |w| {
+                std.debug.print("puffy: rank {d}: {d} threads pinned over {d} allowed cpus\n", .{ comm.rank(), p.nthreads, w });
+            } else {
+                std.debug.print("puffy: rank {d}: pin_threads requested but not applied (non-Linux host or no affinity mask)\n", .{comm.rank()});
+            }
+        }
+    }
     if (ntz > 1) {
         // Every rank announces its own placement — this is what you check
         // first on a cluster (that the ring is laid out as intended and
@@ -471,7 +529,7 @@ pub fn main(init: std.process.Init) !void {
             .{ comm.rank(), ntz, dc.tok, dc.tok + @as(i64, @intCast(dc.local.nz)), grid_global.nz, p.nthreads },
         );
         if (is_root) std.debug.print(
-            "puffy: MPI φ-ring of {d} ranks × {d} threads; file output (dumps/scalars/silo) is DISABLED under MPI until P4b\n",
+            "puffy: MPI φ-ring of {d} ranks × {d} threads; scalars.dat via rank 0, KDMP checkpoints collective (silo via kdmp2silo)\n",
             .{ ntz, p.nthreads },
         );
     }
@@ -524,24 +582,40 @@ pub fn main(init: std.process.Init) !void {
     var out_idx: u32 = 0;
     var restarted = false;
     if (restart_arg) |arg| {
+        // Each rank resolves independently — a directory picks the lexical
+        // max, which is deterministic regardless of iteration order, so the
+        // ring always agrees on the file.
         const file = try resolveRestartPath(io, allocator, arg);
         defer allocator.free(file);
-        const bytes = std.Io.Dir.cwd().readFileAlloc(io, file, allocator, .limited(1 << 30)) catch |err| {
-            std.debug.print("puffy: cannot read restart file '{s}': {s}\n", .{ file, @errorName(err) });
-            return err;
-        };
-        defer allocator.free(bytes);
-        const h = dump.loadPrimDump(SimT, &s, bytes) catch |err| {
-            std.debug.print("puffy: cannot load restart '{s}': {s}\n", .{ file, @errorName(err) });
-            return err;
+        const h = blk: {
+            if (ntz > 1) {
+                break :blk loadPrimDumpMpi(allocator, &s, &comm, file) catch |err| {
+                    std.debug.print("puffy: rank {d} cannot load restart '{s}': {s}\n", .{ comm.rank(), file, @errorName(err) });
+                    return err;
+                };
+            }
+            const bytes = std.Io.Dir.cwd().readFileAlloc(io, file, allocator, .limited(1 << 30)) catch |err| {
+                std.debug.print("puffy: cannot read restart file '{s}': {s}\n", .{ file, @errorName(err) });
+                return err;
+            };
+            defer allocator.free(bytes);
+            break :blk dump.loadPrimDump(SimT, &s, bytes) catch |err| {
+                std.debug.print("puffy: cannot load restart '{s}': {s}\n", .{ file, @errorName(err) });
+                return err;
+            };
         };
         s.t = h.t;
         s.nstep = h.nstep;
         out_idx = h.out_idx;
         restarted = true;
+        // Ghosts and dt are recomputed, never stored: exchanged z-ghost
+        // primitives first (no-op serially / at 1 rank), then set_bc's
+        // physical fills + p2u, then the dt guess (its min_d* operands were
+        // ring-folded in Sim.init).
+        s.exchangeHalos();
         try s.setBc(s.t, true);
         s.initTimestepGuess();
-        std.debug.print(
+        if (is_root) std.debug.print(
             "puffy: RESTARTED from {s} — t={e:.6}, nstep={d}, continuing from frame #{d}\n",
             .{ file, h.t, h.nstep, h.out_idx },
         );
@@ -564,15 +638,21 @@ pub fn main(init: std.process.Init) !void {
         (@floor(s.t / p.dtout1) + 1.0) * p.dtout1
     else
         p.tstart + p.dtout1;
-    if (ntz == 1) {
-        const row = try scalarRow(&s, 0.0);
-        try dump.appendScalarLine(&log, allocator, row);
-        writeScalars(io, p.out_dir, log.items);
+    {
+        const row = try scalarRow(&s, 0.0); // collective — every rank
+        if (is_root) {
+            try dump.appendScalarLine(&log, allocator, row);
+            writeScalars(io, p.out_dir, log.items);
+        }
         // A fresh run writes frame 0 as its first checkpoint; a restart already
         // has frame out_idx on disk, so it only re-seeds the diagnostics.
         if (!restarted) {
-            writePrimDump(io, p.out_dir, allocator, &s, out_idx);
-            writeSiloDump(io, p.out_dir, allocator, &s, out_idx);
+            if (ntz == 1) {
+                writePrimDump(io, p.out_dir, allocator, &s, out_idx);
+                writeSiloDump(io, p.out_dir, allocator, &s, out_idx);
+            } else {
+                try writePrimDumpMpi(p.out_dir, allocator, &s, &comm, out_idx);
+            }
         }
     }
 
@@ -605,6 +685,12 @@ pub fn main(init: std.process.Init) !void {
         };
         const step_end = koral.sim.nowNs();
 
+        // Accumulate the already-folded per-step failure count on the
+        // every-rank path — free (the fold happened inside step()), and the
+        // only way the rank-0 heartbeat can see trouble on another rank's
+        // slab, since the heartbeat itself must stay collective-free.
+        hb.ring_fail += s.n_radimp_fail_step;
+
         // C-style throttled per-step heartbeat (~1 Hz wall clock; rank 0).
         if (is_root and step_end - hb.last_ns > heartbeat_interval_ns) {
             printHeartbeat(&s, dt, step_end - step_t0, &hb);
@@ -618,15 +704,27 @@ pub fn main(init: std.process.Init) !void {
         const step_due = p.nout_step > 0 and s.nstep % p.nout_step == 0;
         if (time_due or step_due or s.nstep >= p.nstep_max) {
             out_idx += 1;
-            if (ntz == 1) {
-                const row = try scalarRow(&s, dt);
+            // Collective (two folds inside) — every rank computes the same
+            // globally-summed row. Every rank reaches this branch on the
+            // same step: the cadence keys off s.t/s.nstep, which the
+            // end-of-step fold keeps globally identical.
+            const row = try scalarRow(&s, dt);
+            if (is_root) {
                 try dump.appendScalarLine(&log, allocator, row);
                 writeScalars(io, p.out_dir, log.items);
-                // The KDMP dump is the restart checkpoint (C writes it every
-                // DTOUT1), so emit it on every output frame — a `--restart` on this
-                // out_dir then continues from the newest one.
+            }
+            // The KDMP dump is the restart checkpoint (C writes it every
+            // DTOUT1), so emit it on every output frame — a `--restart` on this
+            // out_dir then continues from the newest one. Under MPI it is the
+            // §8.1 collective write; silo waits for PMPIO (P4c — use
+            // kdmp2silo on the checkpoints meanwhile).
+            if (ntz == 1) {
                 writePrimDump(io, p.out_dir, allocator, &s, out_idx);
                 writeSiloDump(io, p.out_dir, allocator, &s, out_idx);
+            } else {
+                try writePrimDumpMpi(p.out_dir, allocator, &s, &comm, out_idx);
+            }
+            if (is_root) {
                 std.debug.print(
                     "puffy: t={d:.2} nstep={d} dt={e:.3} | Ṁ={e:.3} L={e:.3} H/R={d:.3} β⁻¹={e:.3} | nan={d} hdfix={d} radimpfail={d}\n",
                     .{ s.t, s.nstep, dt, row.mdot, row.radlum, row.scaleheight, row.max_pmag_ptot, row.n_nan, row.n_hd_fixup, row.n_radimp_fail },
@@ -634,38 +732,19 @@ pub fn main(init: std.process.Init) !void {
                 // P0 (parallelization plan §7): per-pass wall-clock table for
                 // the steps since the previous output row.
                 s.timers.printReport();
-                s.timers.reset();
-                if (row.n_nan > 0) {
-                    std.debug.print("puffy: NaN detected — aborting\n", .{});
-                    // Non-zero exit so batch scripts / CI treat a NaN-poisoned run
-                    // as a failure rather than success (P1 correctness).
-                    return error.NanDetected;
-                }
-            } else {
-                // P4a: no file output under MPI (§8 lands in P4b) — keep the
-                // cadence for the timer table (rank 0, halo/collect visible)
-                // and a rank-local NaN sentinel so blow-ups still abort.
-                const diag = collectDiag(&s);
-                // Fold the NaN scan across the ring so every rank makes the
-                // SAME abort decision and they leave together through the
-                // normal path. A rank-local `return` here would strand the
-                // others in the next collective (the errdefer MPI_Abort
-                // above is the backstop, but a coordinated exit gives a
-                // clean status and flushes everyone's diagnostics). Every
-                // rank reaches this branch on the same step: the cadence
-                // keys off s.t/s.nstep, which the end-of-step fold keeps
-                // globally identical.
-                const any_nan = s.globalMax(@floatFromInt(diag.n_nan)) > 0;
-                if (is_root) {
-                    std.debug.print("puffy: t={d:.2} nstep={d} dt={e:.3} | rank0 nan={d} hdfix={d} failstep={d}\n", .{ s.t, s.nstep, dt, diag.n_nan, diag.n_hd_fixup, s.n_radimp_fail_step });
-                    s.timers.printReport();
-                }
-                s.timers.reset();
-                if (any_nan) {
-                    if (diag.n_nan > 0)
-                        std.debug.print("puffy: NaN detected on rank {d} ({d} cells) — aborting\n", .{ comm.rank(), diag.n_nan });
-                    return error.NanDetected;
-                }
+            }
+            s.timers.reset();
+            // row.n_nan is the ring total, so every rank makes the SAME
+            // abort decision and they leave together through the normal
+            // path (a rank-local return would strand the others in the
+            // next collective; the errdefer MPI_Abort is the backstop).
+            if (row.n_nan > 0) {
+                const local = collectDiag(&s).n_nan;
+                if (local > 0)
+                    std.debug.print("puffy: NaN detected on rank {d} ({d} cells) — aborting\n", .{ comm.rank(), local });
+                // Non-zero exit so batch scripts / CI treat a NaN-poisoned run
+                // as a failure rather than success (P1 correctness).
+                return error.NanDetected;
             }
             if (time_due) next_out += p.dtout1;
         }

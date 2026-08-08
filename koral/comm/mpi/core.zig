@@ -30,3 +30,15 @@ pub extern fn MPI_Request_free(request: *abi.RawRequest) c_int;
 pub extern fn MPI_Allreduce(sendbuf: ?*const anyopaque, recvbuf: ?*anyopaque, count: c_int, datatype: abi.RawDatatype, op: abi.RawOp, comm: abi.RawComm) c_int;
 pub extern fn MPI_Barrier(comm: abi.RawComm) c_int;
 pub extern fn MPI_Wtime() f64;
+
+// MPI-IO (plan §8.1: the collective KDMP path — write_at_all at closed-form
+// offsets; no file views, no subarray types). The single-status pointer is
+// `align(1)` for the same reason MPI_Waitall's is: MPICH's STATUS_IGNORE
+// sentinel is the address 1.
+pub extern fn MPI_File_open(comm: abi.RawComm, filename: [*:0]const u8, amode: c_int, info: abi.RawInfo, fh: *abi.RawFile) c_int;
+pub extern fn MPI_File_close(fh: *abi.RawFile) c_int;
+pub extern fn MPI_File_set_size(fh: abi.RawFile, size: abi.Offset) c_int;
+pub extern fn MPI_File_get_size(fh: abi.RawFile, size: *abi.Offset) c_int;
+pub extern fn MPI_File_write_at(fh: abi.RawFile, offset: abi.Offset, buf: ?*const anyopaque, count: c_int, datatype: abi.RawDatatype, status: ?*align(1) abi.Status) c_int;
+pub extern fn MPI_File_write_at_all(fh: abi.RawFile, offset: abi.Offset, buf: ?*const anyopaque, count: c_int, datatype: abi.RawDatatype, status: ?*align(1) abi.Status) c_int;
+pub extern fn MPI_File_read_at_all(fh: abi.RawFile, offset: abi.Offset, buf: ?*anyopaque, count: c_int, datatype: abi.RawDatatype, status: ?*align(1) abi.Status) c_int;

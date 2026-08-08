@@ -9,6 +9,11 @@ pub const RawComm = c_int;
 pub const RawDatatype = c_int;
 pub const RawOp = c_int;
 pub const RawRequest = c_int;
+/// The one MPICH handle that is NOT an int: MPI_File comes from ROMIO
+/// (`typedef struct ADIOI_FileD *MPI_File;`, mpio.h) — a pointer in both
+/// families, unlike every other MPICH handle.
+pub const RawFile = ?*anyopaque;
+pub const RawInfo = c_int;
 
 /// MPICH MPI_Status: 20 bytes, MPI_SOURCE at offset 8.
 pub const Status = extern struct {
@@ -36,6 +41,12 @@ pub fn opMin() RawOp {
 pub fn opSum() RawOp {
     return 0x58000003;
 }
+pub fn dtByte() RawDatatype {
+    return 0x4c00010d;
+}
+pub fn infoNull() RawInfo {
+    return 0x1c000000;
+}
 
 /// MPI_STATUSES_IGNORE == (MPI_Status*)1 — a sentinel, never a Zig optional
 /// (plan §3.1: the two families disagree on the bit pattern). `align(1)` is
@@ -43,6 +54,12 @@ pub fn opSum() RawOp {
 /// Zig rejects the address 1 without it. The pointer is never dereferenced
 /// (MPI reads the value as a sentinel), so under-aligning it is sound.
 pub fn statusesIgnore() ?[*]align(1) Status {
+    return @ptrFromInt(1);
+}
+
+/// MPI_STATUS_IGNORE == (MPI_Status*)1 — same sentinel story as
+/// statusesIgnore above (the MPI-IO calls take a single-status pointer).
+pub fn statusIgnore() ?*align(1) Status {
     return @ptrFromInt(1);
 }
 

@@ -143,6 +143,11 @@ pub const Params = struct {
     // execution
     deterministic: bool = false,
     nthreads: usize = 1,
+    /// Bind each team thread to one cpu of the process affinity mask (the
+    /// cgroup cpuset under Slurm — MPI plan P4b node-width hardening).
+    /// Linux only, inert elsewhere; no effect on any FP result. Cluster
+    /// presets turn this on; default off so laptop runs schedule freely.
+    pin_threads: bool = false,
     /// MPI φ-ring size (MPI plan §5: 1 rank per node, φ-only decomposition;
     /// nx/ny/nz above are GLOBAL dims). 0 = auto (take the launched world
     /// size); a nonzero value must match it — the double entry makes the

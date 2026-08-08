@@ -9,6 +9,9 @@ pub const RawComm = ?*anyopaque;
 pub const RawDatatype = ?*anyopaque;
 pub const RawOp = ?*anyopaque;
 pub const RawRequest = ?*anyopaque;
+/// `typedef struct ompi_file_t *MPI_File;` (mpi.h:438, verified 5.0.9).
+pub const RawFile = ?*anyopaque;
+pub const RawInfo = ?*anyopaque;
 
 /// Open MPI MPI_Status: 24 bytes on LP64, MPI_SOURCE at offset 0.
 pub const Status = extern struct {
@@ -23,9 +26,11 @@ pub const request_null: RawRequest = null;
 
 extern var ompi_mpi_comm_world: u8;
 extern var ompi_mpi_double: u8;
+extern var ompi_mpi_byte: u8;
 extern var ompi_mpi_op_max: u8;
 extern var ompi_mpi_op_min: u8;
 extern var ompi_mpi_op_sum: u8;
+extern var ompi_mpi_info_null: u8;
 
 pub fn commWorld() RawComm {
     return @ptrCast(&ompi_mpi_comm_world);
@@ -42,11 +47,23 @@ pub fn opMin() RawOp {
 pub fn opSum() RawOp {
     return @ptrCast(&ompi_mpi_op_sum);
 }
+pub fn dtByte() RawDatatype {
+    return @ptrCast(&ompi_mpi_byte);
+}
+pub fn infoNull() RawInfo {
+    return @ptrCast(&ompi_mpi_info_null);
+}
 
 /// MPI_STATUSES_IGNORE == NULL in Open MPI. The `align(1)` matches the
 /// MPICH family's signature (which needs it — see abi_mpich.zig) so
 /// core.zig's extern declaration is family-invariant.
 pub fn statusesIgnore() ?[*]align(1) Status {
+    return null;
+}
+
+/// MPI_STATUS_IGNORE == NULL, like statusesIgnore (`align(1)` for the
+/// family-invariant core.zig signature — MPICH's sentinel is address 1).
+pub fn statusIgnore() ?*align(1) Status {
     return null;
 }
 

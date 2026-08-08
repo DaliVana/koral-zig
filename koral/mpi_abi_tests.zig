@@ -79,6 +79,30 @@ test "the two families are genuinely different ABIs" {
     try std.testing.expect(mpich.RawComm != ompi.RawComm);
 }
 
+test "MPI-IO ABI: file handles, info handles, and sentinels (both families)" {
+    // P4b additions (plan §8.1). MPI_File is a POINTER in both families —
+    // the one MPICH handle that is not an int (ROMIO's ADIOI_FileD*).
+    try std.testing.expectEqual(?*anyopaque, mpich.RawFile);
+    try std.testing.expectEqual(?*anyopaque, ompi.RawFile);
+    // MPI_Info stays on the family pattern (int vs pointer).
+    try std.testing.expectEqual(c_int, mpich.RawInfo);
+    try std.testing.expectEqual(?*anyopaque, ompi.RawInfo);
+    try std.testing.expectEqual(@as(c_int, 0x1c000000), mpich.infoNull());
+    // MPI_BYTE (MPICH hex constant; OMPI's is an extern symbol — signature
+    // checked below, never called here, keeping the artifact libmpi-free).
+    try std.testing.expectEqual(@as(c_int, 0x4c00010d), mpich.dtByte());
+    // MPI_STATUS_IGNORE: address 1 vs NULL — the same split (and the same
+    // align(1) requirement) as STATUSES_IGNORE.
+    try std.testing.expectEqual(@as(usize, 1), @intFromPtr(mpich.statusIgnore().?));
+    try std.testing.expectEqual(@as(?*align(1) ompi.Status, null), ompi.statusIgnore());
+    try std.testing.expectEqual(
+        ?*align(1) ompi.Status,
+        @typeInfo(@TypeOf(ompi.statusIgnore)).@"fn".return_type.?,
+    );
+    try std.testing.expectEqual(ompi.RawDatatype, @typeInfo(@TypeOf(ompi.dtByte)).@"fn".return_type.?);
+    try std.testing.expectEqual(ompi.RawInfo, @typeInfo(@TypeOf(ompi.infoNull)).@"fn".return_type.?);
+}
+
 test "both families satisfy the signatures core.zig declares" {
     // Signature-only checks — no call, so Open MPI's extern predefined
     // symbols are never referenced and the serial artifact stays libmpi-free.

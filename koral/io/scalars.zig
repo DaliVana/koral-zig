@@ -216,6 +216,64 @@ pub fn scaleHeightAt(comptime SimT: type, sim: *const SimT, radius: f64) f64 {
     return dynamo.scaleHeightAtIx(SimT, sim, ix);
 }
 
+pub const GlobalScalars = struct {
+    mass: f64,
+    /// net flux through the shell, NOT sign-flipped (the caller negates for
+    /// the Ṁ>0 accretion convention, exactly as with mdot()).
+    mdot: f64,
+    radlum: f64,
+    totallum: f64,
+    scaleheight: f64,
+    max_pmag_ptot: f64,
+};
+
+/// All the calc_scalars reductions with the MPI folds applied (plan §8.3):
+/// each rank sums its slab, then ONE Allreduce(SUM) of [mass, mdot, radlum,
+/// totallum, Σρ√g, Σρ√gΔθ²] ++ `extra_sums` (folded in place — the driver's
+/// diagnostic counters ride along, so an output cadence costs exactly two
+/// collectives) and one Allreduce(MAX) for pmag/ptot. Serially / at 1 rank
+/// the folds are identity, so the values are BITWISE the serial ones (the
+/// local loops and the scale-height finalize are byte-for-byte the serial
+/// path). r and θ are never decomposed, so the shell indices agree across
+/// ranks and every rank returns the same globals.
+pub fn globalScalars(
+    comptime SimT: type,
+    sim: *const SimT,
+    ix_mdot: i64,
+    ix_lum: i64,
+    r_scale: f64,
+    extra_sums: []f64,
+) relele.Error!GlobalScalars {
+    const mass = totalMass(SimT, sim);
+    const md = try mdot(SimT, sim, ix_mdot);
+    const l = try lum(SimT, sim, ix_lum);
+    const ix_s = radialShellIndex(SimT, sim, r_scale);
+    const parts = dynamo.scaleHeightPartsAtIx(SimT, sim, ix_s);
+    var maxb = [1]f64{try maxPmagPtot(SimT, sim)};
+
+    var sums = [6]f64{ mass, md, l.radlum, l.totallum, parts.sig, parts.sth };
+    if (sim.opt.comm) |c| {
+        // Two fixed collectives, same order on every rank (the extras are
+        // carried inside the first so the count never varies by caller).
+        var buf: [16]f64 = undefined;
+        std.debug.assert(sums.len + extra_sums.len <= buf.len);
+        @memcpy(buf[0..sums.len], &sums);
+        @memcpy(buf[sums.len..][0..extra_sums.len], extra_sums);
+        c.allreduceSum(buf[0 .. sums.len + extra_sums.len]);
+        @memcpy(&sums, buf[0..sums.len]);
+        @memcpy(extra_sums, buf[sums.len..][0..extra_sums.len]);
+        c.allreduceMax(maxb[0..]);
+    }
+    return .{
+        .mass = sums[0],
+        .mdot = sums[1],
+        .radlum = sums[2],
+        .totallum = sums[3],
+        .scaleheight = dynamo.scaleHeightFinalize(ix_s, sums[4], sums[5]),
+        .max_pmag_ptot = maxb[0],
+    };
+}
+
 /// max pmag/ptot over the domain — the BETANORMFULL quantity. Reports
 /// whether the (initially 1/20) pmag/ptot ratio is being held; 0 if no B field.
 pub fn maxPmagPtot(comptime SimT: type, sim: *const SimT) relele.Error!f64 {

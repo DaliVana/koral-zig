@@ -28,11 +28,24 @@ fn probeMpi(
 
     if (lib_dirs.items.len == 0 or (family_opt == null and inc_dirs.items.len == 0)) {
         const mpicc_found = b.findProgram(&.{"mpicc"}, &.{}) catch {
-            std.debug.print(
-                "build.zig: -Dmpi set but no mpicc found and no -Dmpi-lib given.\n" ++
-                    "  Load the cluster's MPI module first, or pass -Dmpi-lib=<dir-with-libmpi> -Dmpi-family=mpich|ompi.\n",
-                .{},
-            );
+            // Say which half is actually missing. `-Dmpi-lib` alone still
+            // lands here (the ABI family is undetectable without mpi.h or an
+            // explicit family), and reporting it as "no -Dmpi-lib given"
+            // sends the user to re-pass the flag they already passed.
+            if (lib_dirs.items.len > 0) {
+                std.debug.print(
+                    "build.zig: -Dmpi-lib given, but the MPI ABI family could not be determined:\n" ++
+                        "  no mpicc on PATH to probe, and neither -Dmpi-family nor -Dmpi-include was passed.\n" ++
+                        "  Add -Dmpi-family=mpich|ompi (or -Dmpi-include=<dir-with-mpi.h> to detect it).\n",
+                    .{},
+                );
+            } else {
+                std.debug.print(
+                    "build.zig: -Dmpi set but no mpicc found and no -Dmpi-lib given.\n" ++
+                        "  Load the cluster's MPI module first, or pass -Dmpi-lib=<dir-with-libmpi> -Dmpi-family=mpich|ompi.\n",
+                    .{},
+                );
+            }
             return error.MpiNotFound;
         };
         // findProgram resolves symlinks — but Open MPI's mpicc is a symlink
@@ -246,7 +259,26 @@ pub fn build(b: *std.Build) !void {
     b.step("res2kdmp", "convert a C restart (res####.head/.dat) to a KDMP checkpoint")
         .dependOn(&run_res2kdmp.step);
 
-    // mpi-gates: the MPI validation-ladder harness (plan §10 gates 2-5).
+    // kdmp2silo: convert KDMP checkpoints to VisIt-openable .silo files
+    // (MPI plan §8.2 Phase A — under MPI the run writes KDMP only; this
+    // serial tool replays them through io/silo.zig). Useful only with
+    // -Dsilo (it builds either way but refuses to run without it).
+    const kdmp2silo = b.addExecutable(.{
+        .name = "kdmp2silo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/kdmp2silo.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "koral", .module = koral }},
+        }),
+    });
+    b.installArtifact(kdmp2silo);
+    const run_kdmp2silo = b.addRunArtifact(kdmp2silo);
+    if (b.args) |args| run_kdmp2silo.addArgs(args);
+    b.step("kdmp2silo", "convert KDMP checkpoints to .silo for VisIt (needs -Dsilo)")
+        .dependOn(&run_kdmp2silo.step);
+
+    // mpi-gates: the MPI validation-ladder harness (plan §10 gates 2-6).
     // Build with -Dmpi (ideally -Doptimize=ReleaseSafe) and run under
     // mpiexec at 1..4 ranks; each rank recomputes the serial reference
     // in-process and compares its slab, so no files are involved. A serial

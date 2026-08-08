@@ -26,6 +26,17 @@ pub fn Field(comptime NV: usize) type {
             return .{ .data = data, .grid = grid, .allocator = allocator };
         }
 
+        /// Like init but WITHOUT the zero-fill: the caller must initialize
+        /// `data` before any read. Exists for NUMA first-touch (MPI plan
+        /// P4b): Sim.init zeroes these via the team, so the first write to
+        /// each page happens on a worker and the pages distribute across
+        /// the node's memory controllers instead of all landing on the
+        /// main thread's.
+        pub fn initUninitialized(allocator: std.mem.Allocator, grid: Grid) !Self {
+            const data = try allocator.alloc(f64, grid.cellCount() * NV);
+            return .{ .data = data, .grid = grid, .allocator = allocator };
+        }
+
         pub fn deinit(self: *Self) void {
             self.allocator.free(self.data);
             self.* = undefined;

@@ -74,11 +74,18 @@ pub fn FaceStore(comptime NV: usize) type {
         a: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator, g: Grid, dim: usize) !Self {
+            const self = try initUninitialized(allocator, g, dim);
+            @memset(self.data, 0);
+            return self;
+        }
+
+        /// init without the zero-fill — see Field.initUninitialized (NUMA
+        /// first-touch): Sim.init zeroes via the team instead.
+        pub fn initUninitialized(allocator: std.mem.Allocator, g: Grid, dim: usize) !Self {
             const nx_s = g.sx() + @intFromBool(dim == 0);
             const ny_s = g.sy() + @intFromBool(dim == 1);
             const nz_s = g.sz() + @intFromBool(dim == 2);
             const data = try allocator.alloc(f64, nx_s * ny_s * nz_s * NV);
-            @memset(data, 0);
             return .{
                 .data = data,
                 .nx_s = nx_s,

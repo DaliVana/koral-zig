@@ -567,7 +567,7 @@ test "metric cache: threaded fills are bit-identical to serial" {
     var serial = try MetricCache.init(a, g, opts);
     defer serial.deinit();
 
-    var team = try threading.Team.init(a, 4);
+    var team = try threading.Team.init(a, 4, false);
     defer team.deinit();
     var threaded = try MetricCache.init(a, g, .{
         .coords = opts.coords, .out_coords = opts.out_coords, .mp = opts.mp,
@@ -604,7 +604,7 @@ test "metric cache: threaded fills cover a 2D grid too (nz == 1)" {
     const opts = MetricCache.InitOpts{ .coords = .mks2, .out_coords = .mks2, .mp = .{ .a = 0.0 } };
     var serial = try MetricCache.init(a, g, opts);
     defer serial.deinit();
-    var team = try threading.Team.init(a, 4);
+    var team = try threading.Team.init(a, 4, false);
     defer team.deinit();
     var threaded = try MetricCache.init(a, g, .{ .coords = opts.coords, .out_coords = opts.out_coords, .mp = opts.mp, .team = team });
     defer threaded.deinit();

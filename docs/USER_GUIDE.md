@@ -122,7 +122,7 @@ using it).
 | `-Dslow-tests=true` | Enables the slow test bodies (convergence studies, soaks, the full-grid PUFFY t=0 keystone). See §5. |
 | `-Dtest-filter=<substr>` | Passed to `addTest` `.filters`; restrict the single test artifact to tests whose name contains the substring. Repeatable. |
 
-### Running under MPI (P4a — 3D wedges, node-to-node only)
+### Running under MPI (P4a+P4b — 3D wedges, node-to-node only)
 
 The MPI layer (docs/MPI_PLAN_2026-08-07.md) decomposes **φ only**: `nx/ny/nz`
 in the params file stay the GLOBAL dims, each rank evolves one contiguous
@@ -137,15 +137,35 @@ cores per node.
 zig build puffy -Dmpi -Doptimize=ReleaseFast
 mpiexec -n 4 zig-out/bin/puffy koral/problems/puffy/puffy3d.toml
 
-# The validation ladder (gates 2–5; gate 1 is in `zig build test`)
+# The validation ladder (gates 2–6; gate 1 is in `zig build test`)
 zig build mpi-gates -Dmpi -Doptimize=ReleaseSafe
 for n in 1 2 3 4; do mpiexec -n $n zig-out/bin/mpi-gates || break; done
 ```
 
-P4a limits: file output (scalars/KDMP/silo) and `--restart` are disabled at
-more than 1 rank (parallel I/O is P4b); rank 0 prints the heartbeat and the
-per-pass timer table, which gains `halo` (exchange wait) and `collect`
-(collectives) rows.
+I/O under MPI (P4b, plan §8):
+
+* **scalars.dat** — every column is a true ring-global value (two collectives
+  per output row: one SUM carrying the diagnostic counters, one MAX); rank 0
+  writes the file. Serially the folds are identity and the rows are bitwise
+  what they always were.
+* **KDMP checkpoints** — written collectively (`MPI_File_write_at_all`; each
+  rank's φ-slab is one contiguous byte range of the file). The file is
+  **byte-identical** to a serial run's checkpoint (gate 6 pins this), so
+  `--restart` works at ANY rank count in both directions: a serial/1-rank
+  checkpoint restarts at N ranks and vice versa, and the plain serial binary
+  reads MPI-written files.
+* **silo** — still serial-only at write time; convert MPI-run checkpoints
+  with `zig build kdmp2silo -Dsilo -Doptimize=ReleaseFast -- <params.toml>
+  <prims#####.kdmp | dumps-dir> [out-dir]` (same params file as the run, so
+  the mesh and derived fields are reconstructed identically). Native PMPIO
+  dumps land in P4c.
+
+The rank-0 heartbeat gains an `mpi=…%` field (share of stepping wall-clock in
+halo exchange + collectives since the last output row), and the per-pass
+timer table has `halo` and `collect` rows. `pin_threads = true` (Linux only)
+binds each team thread to one cpu of the rank's affinity mask — the cgroup
+cpuset under Slurm — and prints a per-rank confirmation; use it on clusters,
+skip it on laptops.
 
 ### What the `puffy` executable prints
 
@@ -286,6 +306,7 @@ retargets the run without a recompile; see `docs/PUFFY_AGN_DIVERGENCES.md`)
 | `deterministic` | `false` | Reserved determinism flag (currently unused). |
 | `nthreads` | `1` | Persistent worker team for all per-step passes; `1` is the bit-identical serial path (§8). |
 | `ntz` | `0` | MPI φ-ring size (`-Dmpi` builds, 3D only; §2 "Running under MPI"). `0` = auto (the launched rank count); nonzero must match it. `nx/ny/nz` stay global; each rank owns `nz/ntz` φ-cells. |
+| `pin_threads` | `false` | Bind each team thread to one cpu of the process affinity mask (the cgroup cpuset under Slurm — MPI plan P4b). Linux only, inert elsewhere; no effect on any FP result. Turn on for cluster runs. |
 
 ### PUFFY example (`koral/problems/puffy/puffy.toml`)
 

@@ -50,6 +50,7 @@ const precompute = @import("../../metric/precompute.zig");
 const quad = @import("../../math/quad.zig");
 const ct = @import("../../magn/ct.zig");
 const sim_mod = @import("../../sim.zig");
+const params_mod = @import("../../params.zig");
 
 const Grid = grid_mod.Grid;
 const Geometry = geometry.Geometry;
@@ -188,6 +189,103 @@ pub fn makeGridNz(nx: usize, ny: usize, nz: usize) Grid {
         .minz = -std.math.pi / 4.0, // MINZ = -PHIWEDGE/2, PHIWEDGE = π/2
         .maxz = std.math.pi / 4.0,
     });
+}
+
+/// Apply the optional params-file physics overrides onto this module's
+/// overridable state. Every override is `null` (→ keep the validated `.puffy`
+/// value) unless the file sets it, so a plain `puffy.toml` run is unchanged and
+/// the `puffy_agn.toml` preset retargets to the koral_lite_puffy configuration.
+/// Call once at startup BEFORE `simOptions()`/`makeGridNz`/`initAll` so the
+/// whole chain (grid extents, torus, opacities, floors, solver) agrees. Lives
+/// here (not in the driver) so tools that replay checkpoints — kdmp2silo —
+/// reconstruct the identical configuration from the same params file. Note:
+/// several koral_lite_puffy settings are NOT ports and cannot be matched here —
+/// see docs/PUFFY_AGN_DIVERGENCES.md.
+pub fn applyPhysicsOverrides(p: *const params_mod.Params) void {
+    // MKS2 coordinate shape
+    if (p.mksr0) |v| mp.mksr0 = v;
+    if (p.mksh0) |v| mp.mksh0 = v;
+    // torus entropy constant / β-norm target / atmosphere floors
+    if (p.lt_kappa) |v| lt_kappa = v;
+    if (p.maxbeta) |v| maxbeta = v;
+    if (p.rhoatmmin) |v| rhoatmmin = v;
+    if (p.atm_tgas) |v| atm_tgas = v;
+    if (p.atm_trad_init) |v| atm_trad_init = v;
+    if (p.atm_erad_factor) |v| atm_erad_factor = v;
+    // gas composition: giving hfrac switches to the formula-based μ's (no MU_*
+    // override), matching koral_lite_puffy's HFRAC/HEFRAC/MFRAC path.
+    if (p.hfrac) |h| composition = .{ .hfrac = h, .hefrac = p.hefrac orelse 0.0 };
+    // opacity channels
+    if (p.bremsstrahlung) |b| channels.bremsstrahlung = b;
+    if (p.kleinnishina) |b| channels.kleinnishina = b;
+    if (p.synchrotron_bridge) |b| channels.synchrotron_bridge = b;
+    if (p.scattering) |s| scattering = s;
+    // magnetic floor frame (C: B2RHOFLOORFRAME)
+    if (p.zamo_floor_frame) |z| floor_params.b2rhofloorframe = if (z) .zamoframe else .driftframe;
+    // implicit opacity-damping ladder (C: OPDAMPINIMPLICIT / OPDAMPMAXLEVELS / OPDAMPFACTOR)
+    if (p.opdamp_maxlevels) |n| impl_params.opdamp_maxlevels = n;
+    if (p.opdamp_factor) |v| impl_params.opdamp_factor = v;
+    // rmhd floors / ceilings
+    if (p.rhofloor) |v| floor_params.rhofloor = v;
+    if (p.uurhoratiomin) |v| floor_params.uurhoratiomin = v;
+    if (p.uurhoratiomax) |v| floor_params.uurhoratiomax = v;
+    if (p.b2rhoratiomax) |v| floor_params.b2rhoratiomax = v;
+    if (p.b2uuratiomax) |v| floor_params.b2uuratiomax = v;
+    if (p.gammamaxhd) |v| floor_params.gammamaxhd = v;
+    // radiation caps / floors
+    if (p.gammamaxrad) |v| rad_params.gammamaxrad = v;
+    if (p.eerhoratiomin) |v| rad_params.eerhoratiomin = v;
+    if (p.eerhoratiomax) |v| rad_params.eerhoratiomax = v;
+    if (p.eeuuratiomin) |v| rad_params.eeuuratiomin = v;
+    if (p.eeuuratiomax) |v| rad_params.eeuuratiomax = v;
+    // implicit rad–gas solver
+    if (p.radimpeps) |v| impl_params.eps = v;
+    if (p.radimpmaxiter) |v| impl_params.maxiter = v;
+}
+
+/// The Sim.Options for a PUFFY run of `SimT` under runtime params `p`
+/// (PROBLEMS/PUFFY/define.h choices; the comm/decomp fields are the
+/// caller's to fill). Shared by the driver and kdmp2silo so a replayed
+/// checkpoint sees the exact configuration the run had.
+pub fn simOptions(comptime SimT: type, p: *const params_mod.Params) SimT.Options {
+    // The physics param sets come from this module's overridable state
+    // (defaults = the validated `.puffy` constants; `applyPhysicsOverrides`
+    // may retarget them from the params file — the puffy_agn.toml preset).
+    // `channels` already carries the synchrotron-bridge flag and the MESA
+    // table pointer (set by applyPhysicsOverrides / the driver).
+    var opac = radforce.Params.puffyMassChan(p.mass, composition, channels);
+    // koral_lite_puffy leaves PR_KAPPAES undefined ⇒ calc_kappaes ≡ 0. The AGN
+    // preset turns scattering off (scattering=false), zeroing both the
+    // scattering opacity and the Compton four-force term (∝ κ_es).
+    if (!scattering) opac.kappaes = .none;
+    return .{
+        .coords = .mks2,
+        .mp = mp,
+        .gam = gam,
+        .tsteplim = p.tsteplim,
+        .floors = floor_params,
+        .rad = rad_params,
+        .opac = opac,
+        .implicit = impl_params,
+        .correct_polaraxis = true,
+        .nccorrectpolar = 2,
+        .radviscosity = true,
+        .dynamo = true,
+        // C: DORADIMPFIXUPS / REDUCEORDERATBH / DAMPRADWAVESPEEDNEARAXIS — off
+        // in the validated build, retargeted by the AGN preset (null = off).
+        .do_radimp_fixups = p.doradimpfixups orelse false,
+        .reduceorderatbh = p.reduceorderatbh orelse false,
+        .dampradwavespeednearaxis = p.dampradwavespeednearaxis orelse 0,
+        .bc_x = .specific,
+        .bc_y = .specific,
+        // C: PERIODIC_ZBC (PUFFY define.h:188). Irrelevant in 2D (nz==1 has
+        // no z-ghosts); for 3D wedges this was previously left at the .copy
+        // default — a latent pre-MPI bug (MPI plan §11.1-3), fixed in P4a.
+        .bc_z = .periodic,
+        .specific_bc = &Bc(SimT).calc,
+        .nthreads = p.nthreads,
+        .pin_threads = p.pin_threads,
+    };
 }
 
 pub fn consts() thermo.Consts {

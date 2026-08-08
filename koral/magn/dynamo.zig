@@ -231,12 +231,12 @@ fn scaleHeightCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
     }
 }
 
-/// The density-weighted scale height at a single radial index — the per-column
-/// body of calcScaleHeight as a pure read (no sim.scaleth write), so a
-/// diagnostic can query one radius without mutating the Sim or filling the
-/// whole grid. C's ix==0 quirk (raw, unnormalized sum) is preserved. Both
-/// paths route through here, so calcScaleHeight stays bit-identical.
-pub fn scaleHeightAtIx(comptime SimT: type, sim: *const SimT, ix: i64) f64 {
+/// The pre-√ column sums (Σρ√g, Σρ√gΔθ²) at one radial index over THIS
+/// rank's θ(,φ) column — the fold operands of the scale-height reduction.
+/// Split out so a globally-folded diagnostic (io/scalars.zig under MPI)
+/// can Allreduce(SUM) them before the finalize; the accumulation order is
+/// the load-bearing part (iy outer, iz inner — matches partialSumCols).
+pub fn scaleHeightPartsAtIx(comptime SimT: type, sim: *const SimT, ix: i64) struct { sig: f64, sth: f64 } {
     const L = SimT.Layout;
     const rho_i = comptime L.index(.rho);
     const ny = sim.nyi();
@@ -258,8 +258,24 @@ pub fn scaleHeightAtIx(comptime SimT: type, sim: *const SimT, ix: i64) f64 {
             scaleth += rho * gd * dth * dth;
         }
     }
-    // C quirk: the innermost radial index is left unnormalized
-    return if (ix > 0) @sqrt(scaleth / sigma) else scaleth;
+    return .{ .sig = sigma, .sth = scaleth };
+}
+
+/// The C finalize: √(Σρ√gΔθ²/Σρ√g), except the innermost radial index is
+/// left as the raw sum (C's `gix>0` quirk; toi==0 identically, so the
+/// local test IS the global one).
+pub fn scaleHeightFinalize(ix: i64, sig: f64, sth: f64) f64 {
+    return if (ix > 0) @sqrt(sth / sig) else sth;
+}
+
+/// The density-weighted scale height at a single radial index — the per-column
+/// body of calcScaleHeight as a pure read (no sim.scaleth write), so a
+/// diagnostic can query one radius without mutating the Sim or filling the
+/// whole grid. C's ix==0 quirk (raw, unnormalized sum) is preserved. Both
+/// paths route through here, so calcScaleHeight stays bit-identical.
+pub fn scaleHeightAtIx(comptime SimT: type, sim: *const SimT, ix: i64) f64 {
+    const parts = scaleHeightPartsAtIx(SimT, sim, ix);
+    return scaleHeightFinalize(ix, parts.sig, parts.sth);
 }
 
 /// C: calc_angle_brbphibsq (magn.c:804), non-avg path — the field pitch

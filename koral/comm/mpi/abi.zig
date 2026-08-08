@@ -27,14 +27,19 @@ pub const RawComm = impl.RawComm;
 pub const RawDatatype = impl.RawDatatype;
 pub const RawOp = impl.RawOp;
 pub const RawRequest = impl.RawRequest;
+pub const RawFile = impl.RawFile;
+pub const RawInfo = impl.RawInfo;
 pub const Status = impl.Status;
 pub const request_null = impl.request_null;
 pub const commWorld = impl.commWorld;
 pub const dtDouble = impl.dtDouble;
+pub const dtByte = impl.dtByte;
 pub const opMax = impl.opMax;
 pub const opMin = impl.opMin;
 pub const opSum = impl.opSum;
+pub const infoNull = impl.infoNull;
 pub const statusesIgnore = impl.statusesIgnore;
+pub const statusIgnore = impl.statusIgnore;
 pub const inPlace = impl.inPlace;
 
 // Family-invariant constants (identical in MPICH and Open MPI).
@@ -43,3 +48,14 @@ pub const thread_single: c_int = 0;
 pub const thread_funneled: c_int = 1;
 pub const thread_serialized: c_int = 2;
 pub const thread_multiple: c_int = 3;
+
+/// MPI_Offset is `long long` in both families (OMPI mpi.h:433 verified;
+/// MPICH via ROMIO's ADIO_Offset) — file offsets are plain i64.
+pub const Offset = i64;
+
+// MPI_MODE_* file-open amodes: both families inherit ROMIO's values
+// (OMPI mpi.h:589-598 verified; MPICH mpio.h identical).
+pub const mode_create: c_int = 1;
+pub const mode_rdonly: c_int = 2;
+pub const mode_wronly: c_int = 4;
+pub const mode_rdwr: c_int = 8;

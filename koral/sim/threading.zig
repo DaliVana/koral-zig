@@ -88,6 +88,46 @@ const futex = struct {
 
 const inf = std.math.inf(f64);
 
+// ---- per-core pinning (MPI plan P4b: node-width hardening) ----------------
+//
+// Linux-only: the mask sched_getaffinity(0) reports is the cgroup cpuset the
+// launcher (Slurm/mpiexec) granted this rank, so distributing threads over
+// exactly those ids stays inside the allocation by construction. The main
+// thread takes the first allowed cpu and helper i the (i+1)-th, wrapping if
+// the team is wider than the mask. Elsewhere (macOS has no thread→core
+// binding API) both helpers are no-ops and the flag is inert — the efficacy
+// measurement at 128/192 threads is a cluster-CI item, not a laptop one.
+
+/// The allowed CPU ids in mask order, or null (non-Linux / error / empty).
+fn allowedCpus(allocator: std.mem.Allocator) ?[]u32 {
+    if (comptime builtin.os.tag != .linux) return null;
+    var set: std.os.linux.cpu_set_t = @splat(0);
+    if (std.os.linux.sched_getaffinity(0, @sizeOf(std.os.linux.cpu_set_t), &set) != 0) return null;
+    const total: usize = std.os.linux.CPU_COUNT(set);
+    if (total == 0) return null;
+    const cpus = allocator.alloc(u32, total) catch return null;
+    var k: usize = 0;
+    for (set, 0..) |word, wi| {
+        var bit: usize = 0;
+        while (bit < @bitSizeOf(usize)) : (bit += 1) {
+            if (word & (@as(usize, 1) << @intCast(bit)) != 0) {
+                cpus[k] = @intCast(wi * @bitSizeOf(usize) + bit);
+                k += 1;
+            }
+        }
+    }
+    std.debug.assert(k == total);
+    return cpus;
+}
+
+/// Bind the CALLING thread to one cpu (pid 0 = self). Best-effort.
+fn pinSelf(cpu: u32) void {
+    if (comptime builtin.os.tag != .linux) return;
+    var set: std.os.linux.cpu_set_t = @splat(0);
+    set[cpu / @bitSizeOf(usize)] = @as(usize, 1) << @intCast(cpu % @bitSizeOf(usize));
+    std.os.linux.sched_setaffinity(0, &set) catch {};
+}
+
 /// Per-worker scratch merged after each region. Passes use what they need:
 /// the implicit solver its counters, the wavespeed pass its CFL-denominator
 /// partials; everything else only the error slot. All merges are
@@ -129,6 +169,9 @@ pub const Team = struct {
     helpers: []std.Thread,
     /// one publish slot per helper, written once at that helper's region end
     results: []ChunkResult,
+    /// pin=true on Linux: the allowed-cpu list each thread binds into
+    /// (main → [0], helper i → [(i+1) % len]); null = no pinning.
+    pin_cpus: ?[]u32 = null,
 
     // region state — plain fields published by the release-increment of
     // `gen` and read by helpers after their acquire-load of it
@@ -145,8 +188,10 @@ pub const Team = struct {
     n_running: std.atomic.Value(u32) = .init(0),
 
     /// Spawn `nthreads − 1` helpers (the main thread is worker 0). If some
-    /// spawns fail the team just runs narrower — never an error.
-    pub fn init(allocator: std.mem.Allocator, nthreads: usize) !*Team {
+    /// spawns fail the team just runs narrower — never an error. `pin`
+    /// binds each thread (main included) to one cpu of the process's
+    /// affinity mask (Linux; no-op elsewhere — see allowedCpus above).
+    pub fn init(allocator: std.mem.Allocator, nthreads: usize, pin: bool) !*Team {
         const n_helpers = @max(nthreads, 1) - 1;
         const team = try allocator.create(Team);
         errdefer allocator.destroy(team);
@@ -155,12 +200,22 @@ pub const Team = struct {
         const helpers = try allocator.alloc(std.Thread, n_helpers);
 
         team.* = .{ .allocator = allocator, .helpers = helpers[0..0], .results = results };
+        if (pin) {
+            // Before any spawn, so every helperMain sees the final list.
+            team.pin_cpus = allowedCpus(allocator);
+            if (team.pin_cpus) |cpus| pinSelf(cpus[0]);
+        }
         for (0..n_helpers) |i| {
             const t = std.Thread.spawn(.{}, helperMain, .{ team, i }) catch break;
             helpers[i] = t;
             team.helpers = helpers[0 .. i + 1];
         }
         return team;
+    }
+
+    /// How many distinct cpus the team is pinned over (null = not pinned).
+    pub fn pinnedWidth(team: *const Team) ?usize {
+        return if (team.pin_cpus) |c| c.len else null;
     }
 
     pub fn deinit(team: *Team) void {
@@ -171,6 +226,7 @@ pub const Team = struct {
         const allocator = team.allocator;
         allocator.free(team.helpers.ptr[0..team.results.len]);
         allocator.free(team.results);
+        if (team.pin_cpus) |cpus| allocator.free(cpus);
         allocator.destroy(team);
     }
 
@@ -207,6 +263,7 @@ pub const Team = struct {
     }
 
     fn helperMain(team: *Team, wid: usize) void {
+        if (team.pin_cpus) |cpus| pinSelf(cpus[(wid + 1) % cpus.len]);
         var seen: u32 = 0;
         while (true) {
             // park until a new region (or shutdown) bumps the generation
@@ -302,7 +359,7 @@ pub fn parallelZero(team: ?*Team, dst: []f64) void {
 
 test "Team: dynamic tiles cover the range exactly once" {
     const allocator = std.testing.allocator;
-    const team = try Team.init(allocator, 4);
+    const team = try Team.init(allocator, 4, false);
     defer team.deinit();
 
     var hits = [_]std.atomic.Value(u32){.init(0)} ** 103;
@@ -328,7 +385,7 @@ test "Team: dynamic tiles cover the range exactly once" {
 
 test "Team: reductions merge like serial" {
     const allocator = std.testing.allocator;
-    const team = try Team.init(allocator, 3);
+    const team = try Team.init(allocator, 3, false);
     defer team.deinit();
 
     const Ctx = struct {};
@@ -354,7 +411,7 @@ test "Team: reductions merge like serial" {
 
 test "parallelCopy and parallelZero" {
     const allocator = std.testing.allocator;
-    const team = try Team.init(allocator, 4);
+    const team = try Team.init(allocator, 4, false);
     defer team.deinit();
 
     const n = 10_007;

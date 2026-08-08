@@ -44,6 +44,21 @@ pub fn primDumpSize(comptime SimT: type, sim: *const SimT) usize {
     return header_size + ncell * SimT.nv * 8;
 }
 
+/// Bytes of one rank's body slab (the local interior, no header).
+pub fn primBodySize(comptime SimT: type, sim: *const SimT) usize {
+    return sim.grid.nx * sim.grid.ny * sim.grid.nz * SimT.nv * 8;
+}
+
+/// Byte offset of global z-plane `tok` in a KDMP file. The body is
+/// `p[iz][iy][ix][iv]` global row-major, so a φ-slab (r and θ whole — the
+/// φ-only decomposition) is one contiguous byte range: this offset is the
+/// whole addressing scheme of the collective write/read (MPI plan §8.1 —
+/// no file views, no subarray types). Serial ⇔ MPI checkpoints are
+/// therefore the same bytes, and restart works at any rank count.
+pub fn bodyOffset(nx: usize, ny: usize, nv: usize, tok: usize) u64 {
+    return @as(u64, header_size) + @as(u64, tok) * @as(u64, nx) * ny * nv * 8;
+}
+
 /// Write the 44-byte KDMP header into `out` (single source of truth shared by
 /// the live dump and the res2kdmp converter). Returns bytes written.
 pub fn writeDumpHeader(out: []u8, h: DumpHeader) usize {
@@ -93,6 +108,16 @@ pub fn serializePrimDump(comptime SimT: type, sim: *const SimT, out_idx: u32, ou
         .out_idx = out_idx,
     });
 
+    w += serializePrimBody(SimT, sim, out[w..]);
+    return w;
+}
+
+/// Serialize just the body — this sim's domain interior, iv fastest, iz
+/// slowest — into `out` (≥ primBodySize). Under MPI this is one rank's
+/// contiguous slab of the global file body (see bodyOffset); serially it
+/// is the whole body. Returns bytes written.
+pub fn serializePrimBody(comptime SimT: type, sim: *const SimT, out: []u8) usize {
+    var w: usize = 0;
     var iz: i64 = 0;
     while (iz < sim.nzi()) : (iz += 1) {
         var iy: i64 = 0;
@@ -122,7 +147,17 @@ pub fn loadPrimDump(comptime SimT: type, sim: *SimT, bytes: []const u8) !DumpHea
     const ncell = @as(usize, h.nx) * h.ny * h.nz;
     if (bytes.len < header_size + ncell * SimT.nv * 8) return error.Truncated;
 
-    var r: usize = header_size;
+    try loadPrimBody(SimT, sim, bytes[header_size..]);
+    return h;
+}
+
+/// Load just a body slab — this sim's domain interior — from `bytes`
+/// (≥ primBodySize; under MPI, the rank's slab read collectively at
+/// bodyOffset). Same initCell semantics as loadPrimDump; the caller has
+/// already validated the header against the GLOBAL grid.
+pub fn loadPrimBody(comptime SimT: type, sim: *SimT, bytes: []const u8) !void {
+    if (bytes.len < primBodySize(SimT, sim)) return error.Truncated;
+    var r: usize = 0;
     var iz: i64 = 0;
     while (iz < sim.nzi()) : (iz += 1) {
         var iy: i64 = 0;
@@ -135,7 +170,6 @@ pub fn loadPrimDump(comptime SimT: type, sim: *SimT, bytes: []const u8) !DumpHea
             }
         }
     }
-    return h;
 }
 
 // ---- little-endian primitives ----------------------------------------------
@@ -198,6 +232,28 @@ pub fn appendScalarLine(list: *std.ArrayList(u8), allocator: std.mem.Allocator, 
         row.max_pmag_ptot, row.n_hd_fixup,    row.n_radimp_fail, row.n_nan,
     });
     try list.appendSlice(allocator, line);
+}
+
+test "bodyOffset: slabs tile the body contiguously and exactly" {
+    // 4 ranks × 3 planes of a 384×360 r×θ grid: each slab starts where the
+    // previous ended, plane 0 starts right after the header, and the last
+    // slab ends at the total file size.
+    const nx = 384;
+    const ny = 360;
+    const nv = 13;
+    const plane: u64 = nx * ny * nv * 8;
+    try std.testing.expectEqual(@as(u64, header_size), bodyOffset(nx, ny, nv, 0));
+    var tok: usize = 0;
+    while (tok < 12) : (tok += 3) {
+        try std.testing.expectEqual(
+            bodyOffset(nx, ny, nv, tok) + 3 * plane,
+            bodyOffset(nx, ny, nv, tok + 3),
+        );
+    }
+    try std.testing.expectEqual(
+        @as(u64, header_size) + 12 * plane,
+        bodyOffset(nx, ny, nv, 12),
+    );
 }
 
 test "KDMP header round-trips through write/parse" {

@@ -1,4 +1,4 @@
-//! MPI validation-ladder harness (MPI plan §10, gates 2–5). Gate 1 (the
+//! MPI validation-ladder harness (MPI plan §10, gates 2–6). Gate 1 (the
 //! decompose()/Grid arithmetic) lives in the unit test suite; this binary
 //! covers everything that needs live ranks. Each rank recomputes the serial
 //! reference IN-PROCESS (serial Zig is the oracle — there are no C-MPI
@@ -41,6 +41,7 @@ const LM = SimM.Layout;
 const SimP = koral.Sim(koral.config.puffy);
 
 const puffy = koral.problems.puffy;
+const scalars_mod = koral.io.scalars;
 const invert = koral.solve.invert;
 const invert_rad = koral.solve.invert_rad;
 const implicit = koral.solve.implicit;
@@ -599,6 +600,214 @@ fn gate5(allocator: std.mem.Allocator, comm: *Comm) !bool {
     expectMatchesSerial(&g, "betanorm_fac", &.{fac_ref}, &.{fac_s}, 1e-6);
     // And the per-step fold again, here under the full production physics.
     try expectRanksAgree(&g, comm, allocator, "tstepden", &.{ s.tstepdenmax, s.tstepdenmin });
+
+    // ---- P4b: the folded scalar diagnostics (io/scalars.zig globalScalars,
+    // the scalars.dat row) vs the serial values — plan gate 6's "scalars
+    // match serial at tolerance". Post-step, so the edge-band divergence is
+    // already in the sums: the domain-integrated quantities (mass, lum) are
+    // bulk-dominated and sit at ~1e-9; mdot's shell is the innermost radial
+    // ring (deep x-edge band, branch-flip territory) and the β-max is an
+    // edge-band argmax like BETANORM — both get the looser bound.
+    const r_hor = koral.metric.core.rHorizonBL(puffy.mp.a);
+    const ix_h = scalars_mod.radialShellIndex(SimP, &ref, r_hor);
+    const ix_l = scalars_mod.radialShellIndex(SimP, &ref, 5000.0);
+    var no_extra_r = [0]f64{};
+    var no_extra_s = [0]f64{};
+    const gref = try scalars_mod.globalScalars(SimP, &ref, ix_h, ix_l, 15.0, no_extra_r[0..]);
+    const gs = try scalars_mod.globalScalars(SimP, &s, ix_h, ix_l, 15.0, no_extra_s[0..]);
+    const svals = [6]f64{ gs.mass, gs.mdot, gs.radlum, gs.totallum, gs.scaleheight, gs.max_pmag_ptot };
+    try expectRanksAgree(&g, comm, allocator, "scalars", svals[0..]);
+    expectMatchesSerial(&g, "scalars_bulk", &.{ gref.mass, gref.radlum, gref.totallum, gref.scaleheight }, &.{ gs.mass, gs.radlum, gs.totallum, gs.scaleheight }, 1e-6);
+    expectMatchesSerial(&g, "scalars_edge", &.{ gref.mdot, gref.max_pmag_ptot }, &.{ gs.mdot, gs.max_pmag_ptot }, 1e-3);
+    return g.finish();
+}
+
+// ---- gate 6: collective KDMP I/O + restart cross-rank-count ----------------
+//
+// Plan §8.1's whole claim is byte-level: the body is global row-major, a
+// φ-slab is contiguous, so the collectively-written file must equal the
+// serial writer's output BYTE FOR BYTE — at any rank count. Proving that
+// (6a) plus the symmetric collective read (6b) gives write-at-N/read-at-M
+// equivalence for ALL N,M transitively, without launching extra processes.
+// 6c then re-runs the driver's restart sequence (load → exchange → set_bc →
+// dt guess) and continues against an unbroken run: the rebuilt state is
+// bit-identical to the freshly-initialized one (u = p2u(p) both ways), so
+// the gate-3 claims (central bitwise) must keep holding after the restart.
+
+const scratch_dir = ".zig-cache/mpi-gates-scratch";
+
+/// The driver's writePrimDumpMpi sequence (main.zig), generic over SimT:
+/// rank 0 writes the global header, everyone write_at_all's its slab.
+fn writeKdmpCollective(comptime SimT: type, allocator: std.mem.Allocator, comm: *Comm, s: *const SimT, path: [*:0]const u8, idx: u32) !void {
+    const g = s.decomp.global;
+    const body64 = try allocator.alloc(f64, koral.io.dump.primBodySize(SimT, s) / 8);
+    defer allocator.free(body64);
+    const body = std.mem.sliceAsBytes(body64);
+    _ = koral.io.dump.serializePrimBody(SimT, s, body);
+
+    var f = try comm.fileCreate(path, koral.io.dump.bodyOffset(g.nx, g.ny, SimT.nv, g.nz));
+    if (comm.rank() == 0) {
+        var hdr: [koral.io.dump.header_size]u8 = undefined;
+        _ = koral.io.dump.writeDumpHeader(&hdr, .{
+            .nx = @intCast(g.nx),
+            .ny = @intCast(g.ny),
+            .nz = @intCast(g.nz),
+            .nv = @intCast(SimT.nv),
+            .t = s.t,
+            .nstep = s.nstep,
+            .out_idx = idx,
+        });
+        comm.fileWriteAt(&f, 0, hdr[0..]);
+    }
+    comm.fileWriteAtAll(&f, koral.io.dump.bodyOffset(g.nx, g.ny, SimT.nv, @intCast(s.decomp.tok)), body);
+    comm.fileClose(&f);
+}
+
+/// The driver's loadPrimDumpMpi sequence: collective header + slab read.
+fn readKdmpCollective(comptime SimT: type, allocator: std.mem.Allocator, comm: *Comm, s: *SimT, path: [*:0]const u8) !koral.io.dump.DumpHeader {
+    var f = try comm.fileOpenRead(path);
+    defer comm.fileClose(&f);
+    // Length guard, exactly as the driver does it (a collective read is
+    // sized by the buffer, not the file, and reports the shortfall only in
+    // the status we pass IGNORE for — so a truncated checkpoint would
+    // otherwise load uninitialized heap as primitives).
+    const fsize = comm.fileSize(&f);
+    if (fsize < koral.io.dump.header_size) return error.Truncated;
+    var hdr: [koral.io.dump.header_size]u8 = undefined;
+    comm.fileReadAtAll(&f, 0, hdr[0..]);
+    const h = try koral.io.dump.parseDumpHeader(hdr[0..]);
+    const g = s.decomp.global;
+    if (h.nx != g.nx or h.ny != g.ny or h.nz != g.nz or h.nv != SimT.nv)
+        return error.DimMismatch;
+    if (fsize < koral.io.dump.bodyOffset(g.nx, g.ny, SimT.nv, g.nz)) return error.Truncated;
+    const body64 = try allocator.alloc(f64, koral.io.dump.primBodySize(SimT, s) / 8);
+    defer allocator.free(body64);
+    const body = std.mem.sliceAsBytes(body64);
+    comm.fileReadAtAll(&f, koral.io.dump.bodyOffset(g.nx, g.ny, SimT.nv, @intCast(s.decomp.tok)), body);
+    try koral.io.dump.loadPrimBody(SimT, s, body);
+    return h;
+}
+
+fn gate6(allocator: std.mem.Allocator, io: std.Io, comm: *Comm, dc: koral.comm.Decomp) !bool {
+    var g = Gate{ .rank = comm.rank(), .name = "gate6 kdmp-mpi-io" };
+    const dump = koral.io.dump;
+    const grid = minkGrid();
+
+    if (comm.rank() == 0) std.Io.Dir.cwd().createDirPath(io, scratch_dir) catch {};
+    comm.barrier();
+    const path_a = scratch_dir ++ "/gate6_mpi.kdmp"; // written collectively
+    const path_b = scratch_dir ++ "/gate6_serial.kdmp"; // written by the serial writer
+
+    var ref = try SimM.init(allocator, grid, minkOpts(null, null));
+    defer ref.deinit();
+    try initMinkBox(&ref);
+
+    // The expected file: the SERIAL writer's bytes (the golden layout every
+    // rank count must reproduce). Post-init domains are bit-identical across
+    // decompositions (initCell from global coordinates), so this comparison
+    // is exact, not tolerance-based.
+    const exp = try allocator.alloc(u8, dump.primDumpSize(SimM, &ref));
+    defer allocator.free(exp);
+    _ = dump.serializePrimDump(SimM, &ref, 7, exp);
+
+    // (6a) collective write ≡ serial bytes.
+    {
+        var s = try SimM.init(allocator, dc.local, minkOpts(comm, dc));
+        defer s.deinit();
+        try initMinkBox(&s);
+        try writeKdmpCollective(SimM, allocator, comm, &s, path_a, 7);
+    }
+    comm.barrier(); // close is collective, but order the plain reads anyway
+    {
+        const got = try std.Io.Dir.cwd().readFileAlloc(io, path_a, allocator, .limited(1 << 30));
+        defer allocator.free(got);
+        g.expect(got.len == exp.len, "file size {d} != serial {d}", .{ got.len, exp.len });
+        if (got.len == exp.len and !std.mem.eql(u8, got, exp)) {
+            var first: usize = 0;
+            while (first < got.len and got[first] == exp[first]) first += 1;
+            g.expect(false, "collectively-written file diverges from serial bytes at offset {d}", .{first});
+        }
+    }
+
+    // (6b) serial-written file, collective read — the cross-rank-count
+    // restart direction (a 1-rank/serial checkpoint restarted at N ranks).
+    if (comm.rank() == 0)
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path_b, .data = exp }) catch |err| {
+            g.expect(false, "cannot write {s}: {s}", .{ path_b, @errorName(err) });
+        };
+    comm.barrier();
+    var s2 = try SimM.init(allocator, dc.local, minkOpts(comm, dc));
+    defer s2.deinit();
+    const h = try readKdmpCollective(SimM, allocator, comm, &s2, path_b);
+    g.expect(h.out_idx == 7 and h.nstep == 0 and h.t == 0.0, "header round-trip: idx {d} nstep {d} t {e}", .{ h.out_idx, h.nstep, h.t });
+    s2.t = h.t;
+    s2.nstep = h.nstep;
+    // The driver's restart rebuild: exchanged z-ghosts, physical BCs, dt guess.
+    s2.exchangeHalos();
+    try s2.setBc(s2.t, true);
+    s2.initTimestepGuess();
+    // Loaded state ≡ the freshly-initialized state, bitwise (p verbatim,
+    // u = p2u(p) both ways) — over the whole local domain, p and u.
+    {
+        var iz: i64 = 0;
+        while (iz < s2.nzi()) : (iz += 1) {
+            var iy: i64 = 0;
+            while (iy < s2.nyi()) : (iy += 1) {
+                var ix: i64 = 0;
+                while (ix < s2.nxi()) : (ix += 1) {
+                    for (0..SimM.nv) |iv| {
+                        const gz = dc.tok + iz;
+                        if (s2.p.get(iv, ix, iy, iz) != ref.p.get(iv, ix, iy, gz))
+                            g.expect(false, "restart p iv={d} ({d},{d},{d})", .{ iv, ix, iy, iz });
+                        if (s2.u.get(iv, ix, iy, iz) != ref.u.get(iv, ix, iy, gz))
+                            g.expect(false, "restart u iv={d} ({d},{d},{d})", .{ iv, ix, iy, iz });
+                    }
+                }
+            }
+        }
+    }
+
+    // (6c) continue 2 steps from the restart vs the unbroken serial run —
+    // same claims as gate 3 (the restart-rebuilt state is bit-identical to
+    // the initialized one): central cells bitwise, edge band bounded.
+    for (0..2) |_| {
+        const dt = ref.cflDt();
+        try ref.step(dt);
+        try s2.step(dt);
+    }
+    compareCentralBitwise(SimM, &g, &ref, &s2, dc.tok, 8);
+    compareDomainTolerance(SimM, &g, &ref, &s2, dc.tok, 8, 1e-12, 5e-2, 0.02, SimM.nv, 0);
+
+    // (6d) a TRUNCATED checkpoint must be rejected, not silently loaded.
+    // This is the walltime-kill case — and `--restart <dir>` selects the
+    // newest checkpoint, i.e. exactly the file such a kill leaves partial.
+    // Without the size guard the collective read returns SUCCESS having
+    // filled only part of the buffer, and the tail enters initCell as
+    // uninitialized heap (observed: a "successful" restart that then died
+    // as NanInFlux, blaming the physics).
+    const path_t = scratch_dir ++ "/gate6_trunc.kdmp";
+    if (comm.rank() == 0) {
+        // Header + dims intact, body one plane short.
+        const plane = @as(usize, grid.nx) * grid.ny * SimM.nv * 8;
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path_t, .data = exp[0 .. exp.len - plane] }) catch |err| {
+            g.expect(false, "cannot write {s}: {s}", .{ path_t, @errorName(err) });
+        };
+    }
+    comm.barrier();
+    // Reuse s2 rather than building a Sim: the exchange channels are bound
+    // per-Comm, so two live decomposed Sims trip bindExchange's bind-once
+    // assert. Safe because a working guard returns before touching the body,
+    // and this is the last check in the gate — nothing reads s2 afterwards.
+    // Collective: every rank compares the same two numbers, so the ring
+    // rejects as one and no rank is left behind in a later collective.
+    if (readKdmpCollective(SimM, allocator, comm, &s2, path_t)) |_| {
+        g.expect(false, "truncated checkpoint was accepted", .{});
+    } else |err| {
+        g.expect(err == error.Truncated, "truncated checkpoint gave {s}, want Truncated", .{@errorName(err)});
+    }
+
+    comm.barrier();
+    if (comm.rank() == 0) std.Io.Dir.cwd().deleteTree(io, scratch_dir) catch {};
     return g.finish();
 }
 
@@ -612,6 +821,11 @@ pub fn main(init: std.process.Init) !void {
     const wsize = Comm.worldSize();
     var comm = try Comm.init(wsize);
     defer comm.deinit();
+    // A gate error can be RANK-LOCAL (e.g. gate 6 feeding a corrupted slab
+    // to initCell on one rank): returning would strand the peers in their
+    // next collective and hang the whole run — the same failure class the
+    // driver guards (main.zig). MPI_Abort tears everyone down instead.
+    errdefer if (wsize > 1) comm.abortJob(1);
 
     if (!koral.comm.enabled and comm.rank() == 0)
         std.debug.print("mpi-gates: serial build (-Dmpi absent) — only the degenerate 1-rank gates run\n", .{});
@@ -619,6 +833,12 @@ pub fn main(init: std.process.Init) !void {
     var ok = true;
     if (wsize == 1) {
         ok = try gate2(allocator, &comm) and ok;
+        // Gate 6 needs the MPI-IO backend (a serial build has none; its
+        // 1-rank file path is plain std.Io and is covered by restart_tests).
+        if (koral.comm.enabled) {
+            const dc = try koral.comm.decompose(minkGrid(), 1, 0);
+            ok = try gate6(allocator, init.io, &comm, dc) and ok;
+        }
     } else {
         if (mink_nz % wsize != 0) {
             std.debug.print("mpi-gates: run with -n dividing {d} (1,2,3,4)\n", .{mink_nz});
@@ -629,6 +849,7 @@ pub fn main(init: std.process.Init) !void {
         ok = try gate3Mink(allocator, &comm, dc) and ok;
         ok = try gate4(allocator, &comm, dc) and ok;
         ok = try gate5(allocator, &comm) and ok;
+        ok = try gate6(allocator, init.io, &comm, dc) and ok;
     }
     if (!ok) return error.GateFailed;
     if (comm.rank() == 0) std.debug.print("mpi-gates: all gates green at {d} rank(s)\n", .{wsize});
