@@ -203,6 +203,7 @@ pub fn main(init: std.process.Init) !void {
         rcam,
         puffy.rmax,
     );
+    scene.scattering = puffy.scattering;
     scene.sigma_cut = sigma_cut;
     if (floor_cut > 0) {
         // PUFFY's floor atmosphere (setHdAtmosphere): ρ = RHOATMMIN·(r/2)^-1.5

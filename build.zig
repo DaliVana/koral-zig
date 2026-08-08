@@ -278,6 +278,23 @@ pub fn build(b: *std.Build) !void {
     b.step("kdmp2silo", "convert KDMP checkpoints to .silo for VisIt (needs -Dsilo)")
         .dependOn(&run_kdmp2silo.step);
 
+    // qmri: MRI quality factors (Q_r/Q_θ/Q_φ) of KDMP snapshots — the
+    // "is this resolution enough?" diagnostic (tools/qmri.zig).
+    const qmri = b.addExecutable(.{
+        .name = "qmri",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/qmri.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "koral", .module = koral }},
+        }),
+    });
+    b.installArtifact(qmri);
+    const run_qmri = b.addRunArtifact(qmri);
+    if (b.args) |args| run_qmri.addArgs(args);
+    b.step("qmri", "MRI quality factors of KDMP snapshots")
+        .dependOn(&run_qmri.step);
+
     // kdmp2png: GRRT-render a KDMP checkpoint into a PNG image — null
     // geodesics through the run's Kerr/MKS2 metric + radiative transfer from
     // its own opacities and M1 radiation field (koral/render/render.zig).

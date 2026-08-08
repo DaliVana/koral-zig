@@ -136,6 +136,11 @@ pub const Scene = struct {
     r_capture: f64,
     /// rays beyond this KS radius are done (past the camera, out of matter)
     r_escape: f64,
+    /// electron scattering on/off — mirror of the problem's `scattering`
+    /// flag (C: PR_KAPPAES). The AGN preset runs with κ_es ≡ 0; rendering
+    /// its dumps with Thomson extinction would overcount χ relative to the
+    /// sim's own physics.
+    scattering: bool = true,
     /// standard EHT σ-cut: zero emission where b²/ρ > sigma_cut (0 = off).
     /// Floor-dominated funnel material has unreliable thermodynamics.
     sigma_cut: f64 = 0,
@@ -368,7 +373,7 @@ pub fn localState(comptime cfg: config.Config, s: *const Scene, geom: *const Geo
         trad = tradbb;
     }
 
-    const kes = opacities.kappaEsPuffy(&s.consts, s.channels, rho, trad);
+    const kes = if (s.scattering) opacities.kappaEsPuffy(&s.consts, s.channels, rho, trad) else 0.0;
     const kr = opacities.calcKappaFromState(&s.consts, s.channels, .{
         .rho = rho,
         .tgas = temps.tgas,

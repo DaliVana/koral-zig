@@ -289,6 +289,38 @@ test "render: fluid-frame flux gives a dipole boost along the flux direction" {
     }
 }
 
+test "render: scattering=false (AGN preset) zeroes kappa_es everywhere it enters" {
+    const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+    var body = [_]f64{0} ** L.count;
+    var data = render.DumpData{
+        .header = .{ .nx = 1, .ny = 1, .nz = 1, .nv = @intCast(L.count), .t = 0, .nstep = 0, .out_idx = 0 },
+        .body = &body,
+    };
+    const g = puffyGrid(1, 1, 1, mp, 1.85, 1000.0);
+    const consts = testConsts();
+    var scene = render.Scene.init(g, mp, consts, opacities.Channels.puffy, 5.0 / 3.0, &data, 1000.0, 1000.0);
+
+    const x = [4]f64{ 0, @log(20.0 - mp.mksr0), 0.5, 0 };
+    const cd = metric.compute(.mks2, mp, x);
+    const geom = render.geomFromCoordData(x, &cd);
+    const tK = 1.0e7;
+    var pp = [_]f64{0} ** L.count;
+    pp[L.index(.rho)] = 1.0e-6;
+    pp[L.index(.uu)] = thermo.uFromTrho(&consts, tK, 1.0e-6, 5.0 / 3.0);
+    pp[L.index(.ee)] = consts.lteEfromT(tK);
+
+    const st_on = render.localState(cfg, &scene, &geom, pp) orelse return error.TestUnexpectedResult;
+    scene.scattering = false;
+    const st_off = render.localState(cfg, &scene, &geom, pp) orelse return error.TestUnexpectedResult;
+
+    try std.testing.expect(st_on.chi_es > 0);
+    try std.testing.expectEqual(@as(f64, 0), st_off.chi_es);
+    // extinction drops by exactly the scattering coefficient
+    try std.testing.expectApproxEqRel(st_on.chi - st_on.chi_es, st_off.chi, 1e-13);
+    // thermal emissivity (κ_abs·B) is untouched
+    try std.testing.expectEqual(st_on.j_therm, st_off.j_therm);
+}
+
 test "render: sigma-cut and floor-cut mask emission but keep extinction" {
     const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
     var body = [_]f64{0} ** L.count;

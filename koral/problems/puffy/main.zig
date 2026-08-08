@@ -685,6 +685,42 @@ pub fn main(init: std.process.Init) !void {
         const fac = try puffy.initAll(SimT, &s);
         s.initTimestepGuess();
         if (is_root) std.debug.print("puffy: init done — β-normalization fac = {e:.6}\n", .{fac});
+
+        // Seed MRI-quality report (campaign notes 2026-08-08): can THIS grid
+        // resolve the linear MRI at THIS maxbeta? Mass-weighted over the
+        // qmri disk mask; the folds are collective (every rank calls them),
+        // root prints. Below the Sano+04 growth floor <Q_th> ~ 6 the fastest
+        // MRI mode is numerically dead and only laminar winding evolves the
+        // field — see tools/qmri.zig for the same diagnostic on dumps.
+        {
+            const sq = try puffy.seedQuality(SimT, &s);
+            const m = s.globalSum(sq.mass);
+            const qr = s.globalSum(sq.qr_m) / @max(m, 1e-300);
+            const qth = s.globalSum(sq.qth_m) / @max(m, 1e-300);
+            if (is_root and m > 0 and qth > 1e-30) {
+                const target = 6.0;
+                const mb_needed = puffy.maxbeta * (target / qth) * (target / qth);
+                std.debug.print(
+                    "puffy: seed MRI quality <Q_r>={d:.2} <Q_th>={d:.2} (mass-weighted; growth floor ~{d:.0}; perturb={d})\n",
+                    .{ qr, qth, target, puffy.perturb },
+                );
+                if (qth < target) {
+                    if (mb_needed <= 0.2) {
+                        std.debug.print(
+                            "puffy: *** NOTE: seed <Q_th> is BELOW the growth floor — the linear MRI will be " ++
+                                "grid-suppressed. maxbeta = {d:.3} would reach <Q_th> = {d:.0} on this grid.\n",
+                            .{ mb_needed, target },
+                        );
+                    } else {
+                        std.debug.print(
+                            "puffy: *** NOTE: seed <Q_th> is BELOW the growth floor, and no maxbeta <= 0.2 can fix " ++
+                                "it on this grid (would need {d:.3}) — raise ny instead.\n",
+                            .{mb_needed},
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // scalars.dat log + output cadence (DTOUT1 in code time)

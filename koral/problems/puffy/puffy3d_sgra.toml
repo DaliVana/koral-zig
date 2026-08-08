@@ -66,3 +66,26 @@ nout_step = 100    # ALSO output every N steps (0 = time-based only). This is
                    # you get ~10 .silo frames to watch the evolution in VisIt.
 out_dir = "dumps/puffy3d_sgra"
 nthreads = 12      # per-step worker team (1 = serial)
+
+# --- opacities & composition (added 2026-08-08) ------------------------------
+# MESA Rosseland opacities: at 4.3e6 Msun the disk body sits at T ~ 1e5-1e6 K,
+# H/He/iron-bump territory that the analytic free-free formula misses entirely
+# (up to ~10x too transparent near logT ~ 5.2, which suppresses bump-driven
+# convection/inflation — see docs/PUFFY_AGN_DIVERGENCES.md and physics/mesa.zig).
+# The table feeds ONLY the Rosseland channels (radiative momentum coupling and
+# diffusion) as max(kappa_MESA - kappa_es, 0); Planck absorption stays analytic
+# FF + synchrotron, and scattering stays ON here (unlike the AGN preset) — the
+# exact combination the kappa_es subtraction exists for.
+#
+# The composition is aligned to the table (params.zig: "The file must match the
+# gas composition"): solar-ish X = 0.70, Z = 0.02 — also the physically right
+# abundances for Sgr A* gas. This REPLACES the validated PUFFY mu-overrides
+# (mu_gas = 1), so mu_gas ~ 0.62 and kappa_es = 0.2(1+X) = 0.34: gas
+# temperatures and opacities shift accordingly. Runs with this section are NOT
+# comparable to the pre-MESA dumps in dumps/puffy3d_sgra*/ .
+[composition]
+hfrac = 0.70               # X  — matches a09_z0.02_x0.7
+hefrac = 0.28              # He — MFRAC = 1 - X - He = 0.02 = table Z
+
+[opacities]
+mesa_table = "data/mesa_tables/a09_z0.02_x0.7.data"   # MESA_KAPPA

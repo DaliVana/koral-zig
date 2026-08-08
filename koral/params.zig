@@ -135,6 +135,15 @@ pub const Params = struct {
     // TGASATMMIN, ATMTRADINIT, and the ERADATMMIN factor form).
     lt_kappa: ?f64 = null,
     maxbeta: ?f64 = null,
+    /// Fractional random perturbation of the torus internal energy at init:
+    /// u → u·(1 + perturb·ξ), ξ ∈ [−1,1) hashed from the cell-center
+    /// coordinates, so the noise is bit-identical at any thread count or MPI
+    /// decomposition. Applied BEFORE the gas/radiation pressure split (the
+    /// split stays LTE-consistent). Seeds nonaxisymmetric MRI onset in 3D —
+    /// a perfectly axisymmetric start grows 3D structure only from float
+    /// roundoff, wasting orbits of burn-in. Omitted/0 = off: the validated,
+    /// golden-pinned init is bit-identical.
+    perturb: ?f64 = null,
     rhoatmmin: ?f64 = null,
     atm_tgas: ?f64 = null,
     atm_trad_init: ?f64 = null,

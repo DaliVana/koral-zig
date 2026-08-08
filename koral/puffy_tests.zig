@@ -590,3 +590,93 @@ test "puffy hydro limotorus: stationary, drift converges with resolution" {
     try std.testing.expect(d40 < 1e-3);
     try std.testing.expect(order > 1.5);
 }
+
+// ---------------------------------------------------------------------------
+// init perturbation + seed MRI-quality report (campaign notes 2026-08-08)
+
+test "perturbXi: pure, bounded, varies across cells" {
+    const x = [4]f64{ 0, 1.234, 0.456, -0.789 };
+    const a1 = puffy.perturbXi(x);
+    const a2 = puffy.perturbXi(x);
+    try std.testing.expectEqual(a1, a2); // pure
+    try std.testing.expect(a1 >= -1.0 and a1 < 1.0);
+    var y = x;
+    y[2] = 0.4560001;
+    try std.testing.expect(puffy.perturbXi(y) != a1); // decorrelated cells
+}
+
+test "puffy init perturbation: deterministic, bounded, off-by-default identical" {
+    const a = std.testing.allocator;
+
+    // baseline: the validated perturb = 0 path
+    var s0 = try SimP.init(a, puffy.makeGrid(24, 20), puffyOptions());
+    defer s0.deinit();
+    _ = try puffy.initAll(SimP, &s0);
+
+    puffy.perturb = 0.05;
+    defer puffy.perturb = 0.0;
+    var s1 = try SimP.init(a, puffy.makeGrid(24, 20), puffyOptions());
+    defer s1.deinit();
+    _ = try puffy.initAll(SimP, &s1);
+    var s2 = try SimP.init(a, puffy.makeGrid(24, 20), puffyOptions());
+    defer s2.deinit();
+    _ = try puffy.initAll(SimP, &s2);
+
+    var n_diff: usize = 0;
+    var iy: i64 = 0;
+    while (iy < s0.nyi()) : (iy += 1) {
+        var ix: i64 = 0;
+        while (ix < s0.nxi()) : (ix += 1) {
+            var p0: [SimP.nv]f64 = undefined;
+            var p1: [SimP.nv]f64 = undefined;
+            var p2: [SimP.nv]f64 = undefined;
+            s0.p.load(ix, iy, 0, &p0);
+            s1.p.load(ix, iy, 0, &p1);
+            s2.p.load(ix, iy, 0, &p2);
+            // determinism: two perturbed inits are bit-identical
+            try std.testing.expectEqual(p1[LP.index(.uu)], p2[LP.index(.uu)]);
+            const uu_base = p0[LP.index(.uu)];
+            const uu_pert = p1[LP.index(.uu)];
+            if (uu_pert != uu_base) {
+                n_diff += 1;
+                // bounded near the 5% amplitude (the gas/rad pressure split
+                // repartitions it, hence the slack)
+                try std.testing.expect(@abs(uu_pert - uu_base) / uu_base < 0.10);
+            }
+        }
+    }
+    // the torus interior actually got noise
+    try std.testing.expect(n_diff > 50);
+}
+
+test "puffy seed quality: positive on the initialized torus and linear in B" {
+    const a = std.testing.allocator;
+    var s = try SimP.init(a, puffy.makeGrid(24, 20), puffyOptions());
+    defer s.deinit();
+    _ = try puffy.initAll(SimP, &s);
+
+    const q1 = try puffy.seedQuality(SimP, &s);
+    try std.testing.expect(q1.mass > 0);
+    const qth1 = q1.qth_m / q1.mass;
+    const qr1 = q1.qr_m / q1.mass;
+    try std.testing.expect(qth1 > 0 and std.math.isFinite(qth1));
+    try std.testing.expect(qr1 > 0 and std.math.isFinite(qr1));
+
+    // Q is linear in the field: scaling B ×2 doubles the mass-weighted mean
+    // (the b² inertia correction is negligible at seed β)
+    var iy: i64 = 0;
+    while (iy < s.nyi()) : (iy += 1) {
+        var ix: i64 = 0;
+        while (ix < s.nxi()) : (ix += 1) {
+            var pp: [SimP.nv]f64 = undefined;
+            s.p.load(ix, iy, 0, &pp);
+            pp[LP.index(.b1)] *= 2.0;
+            pp[LP.index(.b2)] *= 2.0;
+            pp[LP.index(.b3)] *= 2.0;
+            try s.initCell(ix, iy, 0, pp);
+        }
+    }
+    const q2 = try puffy.seedQuality(SimP, &s);
+    try std.testing.expectEqual(q1.mass, q2.mass); // mask untouched by B
+    try std.testing.expectApproxEqRel(2.0 * qth1, q2.qth_m / q2.mass, 1e-3);
+}
