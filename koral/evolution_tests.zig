@@ -643,8 +643,8 @@ const BondiCtx = struct {
 
         const geom = s.cache.fillGeometry(r_ix, 0, 0);
         var ucon = [4]f64{ 0, -m.u, 0, 0 };
-        ucon[0] = relele.utInUcon(ucon, &geom.gg) catch unreachable;
-        const vr = relele.convVels(ucon, .vel4, .velr, &geom.gg, &geom.GG) catch unreachable;
+        ucon[0] = relele.utFromSpatialUcon(ucon, &geom) catch unreachable;
+        const vr = relele.convert(ucon, .vel4, .velr, &geom, .recompute_ut) catch unreachable;
 
         var pp: [SimKs.nv]f64 = @splat(0);
         pp[L.index(.rho)] = m.rho;

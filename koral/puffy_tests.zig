@@ -283,7 +283,7 @@ test "puffy reduced-grid init: β ≡ MAXBETA, divB = 0, bc.c contract" {
                     .{ pp[LP.index(.b1)], pp[LP.index(.b2)], pp[LP.index(.b3)] },
                     ug.con,
                     ug.cov,
-                    &geom.gg,
+                    &geom,
                 );
                 const pmag = bb.bsq / 2.0;
                 var ptot = (puffy.gam - 1.0) * pp[LP.index(.uu)];
@@ -376,12 +376,12 @@ test "puffy reduced-grid init: β ≡ MAXBETA, divB = 0, bc.c contract" {
 
                 const geom = s.cache.fillGeometry(ix, iy, 0);
                 var ucon = [4]f64{ 0, pg[LP.index(.vx)], pg[LP.index(.vy)], pg[LP.index(.vz)] };
-                ucon = try relele.convVels(ucon, .velr, .vel4, &geom.gg, &geom.GG);
+                ucon = try relele.convert(ucon, .velr, .vel4, &geom, .recompute_ut);
                 ucon = frames.trans2Coco(geom.xxvec, ucon, .mks2, .bl, puffy.mp);
                 try std.testing.expect(ucon[1] >= -1e-15);
 
                 var urf = [4]f64{ 0, pg[LP.index(.fx)], pg[LP.index(.fy)], pg[LP.index(.fz)] };
-                urf = try relele.convVels(urf, .velr, .vel4, &geom.gg, &geom.GG);
+                urf = try relele.convert(urf, .velr, .vel4, &geom, .recompute_ut);
                 urf = frames.trans2Coco(geom.xxvec, urf, .mks2, .bl, puffy.mp);
                 try std.testing.expect(urf[1] >= -1e-15);
             }
@@ -433,7 +433,7 @@ test "M14 puffy 3D reduced-grid init: β ≡ MAXBETA, divB = 0 (32×30×4)" {
                         .{ pp[LP.index(.b1)], pp[LP.index(.b2)], pp[LP.index(.b3)] },
                         ug.con,
                         ug.cov,
-                        &geom.gg,
+                        &geom,
                     );
                     const pmag = bb.bsq / 2.0;
                     var ptot = (puffy.gam - 1.0) * pp[LP.index(.uu)];

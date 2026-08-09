@@ -5,12 +5,29 @@
 //! three-velocity u^i/u^t; VELR — relative velocity ũ^i measured by the
 //! normal observer. Primitives store VELPRIM = VELR (choices.h:103).
 //!
-//! All functions take the metric as C's 4×5 blocks (`gg`, `GG`) so the
-//! arithmetic transcribes 1:1 from relele.c; the 5th column is ignored.
+//! Scalar entry points take the whole per-point `Geometry` and pick the
+//! metric block the operation needs, so no caller can hand g_μν where g^μν
+//! belongs. The lane-generic `<name>G` functions have no `Geometry` to
+//! select from, so they take the nominally distinct `MetricCovOf(T)` /
+//! `MetricConOf(T)` views (geometry.zig) instead — build those with
+//! `geom.cov()` / `geom.con()`, since a bare `.{ .m = ... }` literal
+//! coerces to either view and defeats the distinction.
+//!
+//! The choice is enforced against callers, not inside this file: the
+//! helpers below still index `geom.gg` / `geom.GG` directly, so a swap
+//! within a body here compiles. The blocks keep C's 4×5 layout (column 4 =
+//! extras, ignored here); the arithmetic transcribes 1:1 from relele.c and
+//! every doc comment keeps the C name.
 
 const std = @import("std");
 const simd = @import("math/simd.zig");
-const Geometry = @import("geometry.zig").Geometry;
+const geometry = @import("geometry.zig");
+const Geometry = geometry.Geometry;
+
+pub const MetricCovOf = geometry.MetricCovOf;
+pub const MetricConOf = geometry.MetricConOf;
+pub const MetricCov = geometry.MetricCov;
+pub const MetricCon = geometry.MetricCon;
 
 // The `<name>G(comptime T, ...)` functions are the comptime-T-generic cores
 // of the radiative-source chain (parallelization plan §2.2): T is f64 or
@@ -22,6 +39,13 @@ pub const VelType = enum(u8) {
     vel4 = 1,
     vel3 = 2,
     velr = 3,
+};
+
+/// Whether `convert` may trust the input's u^t. C exposes the choice as two
+/// functions — conv_vels (recompute) and conv_vels_ut (trust).
+pub const UtMode = enum {
+    recompute_ut,
+    trust_ut,
 };
 
 pub const Error = error{
@@ -58,37 +82,38 @@ pub inline fn kron(i: usize, j: usize) f64 {
 //
 
 /// A_μ -> A^μ (C: indices_12). Safe to call with aliased in/out.
-pub fn indices12(a1: [4]f64, GG: *const [4][5]f64) [4]f64 {
-    return indices12G(f64, a1, GG);
+pub fn raiseVec(a1: [4]f64, geom: *const Geometry) [4]f64 {
+    return raiseVecG(f64, a1, geom.con());
 }
 
-pub fn indices12G(comptime T: type, a1: [4]T, GG: *const [4][5]T) [4]T {
+pub fn raiseVecG(comptime T: type, a1: [4]T, GG: MetricConOf(T)) [4]T {
     var a2: [4]T = @splat(simd.splat(T, 0));
     for (0..4) |i| {
         for (0..4) |k| {
-            a2[i] += a1[k] * GG[i][k];
+            a2[i] += a1[k] * GG.m[i][k];
         }
     }
     return a2;
 }
 
 /// A^μ -> A_μ (C: indices_21).
-pub fn indices21(a1: [4]f64, gg: *const [4][5]f64) [4]f64 {
-    return indices21G(f64, a1, gg);
+pub fn lowerVec(a1: [4]f64, geom: *const Geometry) [4]f64 {
+    return lowerVecG(f64, a1, geom.cov());
 }
 
-pub fn indices21G(comptime T: type, a1: [4]T, gg: *const [4][5]T) [4]T {
+pub fn lowerVecG(comptime T: type, a1: [4]T, gg: MetricCovOf(T)) [4]T {
     var a2: [4]T = @splat(simd.splat(T, 0));
     for (0..4) |i| {
         for (0..4) |j| {
-            a2[i] += a1[j] * gg[i][j];
+            a2[i] += a1[j] * gg.m[i][j];
         }
     }
     return a2;
 }
 
 /// T_μν -> T^μν (C: indices_1122).
-pub fn indices1122(t1: [4][4]f64, GG: *const [4][5]f64) [4][4]f64 {
+pub fn raiseBoth(t1: [4][4]f64, geom: *const Geometry) [4][4]f64 {
+    const GG = &geom.GG;
     var t2: [4][4]f64 = @splat(@splat(0));
     for (0..4) |i| {
         for (0..4) |j| {
@@ -103,7 +128,8 @@ pub fn indices1122(t1: [4][4]f64, GG: *const [4][5]f64) [4][4]f64 {
 }
 
 /// T^μν -> T_μν (C: indices_2211).
-pub fn indices2211(t1: [4][4]f64, gg: *const [4][5]f64) [4][4]f64 {
+pub fn lowerBoth(t1: [4][4]f64, geom: *const Geometry) [4][4]f64 {
+    const gg = &geom.gg;
     var t2: [4][4]f64 = @splat(@splat(0));
     for (0..4) |i| {
         for (0..4) |j| {
@@ -117,21 +143,9 @@ pub fn indices2211(t1: [4][4]f64, gg: *const [4][5]f64) [4][4]f64 {
     return t2;
 }
 
-/// T^μ_ν -> T^μν (C: indices_2122).
-pub fn indices2122(t1: [4][4]f64, GG: *const [4][5]f64) [4][4]f64 {
-    var t2: [4][4]f64 = @splat(@splat(0));
-    for (0..4) |i| {
-        for (0..4) |j| {
-            for (0..4) |k| {
-                t2[i][j] += t1[i][k] * GG[k][j];
-            }
-        }
-    }
-    return t2;
-}
-
 /// T^μν -> T^μ_ν (C: indices_2221).
-pub fn indices2221(t1: [4][4]f64, gg: *const [4][5]f64) [4][4]f64 {
+pub fn lowerSecond(t1: [4][4]f64, geom: *const Geometry) [4][4]f64 {
+    const gg = &geom.gg;
     var t2: [4][4]f64 = @splat(@splat(0));
     for (0..4) |i| {
         for (0..4) |j| {
@@ -143,12 +157,13 @@ pub fn indices2221(t1: [4][4]f64, gg: *const [4][5]f64) [4][4]f64 {
     return t2;
 }
 
-/// A single row of indices2221: T^row_j = Σ_k T^{row k} g_{kj}, for j=0..3.
-/// Same inner k-summation as indices2221, so the result is bitwise-identical to
-/// `indices2221(t1, gg)[row]` — 16 madds instead of 64 when a caller reads only
-/// one lowered row (flux.fFluxPrime consumes row idim+1 of both stress tensors,
-/// P2 #7).
-pub fn indices2221Row(t1: [4][4]f64, gg: *const [4][5]f64, row: usize) [4]f64 {
+/// A single row of lowerSecond: T^row_j = Σ_k T^{row k} g_{kj}, for j=0..3.
+/// Same inner k-summation as lowerSecond, so the result is bitwise-identical
+/// to `lowerSecond(t1, geom)[row]` — 16 madds instead of 64 when a caller
+/// reads only one lowered row (flux.fFluxPrime consumes row idim+1 of both
+/// stress tensors, P2 #7).
+pub fn lowerSecondRow(t1: [4][4]f64, geom: *const Geometry, row: usize) [4]f64 {
+    const gg = &geom.gg;
     var out: [4]f64 = @splat(0);
     for (0..4) |j| {
         for (0..4) |k| {
@@ -159,11 +174,11 @@ pub fn indices2221Row(t1: [4][4]f64, gg: *const [4][5]f64, row: usize) [4]f64 {
 }
 
 /// uout^μ = A^μ_ν uin^ν (C: frames.c multiply2). Alias-safe.
-pub fn multiply2(uin: [4]f64, a: [4][4]f64) [4]f64 {
-    return multiply2G(f64, uin, a);
+pub fn transformVec(uin: [4]f64, a: [4][4]f64) [4]f64 {
+    return transformVecG(f64, uin, a);
 }
 
-pub fn multiply2G(comptime T: type, uin: [4]T, a: [4][4]T) [4]T {
+pub fn transformVecG(comptime T: type, uin: [4]T, a: [4][4]T) [4]T {
     var uout: [4]T = @splat(simd.splat(T, 0));
     for (0..4) |i| {
         for (0..4) |j| {
@@ -174,7 +189,7 @@ pub fn multiply2G(comptime T: type, uin: [4]T, a: [4][4]T) [4]T {
 }
 
 /// T2^μν = A^μ_κ A^ν_λ T1^κλ (C: frames.c multiply22). Alias-safe.
-pub fn multiply22(t1: [4][4]f64, a: [4][4]f64) [4][4]f64 {
+pub fn transformTensor(t1: [4][4]f64, a: [4][4]f64) [4][4]f64 {
     var t2: [4][4]f64 = @splat(@splat(0));
     for (0..4) |i| {
         for (0..4) |j| {
@@ -192,8 +207,10 @@ pub fn multiply22(t1: [4][4]f64, a: [4][4]f64) [4][4]f64 {
 // ---- u^t solvers (C: relele.c:342, :373) ----------------------------------
 //
 
-/// u^t from spatial VEL3 components: u^t = sqrt(-1/(g00 + 2 g0i v^i + gij v^i v^j)).
-pub fn utInVel3(v: [4]f64, gg: *const [4][5]f64) f64 {
+/// u^t from spatial VEL3 components: u^t = sqrt(-1/(g00 + 2 g0i v^i + gij v^i v^j))
+/// (C: fill_utinvel3).
+pub fn utFromVel3(v: [4]f64, geom: *const Geometry) f64 {
+    const gg = &geom.gg;
     var b: f64 = 0;
     var c: f64 = 0;
     for (1..4) |i| {
@@ -205,10 +222,11 @@ pub fn utInVel3(v: [4]f64, gg: *const [4][5]f64) f64 {
     return @sqrt(-1.0 / (gg[0][0] + 2.0 * b + c));
 }
 
-/// u^t from spatial four-velocity components; solves g00 ut² + 2b ut + c = 0
-/// taking the (-b - sqrt(Δ))/g00 root in both signs of g00 (C keeps the
-/// minus root in the ergoregion too, relele.c:407).
-pub fn utInUcon(u: [4]f64, gg: *const [4][5]f64) Error!f64 {
+/// u^t from spatial four-velocity components (C: fill_utinucon); solves
+/// g00 ut² + 2b ut + c = 0 taking the (-b - sqrt(Δ))/g00 root in both signs
+/// of g00 (C keeps the minus root in the ergoregion too, relele.c:407).
+pub fn utFromSpatialUcon(u: [4]f64, geom: *const Geometry) Error!f64 {
+    const gg = &geom.gg;
     const a = gg[0][0];
     var b: f64 = 0;
     var c: f64 = 1;
@@ -225,32 +243,32 @@ pub fn utInUcon(u: [4]f64, gg: *const [4][5]f64) Error!f64 {
 
 /// α·γ for a VELR vector (C: calc_alpgam, relele.c:309). On alpgam² < 0
 /// C prints and returns 1 — mirrored.
-pub fn calcAlpgam(u: [4]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) f64 {
-    return calcAlpgamG(f64, u, gg, GG);
+pub fn alphaGamma(u: [4]f64, geom: *const Geometry) f64 {
+    return alphaGammaG(f64, u, geom.cov(), geom.con());
 }
 
-pub fn calcAlpgamG(comptime T: type, u: [4]T, gg: *const [4][5]T, GG: *const [4][5]T) T {
+pub fn alphaGammaG(comptime T: type, u: [4]T, gg: MetricCovOf(T), GG: MetricConOf(T)) T {
     const sp = simd.splat;
     var qsq: T = sp(T, 0);
     for (1..4) |i| {
         for (1..4) |j| {
-            qsq += u[i] * u[j] * gg[i][j];
+            qsq += u[i] * u[j] * gg.m[i][j];
         }
     }
-    const alpgam2 = (sp(T, -1.0) / GG[0][0]) * (sp(T, 1.0) + qsq);
+    const alpgam2 = (sp(T, -1.0) / GG.m[0][0]) * (sp(T, 1.0) + qsq);
     return simd.select(T, alpgam2 < sp(T, 0), sp(T, 1.0), @sqrt(alpgam2));
 }
 
-/// The VELR → VEL4 conversion (convVelsCore's velr branch) — infallible:
-/// calcAlpgam absorbs alpgam² < 0 by returning 1, C-faithfully. This is
+/// The VELR → VEL4 conversion (convert's velr branch) — infallible:
+/// alphaGamma absorbs alpgam² < 0 by returning 1, C-faithfully. This is
 /// the only conv_vels direction the T-generic radiative chain needs.
-pub fn velrToVel4G(comptime T: type, uin: [4]T, gg: *const [4][5]T, GG: *const [4][5]T) [4]T {
-    const alpgam = calcAlpgamG(T, uin, gg, GG);
+pub fn velrToVel4G(comptime T: type, uin: [4]T, gg: MetricCovOf(T), GG: MetricConOf(T)) [4]T {
+    const alpgam = alphaGammaG(T, uin, gg, GG);
     return .{
-        -alpgam * GG[0][0],
-        uin[1] - alpgam * GG[0][1],
-        uin[2] - alpgam * GG[0][2],
-        uin[3] - alpgam * GG[0][3],
+        -alpgam * GG.m[0][0],
+        uin[1] - alpgam * GG.m[0][1],
+        uin[2] - alpgam * GG.m[0][2],
+        uin[3] - alpgam * GG.m[0][3],
     };
 }
 
@@ -258,20 +276,23 @@ pub fn velrToVel4G(comptime T: type, uin: [4]T, gg: *const [4][5]T, GG: *const [
 // ---- conv_vels (C: relele.c:136 conv_vels_core) ---------------------------
 //
 
-/// Contravariant velocity conversion; u[0] of the input is ignored unless
-/// `ut_known` (C: conv_vels vs conv_vels_ut). Returns the converted 4-vector.
-pub fn convVelsCore(
+/// Contravariant velocity conversion (C: conv_vels_core, exposed as
+/// conv_vels for `.recompute_ut` and conv_vels_ut for `.trust_ut`); u[0] of
+/// the input is ignored unless `.trust_ut`. Returns the converted 4-vector.
+pub fn convert(
     uin: [4]f64,
     from: VelType,
     to: VelType,
-    gg: *const [4][5]f64,
-    GG: *const [4][5]f64,
-    ut_known: bool,
+    geom: *const Geometry,
+    ut: UtMode,
 ) Error![4]f64 {
+    const GG = &geom.GG;
+    const ut_known = ut == .trust_ut;
+
     if (from == to) {
         // VEL4 -> VEL4 recomputes u^t when unknown; VEL3/VELR copy through.
         var uout = uin;
-        if (from == .vel4 and !ut_known) uout[0] = try utInUcon(uin, gg);
+        if (from == .vel4 and !ut_known) uout[0] = try utFromSpatialUcon(uin, geom);
         return uout;
     }
 
@@ -284,28 +305,28 @@ pub fn convVelsCore(
         .vel4 => switch (to) {
             .vel4 => unreachable,
             .vel3 => {
-                const ut = if (ut_known) uin[0] else try utInUcon(uin, gg);
-                uout = .{ 1.0, uin[1] / ut, uin[2] / ut, uin[3] / ut };
+                const ut_ = if (ut_known) uin[0] else try utFromSpatialUcon(uin, geom);
+                uout = .{ 1.0, uin[1] / ut_, uin[2] / ut_, uin[3] / ut_ };
             },
             .velr => {
-                const ut = if (ut_known) uin[0] else try utInUcon(uin, gg);
-                uout[0] = ut;
+                const ut_ = if (ut_known) uin[0] else try utFromSpatialUcon(uin, geom);
+                uout[0] = ut_;
                 for (1..4) |i| {
-                    uout[i] = uin[i] - ut * GG[0][i] / GG[0][0];
+                    uout[i] = uin[i] - ut_ * GG[0][i] / GG[0][0];
                 }
             },
         },
         .vel3 => switch (to) {
             .vel3 => unreachable,
             .vel4 => {
-                const ut = utInVel3(uin, gg);
-                if (ut < 1.0 or std.math.isNan(ut)) return Error.VelocityConversionFailed;
-                uout = .{ ut, uin[1] * ut, uin[2] * ut, uin[3] * ut };
+                const ut_ = utFromVel3(uin, geom);
+                if (ut_ < 1.0 or std.math.isNan(ut_)) return Error.VelocityConversionFailed;
+                uout = .{ ut_, uin[1] * ut_, uin[2] * ut_, uin[3] * ut_ };
             },
             .velr => {
-                const ut = utInVel3(uin, gg);
-                if (ut < 1.0 or std.math.isNan(ut)) return Error.VelocityConversionFailed;
-                uout = .{ ut, uin[1] * ut, uin[2] * ut, uin[3] * ut };
+                const ut_ = utFromVel3(uin, geom);
+                if (ut_ < 1.0 or std.math.isNan(ut_)) return Error.VelocityConversionFailed;
+                uout = .{ ut_, uin[1] * ut_, uin[2] * ut_, uin[3] * ut_ };
                 for (1..4) |i| {
                     uout[i] = uout[i] - uout[0] * GG[0][i] / GG[0][0];
                 }
@@ -313,9 +334,9 @@ pub fn convVelsCore(
         },
         .velr => switch (to) {
             .velr => unreachable,
-            .vel4 => uout = velrToVel4G(f64, uin, gg, GG),
+            .vel4 => uout = velrToVel4G(f64, uin, geom.cov(), geom.con()),
             .vel3 => {
-                const alpgam = calcAlpgam(uin, gg, GG);
+                const alpgam = alphaGamma(uin, geom);
                 uout[0] = -alpgam * GG[0][0];
                 uout[1] = uin[1] / uout[0] + GG[0][1] / GG[0][0];
                 uout[2] = uin[2] / uout[0] + GG[0][2] / GG[0][0];
@@ -326,66 +347,59 @@ pub fn convVelsCore(
     return uout;
 }
 
-/// C: conv_vels — u^t of the input not trusted.
-pub fn convVels(uin: [4]f64, from: VelType, to: VelType, gg: *const [4][5]f64, GG: *const [4][5]f64) Error![4]f64 {
-    return convVelsCore(uin, from, to, gg, GG, false);
-}
-
-/// C: conv_vels_ut — u^t of the input is already correct.
-pub fn convVelsUt(uin: [4]f64, from: VelType, to: VelType, gg: *const [4][5]f64, GG: *const [4][5]f64) Error![4]f64 {
-    return convVelsCore(uin, from, to, gg, GG, true);
-}
-
 pub fn ConCovOf(comptime T: type) type {
     return struct { con: [4]T, cov: [4]T };
 }
 pub const ConCov = ConCovOf(f64);
 
-/// C: conv_vels_both — only to == VEL4 is supported.
-pub fn convVelsBoth(uin: [4]f64, from: VelType, gg: *const [4][5]f64, GG: *const [4][5]f64) Error!ConCov {
-    const con = try convVelsCore(uin, from, .vel4, gg, GG, false);
-    return .{ .con = con, .cov = indices21(con, gg) };
+/// C: conv_vels_both — only to == VEL4 is supported; u^t is recomputed.
+pub fn convertBoth(uin: [4]f64, from: VelType, geom: *const Geometry) Error!ConCov {
+    const con = try convert(uin, from, .vel4, geom, .recompute_ut);
+    return .{ .con = con, .cov = lowerVec(con, geom) };
 }
 
 /// conv_vels_both for VELR input over lane type T (infallible, see
 /// velrToVel4G).
-pub fn convVelsBothVelrG(comptime T: type, uin: [4]T, gg: *const [4][5]T, GG: *const [4][5]T) ConCovOf(T) {
+pub fn convertBothVelrG(comptime T: type, uin: [4]T, gg: MetricCovOf(T), GG: MetricConOf(T)) ConCovOf(T) {
     const con = velrToVel4G(T, uin, gg, GG);
-    return .{ .con = con, .cov = indices21G(T, con, gg) };
+    return .{ .con = con, .cov = lowerVecG(T, con, gg) };
 }
 
 /// Gas u^μ, u_μ from primitives' velocity slots (C: calc_ucon_ucov_from_prims;
 /// VELPRIM == VELR). `v` are the three VELPRIM components pp[VX..VZ].
 pub fn uconUcovFromPrims(v: [3]f64, geom: *const Geometry) Error!ConCov {
-    return convVelsBoth(.{ 0, v[0], v[1], v[2] }, .velr, &geom.gg, &geom.GG);
+    return convertBoth(.{ 0, v[0], v[1], v[2] }, .velr, geom);
 }
 
 /// uconUcovFromPrims over lane type T.
-pub fn uconUcovFromPrimsG(comptime T: type, v: [3]T, gg: *const [4][5]T, GG: *const [4][5]T) ConCovOf(T) {
-    return convVelsBothVelrG(T, .{ simd.splat(T, 0), v[0], v[1], v[2] }, gg, GG);
+pub fn uconUcovFromPrimsG(comptime T: type, v: [3]T, gg: MetricCovOf(T), GG: MetricConOf(T)) ConCovOf(T) {
+    return convertBothVelrG(T, .{ simd.splat(T, 0), v[0], v[1], v[2] }, gg, GG);
 }
 
 //
 // ---- normal observer (C: relele.c:447-509) --------------------------------
 //
 
-/// n^μ = -α g^{μ0} (C: calc_normalobs_ncon).
-pub fn normalObsNcon(GG: *const [4][5]f64, alpha: f64) [4]f64 {
+/// n^μ = -α g^{μ0} with the precomputed lapse (C: calc_normalobs_ncon).
+/// Kept separate from normalObs4vel: Geometry.alpha is @sqrt(-1.0/g^tt)
+/// while normalObs4vel derives 1.0/@sqrt(-g^tt) — the two round differently.
+pub fn normalObsCon(geom: *const Geometry) [4]f64 {
     var ncon: [4]f64 = undefined;
-    for (0..4) |i| ncon[i] = -alpha * GG[i][0];
+    for (0..4) |i| ncon[i] = -geom.alpha * geom.GG[i][0];
     return ncon;
 }
 
 /// n^μ with α computed from g^tt (C: calc_normalobs_4vel).
-pub fn normalObs4vel(GG: *const [4][5]f64) [4]f64 {
-    const alp = 1.0 / @sqrt(-GG[0][0]);
-    return indices12(.{ -alp, 0, 0, 0 }, GG);
+pub fn normalObs4vel(geom: *const Geometry) [4]f64 {
+    const alp = 1.0 / @sqrt(-geom.GG[0][0]);
+    return raiseVec(.{ -alp, 0, 0, 0 }, geom);
 }
 
 /// VELR of the normal observer (C: calc_normalobs_relvel) — identically 0
 /// in exact arithmetic; kept for parity.
-pub fn normalObsRelvel(GG: *const [4][5]f64) [4]f64 {
-    const ucon = normalObs4vel(GG);
+pub fn normalObsVelr(geom: *const Geometry) [4]f64 {
+    const GG = &geom.GG;
+    const ucon = normalObs4vel(geom);
     var ncon: [4]f64 = ucon;
     for (1..4) |i| ncon[i] = ucon[i] - ucon[0] * GG[0][i] / GG[0][0];
     return ncon;

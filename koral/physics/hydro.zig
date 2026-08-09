@@ -58,7 +58,7 @@ pub fn calcTij(
             .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
             u.con,
             u.cov,
-            &geom.gg,
+            geom,
         );
         bcon = b.bcon;
         bsq = b.bsq;
@@ -69,7 +69,7 @@ pub fn calcTij(
 
 /// The tensor assembly of calcTij with the gas 4-velocity `u` and magnetic
 /// four-vector (`bcon`, `bsq`) already in hand — lets a caller that has
-/// solved these (e.g. fFluxPrime) skip the duplicate convVelsBoth +
+/// solved these (e.g. fFluxPrime) skip the duplicate convertBoth +
 /// bconBcovBsqFrom4vel. Bit-identical to calcTij: same inputs, same
 /// expression shape. (`bcon`/`bsq` are the zero-field values when b1 is
 /// absent from the layout, exactly as calcTij passes them.)

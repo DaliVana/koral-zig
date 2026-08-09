@@ -49,7 +49,7 @@ test "golden: conv_vels all 9 pairs vs C" {
         const w1: relele.VelType = @enumFromInt(@as(u8, @intFromFloat(r.in[20])));
         const w2: relele.VelType = @enumFromInt(@as(u8, @intFromFloat(r.in[21])));
         const uin = [4]f64{ 0, r.in[22], r.in[23], r.in[24] };
-        const uout = try relele.convVels(uin, w1, w2, &geo.gg, &geo.GG);
+        const uout = try relele.convert(uin, w1, w2, &geo, .recompute_ut);
         for (0..4) |i| t.add(r.out[i], uout[i], ir);
     }
     try t.check(1e-13, "conv_vels");
@@ -67,7 +67,7 @@ test "golden: Lorentz matrix and vector boosts vs C" {
         const vel = [3]f64{ r.in[20], r.in[21], r.in[22] };
         const a = [4]f64{ r.in[23], r.in[24], r.in[25], r.in[26] };
 
-        const l = try frames.lorentzLab2Ff(vel, &geo.gg, &geo.GG);
+        const l = try frames.lorentzLab2Ff(vel, &geo);
         var n: usize = 0;
         for (0..4) |i| {
             for (0..4) |j| {
@@ -75,12 +75,12 @@ test "golden: Lorentz matrix and vector boosts vs C" {
                 n += 1;
             }
         }
-        const b1 = try frames.boost2Lab2Ff(a, vel, &geo.gg, &geo.GG);
+        const b1 = try frames.boost2Lab2Ff(a, vel, &geo);
         for (0..4) |i| {
             t_b.add(r.out[n], b1[i], ir);
             n += 1;
         }
-        const b2 = try frames.boost2Ff2Lab(a, vel, &geo.gg, &geo.GG);
+        const b2 = try frames.boost2Ff2Lab(a, vel, &geo);
         for (0..4) |i| {
             t_b.add(r.out[n], b2[i], ir);
             n += 1;
@@ -126,7 +126,7 @@ test "golden: calc_Tij + four-vectors vs C" {
 
         const tij = try hydro.calcTij(cfg, pp, &geo, pgamma);
         const u = try relele.uconUcovFromPrims(.{ pp[2], pp[3], pp[4] }, &geo);
-        const b = mhd.bconBcovBsqFrom4vel(.{ pp[6], pp[7], pp[8] }, u.con, u.cov, &geo.gg);
+        const b = mhd.bconBcovBsqFrom4vel(.{ pp[6], pp[7], pp[8] }, u.con, u.cov, &geo);
 
         var n: usize = 0;
         for (0..4) |i| {

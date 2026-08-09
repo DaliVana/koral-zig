@@ -64,33 +64,33 @@ fn lorentzFromPairG(comptime T: type, ucon: [4]T, ucov: [4]T, wcon: [4]T, wcov: 
     return l;
 }
 
-fn normalObsConCov(GG: *const [4][5]f64) relele.ConCov {
-    return normalObsConCovG(f64, GG);
+fn normalObsConCov(geom: *const Geometry) relele.ConCov {
+    return normalObsConCovG(f64, geom.con());
 }
 
-fn normalObsConCovG(comptime T: type, GG: *const [4][5]T) relele.ConCovOf(T) {
+fn normalObsConCovG(comptime T: type, GG: relele.MetricConOf(T)) relele.ConCovOf(T) {
     const sp = simd.splat;
-    const alpha = @sqrt(sp(T, -1.0) / GG[0][0]);
+    const alpha = @sqrt(sp(T, -1.0) / GG.m[0][0]);
     const wcov = [4]T{ -alpha, sp(T, 0), sp(T, 0), sp(T, 0) };
-    return .{ .con = relele.indices12G(T, wcov, GG), .cov = wcov };
+    return .{ .con = relele.raiseVecG(T, wcov, GG), .cov = wcov };
 }
 
 /// C: calc_Lorentz_lab2ff — u = fluid (from VELPRIM prims), w = normal observer.
-pub fn lorentzLab2Ff(vprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) relele.Error![4][4]f64 {
-    return lorentzLab2FfG(f64, vprim, gg, GG);
+pub fn lorentzLab2Ff(vprim: [3]f64, geom: *const Geometry) relele.Error![4][4]f64 {
+    return lorentzLab2FfG(f64, vprim, geom.cov(), geom.con());
 }
 
 /// lorentzLab2Ff over lane type T (VELPRIM == VELR makes it infallible).
-pub fn lorentzLab2FfG(comptime T: type, vprim: [3]T, gg: *const [4][5]T, GG: *const [4][5]T) [4][4]T {
+pub fn lorentzLab2FfG(comptime T: type, vprim: [3]T, gg: relele.MetricCovOf(T), GG: relele.MetricConOf(T)) [4][4]T {
     const u = relele.uconUcovFromPrimsG(T, vprim, gg, GG);
     const w = normalObsConCovG(T, GG);
     return lorentzFromPairG(T, u.con, u.cov, w.con, w.cov);
 }
 
 /// C: calc_Lorentz_ff2lab — u = normal observer, w = fluid.
-pub fn lorentzFf2Lab(vprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) relele.Error![4][4]f64 {
-    const w = try relele.convVelsBoth(.{ 0, vprim[0], vprim[1], vprim[2] }, .velr, gg, GG);
-    const u = normalObsConCov(GG);
+pub fn lorentzFf2Lab(vprim: [3]f64, geom: *const Geometry) relele.Error![4][4]f64 {
+    const w = try relele.convertBoth(.{ 0, vprim[0], vprim[1], vprim[2] }, .velr, geom);
+    const u = normalObsConCov(geom);
     return lorentzFromPair(u.con, u.cov, w.con, w.cov);
 }
 
@@ -99,36 +99,36 @@ pub fn lorentzFf2Lab(vprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) 
 //
 
 /// A2 = α · (L_lab2ff A1).
-pub fn boost2Lab2Ff(a1: [4]f64, vprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) relele.Error![4]f64 {
-    return boost2Lab2FfG(f64, a1, vprim, gg, GG);
+pub fn boost2Lab2Ff(a1: [4]f64, vprim: [3]f64, geom: *const Geometry) relele.Error![4]f64 {
+    return boost2Lab2FfG(f64, a1, vprim, geom.cov(), geom.con());
 }
 
 /// boost2Lab2Ff over lane type T (infallible for VELR primitives).
-pub fn boost2Lab2FfG(comptime T: type, a1: [4]T, vprim: [3]T, gg: *const [4][5]T, GG: *const [4][5]T) [4]T {
+pub fn boost2Lab2FfG(comptime T: type, a1: [4]T, vprim: [3]T, gg: relele.MetricCovOf(T), GG: relele.MetricConOf(T)) [4]T {
     const l = lorentzLab2FfG(T, vprim, gg, GG);
-    var a2 = relele.multiply2G(T, a1, l);
-    const alpha = @sqrt(simd.splat(T, -1.0) / GG[0][0]);
+    var a2 = relele.transformVecG(T, a1, l);
+    const alpha = @sqrt(simd.splat(T, -1.0) / GG.m[0][0]);
     for (0..4) |i| a2[i] *= alpha;
     return a2;
 }
 
 /// A2 = L_ff2lab (A1 / α).
-pub fn boost2Ff2Lab(a1: [4]f64, vprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) relele.Error![4]f64 {
-    const l = try lorentzFf2Lab(vprim, gg, GG);
-    const alpha = @sqrt(-1.0 / GG[0][0]);
+pub fn boost2Ff2Lab(a1: [4]f64, vprim: [3]f64, geom: *const Geometry) relele.Error![4]f64 {
+    const l = try lorentzFf2Lab(vprim, geom);
+    const alpha = @sqrt(-1.0 / geom.GG[0][0]);
     var at: [4]f64 = undefined;
     for (0..4) |i| at[i] = a1[i] / alpha;
-    return relele.multiply2(at, l);
+    return relele.transformVec(at, l);
 }
 
 /// A2 = L_lab2ff (α A1), with L built from the radiation rest-frame velocity
 /// (C: boost2_lab2rf; VELPRIMRAD == VELPRIM == VELR so the substitution is a copy).
-pub fn boost2Lab2Rf(a1: [4]f64, vradprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) relele.Error![4]f64 {
-    const l = try lorentzLab2Ff(vradprim, gg, GG);
-    const alpha = @sqrt(-1.0 / GG[0][0]);
+pub fn boost2Lab2Rf(a1: [4]f64, vradprim: [3]f64, geom: *const Geometry) relele.Error![4]f64 {
+    const l = try lorentzLab2Ff(vradprim, geom);
+    const alpha = @sqrt(-1.0 / geom.GG[0][0]);
     var at: [4]f64 = undefined;
     for (0..4) |i| at[i] = a1[i] * alpha;
-    return relele.multiply2(at, l);
+    return relele.transformVec(at, l);
 }
 
 //
@@ -136,14 +136,14 @@ pub fn boost2Lab2Rf(a1: [4]f64, vradprim: [3]f64, gg: *const [4][5]f64, GG: *con
 //
 
 fn boostTensor(t1: [4][4]f64, l: [4][4]f64) [4][4]f64 {
-    return relele.multiply22(t1, l);
+    return relele.transformTensor(t1, l);
 }
 
 /// T2 = L L T1, then 0-row/col × α (C: boost22_lab2ff).
-pub fn boost22Lab2Ff(t1: [4][4]f64, vprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) relele.Error![4][4]f64 {
-    const l = try lorentzLab2Ff(vprim, gg, GG);
+pub fn boost22Lab2Ff(t1: [4][4]f64, vprim: [3]f64, geom: *const Geometry) relele.Error![4][4]f64 {
+    const l = try lorentzLab2Ff(vprim, geom);
     var t2 = boostTensor(t1, l);
-    const alpha = @sqrt(-1.0 / GG[0][0]);
+    const alpha = @sqrt(-1.0 / geom.GG[0][0]);
     for (0..4) |i| {
         t2[i][0] *= alpha;
         t2[0][i] *= alpha;
@@ -152,16 +152,16 @@ pub fn boost22Lab2Ff(t1: [4][4]f64, vprim: [3]f64, gg: *const [4][5]f64, GG: *co
 }
 
 /// T2 = L L T1 — no α correction reaches the output in C (dead code, see top).
-pub fn boost22Ff2Lab(t1: [4][4]f64, vprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) relele.Error![4][4]f64 {
-    const l = try lorentzFf2Lab(vprim, gg, GG);
+pub fn boost22Ff2Lab(t1: [4][4]f64, vprim: [3]f64, geom: *const Geometry) relele.Error![4][4]f64 {
+    const l = try lorentzFf2Lab(vprim, geom);
     return boostTensor(t1, l);
 }
 
 /// Radiation-rest-frame → lab: T2 = (L L T1) / α (C: boost22_rf2lab).
-pub fn boost22Rf2Lab(t1: [4][4]f64, vradprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) relele.Error![4][4]f64 {
-    const l = try lorentzFf2Lab(vradprim, gg, GG);
+pub fn boost22Rf2Lab(t1: [4][4]f64, vradprim: [3]f64, geom: *const Geometry) relele.Error![4][4]f64 {
+    const l = try lorentzFf2Lab(vradprim, geom);
     var t2 = boostTensor(t1, l);
-    const alpha = @sqrt(-1.0 / GG[0][0]);
+    const alpha = @sqrt(-1.0 / geom.GG[0][0]);
     for (0..4) |i| {
         for (0..4) |j| {
             t2[i][j] /= alpha;
@@ -171,8 +171,8 @@ pub fn boost22Rf2Lab(t1: [4][4]f64, vradprim: [3]f64, gg: *const [4][5]f64, GG: 
 }
 
 /// Lab → radiation rest frame: T2 = L L T1 (C's α multiply is dead, see top).
-pub fn boost22Lab2Rf(t1: [4][4]f64, vradprim: [3]f64, gg: *const [4][5]f64, GG: *const [4][5]f64) relele.Error![4][4]f64 {
-    const l = try lorentzLab2Ff(vradprim, gg, GG);
+pub fn boost22Lab2Rf(t1: [4][4]f64, vradprim: [3]f64, geom: *const Geometry) relele.Error![4][4]f64 {
+    const l = try lorentzLab2Ff(vradprim, geom);
     return boostTensor(t1, l);
 }
 
@@ -184,13 +184,13 @@ pub fn boost22Lab2Rf(t1: [4][4]f64, vradprim: [3]f64, gg: *const [4][5]f64, GG: 
 /// composite pairs exactly like C (Jacobian product, intermediate point).
 pub fn trans2Coco(x: [4]f64, u: [4]f64, from: config.Coords, to: config.Coords, mp: MetricParams) [4]f64 {
     if (from == to) return u;
-    return relele.multiply2(u, coco.dxdx(x, from, to, mp));
+    return relele.transformVec(u, coco.dxdx(x, from, to, mp));
 }
 
 /// T^μν between coordinate systems (C: trans22_coco).
 pub fn trans22Coco(x: [4]f64, t: [4][4]f64, from: config.Coords, to: config.Coords, mp: MetricParams) [4][4]f64 {
     if (from == to) return t;
-    return relele.multiply22(t, coco.dxdx(x, from, to, mp));
+    return relele.transformTensor(t, coco.dxdx(x, from, to, mp));
 }
 
 //
@@ -210,7 +210,7 @@ pub fn transPmhdCoco(
     if (geom1.coords == geom2.coords) return ppin;
     // The transform uses geom1's point Jacobian ∂x2/∂x1 twice (u^μ and b^μ);
     // compute it once here and share the body with the precomputed-Jacobian
-    // entry point (identical arithmetic — trans2Coco reduces to multiply2·J).
+    // entry point (identical arithmetic — trans2Coco reduces to transformVec·J).
     const jac = coco.dxdx(geom1.xxvec, geom1.coords, geom2.coords, mp);
     return transPmhdCocoJ(cfg, ppin, geom1, geom2, jac);
 }
@@ -242,11 +242,11 @@ pub fn transPmhdCocoJ(
             ug1.con,
             ug1.cov,
         );
-        bcon = relele.multiply2(bcon, jac);
+        bcon = relele.transformVec(bcon, jac);
     }
 
-    var ucon = relele.multiply2(ug1.con, jac);
-    ucon = try relele.convVelsUt(ucon, .vel4, .velr, &geom2.gg, &geom2.GG);
+    var ucon = relele.transformVec(ug1.con, jac);
+    ucon = try relele.convert(ucon, .vel4, .velr, geom2, .trust_ut);
 
     pp2[L.index(.vx)] = ucon[1];
     pp2[L.index(.vy)] = ucon[2];
@@ -280,15 +280,15 @@ pub fn transPradCoco(
     if (comptime !L.hasVar(.ee)) return pp2;
     if (geom1.coords == geom2.coords) return pp2;
 
-    var ucon = try relele.convVels(
+    var ucon = try relele.convert(
         .{ 0, ppin[L.index(.fx)], ppin[L.index(.fy)], ppin[L.index(.fz)] },
         .velr,
         .vel4,
-        &geom1.gg,
-        &geom1.GG,
+        geom1,
+        .recompute_ut,
     );
     ucon = trans2Coco(geom1.xxvec, ucon, geom1.coords, geom2.coords, mp);
-    ucon = try relele.convVelsUt(ucon, .vel4, .velr, &geom2.gg, &geom2.GG);
+    ucon = try relele.convert(ucon, .vel4, .velr, geom2, .trust_ut);
 
     pp2[L.index(.fx)] = ucon[1];
     pp2[L.index(.fy)] = ucon[2];

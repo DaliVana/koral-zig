@@ -310,7 +310,7 @@ pub fn Solver(comptime cfg: config.Config) type {
             whichframe: WhichFrame,
             f: *[4]f64,
         ) relele.Error!f64 {
-            return residualG(f64, uu, pp, st, uu0, st0, dt, &geom.gg, &geom.GG, geom.gdet, opac, whichprim, whicheq, whichframe, f);
+            return residualG(f64, uu, pp, st, uu0, st0, dt, geom.cov(), geom.con(), geom.gdet, opac, whichprim, whicheq, whichframe, f);
         }
 
         /// residual over lane type T — the batched Jacobian evaluates the
@@ -324,8 +324,8 @@ pub fn Solver(comptime cfg: config.Config) type {
             uu0: *const [NV]f64,
             st0: *const radforce.RadState,
             dt: f64,
-            gg: *const [4][5]T,
-            GG: *const [4][5]T,
+            gg: relele.MetricCovOf(T),
+            GG: relele.MetricConOf(T),
             gdet: T,
             opac: *const radforce.Params,
             whichprim: WhichPrim,
@@ -347,7 +347,7 @@ pub fn Solver(comptime cfg: config.Config) type {
                 pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)],
             }, gg, GG, opac);
             const giff = gi_pair.ff;
-            const gi = relele.indices21G(T, gi_pair.lab, gg); // G_μ
+            const gi = relele.lowerVecG(T, gi_pair.lab, gg); // G_μ
 
             var err: [4]T = @splat(sp(T, 0));
 
@@ -641,8 +641,10 @@ pub fn Solver(comptime cfg: config.Config) type {
 
             // lane-broadcast geometry for the batched Jacobian (used only
             // when ip.simd_jacobian)
-            const ggv = simd.splatBlock(V4, &geom.gg);
-            const GGv = simd.splatBlock(V4, &geom.GG);
+            const ggv_data = simd.splatBlock(V4, &geom.gg);
+            const GGv_data = simd.splatBlock(V4, &geom.GG);
+            const ggv: relele.MetricCovOf(V4) = .{ .m = &ggv_data };
+            const GGv: relele.MetricConOf(V4) = .{ .m = &GGv_data };
             const gdetv = simd.splat(V4, geom.gdet);
 
             var iter: usize = 0;
@@ -711,11 +713,11 @@ pub fn Solver(comptime cfg: config.Config) type {
                         uuv[iv] = .{ lane_uu[0][iv], lane_uu[1][iv], lane_uu[2][iv], lane_uu[3][iv] };
                     }
                     const stv = if (ip.slim_state)
-                        radforce.fillRadStateSlimG(cfg, V4, ppv, &ggv, &GGv, gamma_adiab, opac)
+                        radforce.fillRadStateSlimG(cfg, V4, ppv, ggv, GGv, gamma_adiab, opac)
                     else
-                        radforce.fillRadStateG(cfg, V4, ppv, &ggv, &GGv, gamma_adiab, opac);
+                        radforce.fillRadStateG(cfg, V4, ppv, ggv, GGv, gamma_adiab, opac);
                     var f2v: [4]V4 = undefined;
-                    _ = residualG(V4, &uuv, &ppv, &stv, uu00, state00, dt, &ggv, &GGv, gdetv, opac, whichprim, whicheq, whichframe, &f2v);
+                    _ = residualG(V4, &uuv, &ppv, &stv, uu00, state00, dt, ggv, GGv, gdetv, opac, whichprim, whicheq, whichframe, &f2v);
                     for (0..4) |i| {
                         const fi: [4]f64 = f2v[i]; // lane j = perturbation j
                         for (0..4) |j| {

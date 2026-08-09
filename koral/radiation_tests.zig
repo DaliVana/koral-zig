@@ -123,7 +123,7 @@ test "M7: M1 closure is traceless (R^mu_mu = 0), MINK and KS" {
             const pp = ppRad(1.0, 0.1, .{ 0, 0, 0 }, erf, f);
 
             const rij_up = try radiation.calcRij(cfg, pp, &geo);
-            const rij = relele.indices2221(rij_up, &geo.gg);
+            const rij = relele.lowerSecond(rij_up, &geo);
             var trace: f64 = 0;
             var scale: f64 = 0;
             for (0..4) |i| {
@@ -232,7 +232,7 @@ test "M7: closed-form gamma^2 agrees with bisection of the M1 consistency equati
                 uu[L.index(.fy)] / gdetu,
                 uu[L.index(.fz)] / gdetu,
             };
-            const avcon = relele.indices12(avcov, &geo.GG);
+            const avcon = relele.raiseVec(avcov, &geo);
 
             // residual h(γ²) = γ² − (1 + q(ũ(γ²))) with Ê(γ²) and ũ(γ²)
             // from the M1 relations — an independent formulation of the

@@ -42,10 +42,10 @@ pub fn fFluxPrime(
 
     // Gas 4-velocity and magnetic four-vector, solved once and shared with the
     // stress tensor below (finding #3: calcTij used to re-derive both from the
-    // same pp/geom). convVelsBoth + bconBcovBsqFrom4vel are pure, so calcTij's
+    // same pp/geom). convertBoth + bconBcovBsqFrom4vel are pure, so calcTij's
     // internal result and this one are the same bits.
     const vcon = [4]f64{ 0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
-    const u = try relele.convVelsBoth(vcon, .velr, &geom.gg, &geom.GG);
+    const u = try relele.convertBoth(vcon, .velr, geom);
 
     var bcon: [4]f64 = @splat(0);
     var bcov: [4]f64 = @splat(0);
@@ -55,7 +55,7 @@ pub fn fFluxPrime(
             .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
             u.con,
             u.cov,
-            &geom.gg,
+            geom,
         );
         bcon = b.bcon;
         bcov = b.bcov;
@@ -64,9 +64,9 @@ pub fn fFluxPrime(
 
     // T^μν → T^μ_ν, but only the row this face flux consumes (idim+1):
     // ff[vx/vy/vz] read tij_ud[idim+1][1..3]. Row-restricted lowering is
-    // bit-identical to indices2221(...)[idim+1] at ¼ the madds (P2 #7).
+    // bit-identical to lowerSecond(...)[idim+1] at ¼ the madds (P2 #7).
     const tij_uu = hydro.calcTijFromState(cfg, pp, geom, gamma_adiab, u, bcon, bsq);
-    const tij_ud_row = relele.indices2221Row(tij_uu, &geom.gg, idim + 1);
+    const tij_ud_row = relele.lowerSecondRow(tij_uu, geom, idim + 1);
 
     const pre = (gamma_adiab - 1.0) * ugas;
     const etap = ugas + pre + bsq; // eta - rho
@@ -95,10 +95,10 @@ pub fn fFluxPrime(
     }
 
     // radiative rows: R^d_ν (pure M1; + Rijvisc in M12) — only row idim+1 is
-    // read, so lower just that row (bit-identical to indices2221(...)[idim+1]).
+    // read, so lower just that row (bit-identical to lowerSecond(...)[idim+1]).
     if (comptime L.hasVar(.ee)) {
         const rij_uu = try radiation.calcRij(cfg, pp, geom);
-        const rij_ud_row = relele.indices2221Row(rij_uu, &geom.gg, idim + 1);
+        const rij_ud_row = relele.lowerSecondRow(rij_uu, geom, idim + 1);
         for (0..4) |nu| {
             ff[L.index(.ee) + nu] = gdetu * rij_ud_row[nu];
         }

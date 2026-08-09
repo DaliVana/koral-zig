@@ -341,7 +341,7 @@ pub fn localState(comptime cfg: config.Config, s: *const Scene, geom: *const Geo
             .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
             u.con,
             u.cov,
-            &geom.gg,
+            geom,
         );
         bsq = b.bsq;
         bcon = b.bcon;
@@ -357,12 +357,12 @@ pub fn localState(comptime cfg: config.Config, s: *const Scene, geom: *const Geo
     var trad = temps.te;
     var tradbb = temps.te;
     if (comptime L.hasVar(.ee)) {
-        const rij = radiation.calcRijG(cfg, f64, pp, &geom.gg, &geom.GG);
+        const rij = radiation.calcRijG(cfg, f64, pp, geom.cov(), geom.con());
         for (0..4) |i| {
             for (0..4) |j| ehat += rij[i][j] * u.cov[i] * u.cov[j];
         }
         if (!(ehat > 0) or !std.math.isFinite(ehat)) ehat = 0;
-        const rud = relele.indices2221(rij, &geom.gg);
+        const rud = relele.lowerSecond(rij, geom);
         for (0..4) |mu| {
             var s_: f64 = 0;
             for (0..4) |nu| s_ -= rud[mu][nu] * u.con[nu];

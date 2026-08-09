@@ -88,7 +88,7 @@ fn analyze(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !void {
                     .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
                     u.con,
                     u.cov,
-                    &geom.gg,
+                    &geom,
                 );
                 if (b.bsq > rho) continue; // σ-cut
 
@@ -97,7 +97,7 @@ fn analyze(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !void {
 
                 // fluid-frame radiation energy for the total inertia
                 var ehat: f64 = 0;
-                const rij = radiation.calcRijG(cfg, f64, pp, &geom.gg, &geom.GG);
+                const rij = radiation.calcRijG(cfg, f64, pp, geom.cov(), geom.con());
                 for (0..4) |i| {
                     for (0..4) |j| ehat += rij[i][j] * u.cov[i] * u.cov[j];
                 }

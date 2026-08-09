@@ -574,7 +574,7 @@ pub fn setHdAtmosphere(
 ) void {
     const L = layout.VarLayout(cfg);
     // normal observer in VELR ≡ VELPRIM — no conversion
-    const ucon = relele.normalObsRelvel(&geom.GG);
+    const ucon = relele.normalObsVelr(geom);
     pp[L.index(.vx)] = ucon[1];
     pp[L.index(.vy)] = ucon[2];
     pp[L.index(.vz)] = ucon[3];
@@ -601,7 +601,7 @@ pub fn setRadAtmosphere(
 ) void {
     const L = layout.VarLayout(cfg);
     pp[L.index(.ee)] = atm.eradatmmin;
-    const ucon = relele.normalObsRelvel(&geom.GG); // VELR ≡ VELPRIMRAD
+    const ucon = relele.normalObsVelr(geom); // VELR ≡ VELPRIMRAD
     pp[L.index(.fx)] = ucon[1];
     pp[L.index(.fy)] = ucon[2];
     pp[L.index(.fz)] = ucon[3];
@@ -701,8 +701,8 @@ pub fn prepInitCell(
     const ulph = @sqrt(-1.0 / (GGBL[0][0] / ell / ell + 2.0 / ell * GGBL[0][3] + GGBL[3][3]));
     const ult = ulph / ell;
     const ucov = [4]f64{ ult, 0.0, 0.0, ulph };
-    var ucon = relele.indices12(ucov, GGBL);
-    ucon = try relele.convVelsUt(ucon, .vel4, .velr, &geomBL.gg, &geomBL.GG);
+    var ucon = relele.raiseVec(ucov, geomBL);
+    ucon = try relele.convert(ucon, .vel4, .velr, geomBL, .trust_ut);
 
     pp[L.index(.rho)] = @max(rho, ppback[L.index(.rho)]);
     pp[L.index(.uu)] = @max(uint, ppback[L.index(.uu)]);
@@ -890,7 +890,7 @@ fn betaMaxRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64, res: *thread
                     .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
                     ug.con,
                     ug.cov,
-                    &geom.gg,
+                    &geom,
                 );
                 const pmag = bb.bsq / 2.0;
 
@@ -982,7 +982,7 @@ pub fn seedQuality(comptime SimT: type, s: *SimT) !SeedQ {
                     .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
                     ug.con,
                     ug.cov,
-                    &geom.gg,
+                    &geom,
                 );
                 const omega = @abs(ug.con[3] / ug.con[0]);
                 if (!(omega > 1e-12)) continue;
@@ -1066,24 +1066,24 @@ pub fn Bc(comptime SimT: type) type {
 
                     // no-inflow: gas
                     var ucon = [4]f64{ 0.0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
-                    ucon = try relele.convVels(ucon, .velr, .vel4, &geom.gg, &geom.GG);
+                    ucon = try relele.convert(ucon, .velr, .vel4, &geom, .recompute_ut);
                     ucon = frames.trans2Coco(geom.xxvec, ucon, cfg.coords, .bl, mp);
                     if (ucon[1] < 0.0) {
                         ucon[1] = 0.0;
                         ucon = frames.trans2Coco(geomBL.xxvec, ucon, .bl, cfg.coords, mp);
-                        ucon = try relele.convVels(ucon, .vel4, .velr, &geom.gg, &geom.GG);
+                        ucon = try relele.convert(ucon, .vel4, .velr, &geom, .recompute_ut);
                         pp[L.index(.vx)] = ucon[1];
                         pp[L.index(.vy)] = ucon[2];
                         pp[L.index(.vz)] = ucon[3];
                     }
                     if (comptime has_rad) {
                         var urf = [4]f64{ 0.0, pp[L.index(.fx)], pp[L.index(.fy)], pp[L.index(.fz)] };
-                        urf = try relele.convVels(urf, .velr, .vel4, &geom.gg, &geom.GG);
+                        urf = try relele.convert(urf, .velr, .vel4, &geom, .recompute_ut);
                         urf = frames.trans2Coco(geom.xxvec, urf, cfg.coords, .bl, mp);
                         if (urf[1] < 0.0) {
                             urf[1] = 0.0;
                             urf = frames.trans2Coco(geomBL.xxvec, urf, .bl, cfg.coords, mp);
-                            urf = try relele.convVels(urf, .vel4, .velr, &geom.gg, &geom.GG);
+                            urf = try relele.convert(urf, .vel4, .velr, &geom, .recompute_ut);
                             pp[L.index(.fx)] = urf[1];
                             pp[L.index(.fy)] = urf[2];
                             pp[L.index(.fz)] = urf[3];

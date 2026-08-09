@@ -1123,13 +1123,13 @@ pub fn Sim(comptime cfg: config.Config) type {
             var ss: [NV]f64 = @splat(0);
 
             const tij = try hydro.calcTij(cfg, pp, &geom, self.opt.gam);
-            const t = relele.indices2221(tij, &geom.gg);
+            const t = relele.lowerSecond(tij, &geom);
 
             const kr_blk = self.cache.krBlock(ix, iy, iz);
             const rows = [4]usize{ L.index(.uu), L.index(.vx), L.index(.vy), L.index(.vz) };
             if (comptime L.hasVar(.ee)) {
                 const rij_up = try radiation.calcRij(cfg, pp, &geom);
-                const rij = relele.indices2221(rij_up, &geom.gg);
+                const rij = relele.lowerSecond(rij_up, &geom);
                 const rrows = [4]usize{ L.index(.ee), L.index(.fx), L.index(.fy), L.index(.fz) };
                 for (0..4) |k| {
                     for (0..4) |l| {

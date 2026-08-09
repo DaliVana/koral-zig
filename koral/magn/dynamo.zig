@@ -296,7 +296,7 @@ fn fieldAngle(comptime SimT: type, geomMKS2: *const Geometry, geomBL: *const Geo
         .{ ppbl[L.index(.b1)], ppbl[L.index(.b2)], ppbl[L.index(.b3)] },
         u.con,
         u.cov,
-        &geomBL.gg,
+        geomBL,
     );
     const brbphi = @sqrt(geomBL.gg[1][1] * geomBL.gg[3][3]) * b.bcon[1] * b.bcon[3];
     return .{ .angle = -brbphi / b.bsq, .bsq = b.bsq };

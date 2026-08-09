@@ -175,7 +175,7 @@ pub fn fillRadState(
     gamma_adiab: f64,
     par: *const Params,
 ) relele.Error!RadState {
-    return fillRadStateG(cfg, f64, pp, &geom.gg, &geom.GG, gamma_adiab, par);
+    return fillRadStateG(cfg, f64, pp, geom.cov(), geom.con(), gamma_adiab, par);
 }
 
 /// Slim scalar fillRadState — the solver hot path (see fillRadStateSlimG).
@@ -186,7 +186,7 @@ pub fn fillRadStateSlim(
     gamma_adiab: f64,
     par: *const Params,
 ) relele.Error!RadState {
-    return fillRadStateSlimG(cfg, f64, pp, &geom.gg, &geom.GG, gamma_adiab, par);
+    return fillRadStateSlimG(cfg, f64, pp, geom.cov(), geom.con(), gamma_adiab, par);
 }
 
 /// Slim fillRadState over lane type T: the implicit-solver path. Skips the
@@ -198,8 +198,8 @@ pub fn fillRadStateSlimG(
     comptime cfg: config.Config,
     comptime T: type,
     pp: [layout.VarLayout(cfg).count]T,
-    gg: *const [4][5]T,
-    GG: *const [4][5]T,
+    gg: relele.MetricCovOf(T),
+    GG: relele.MetricConOf(T),
     gamma_adiab: f64,
     par: *const Params,
 ) RadStateOf(T) {
@@ -211,8 +211,8 @@ pub fn fillRadStateG(
     comptime cfg: config.Config,
     comptime T: type,
     pp: [layout.VarLayout(cfg).count]T,
-    gg: *const [4][5]T,
-    GG: *const [4][5]T,
+    gg: relele.MetricCovOf(T),
+    GG: relele.MetricConOf(T),
     gamma_adiab: f64,
     par: *const Params,
 ) RadStateOf(T) {
@@ -226,8 +226,8 @@ fn fillRadStateCoreG(
     comptime cfg: config.Config,
     comptime T: type,
     pp: [layout.VarLayout(cfg).count]T,
-    gg: *const [4][5]T,
-    GG: *const [4][5]T,
+    gg: relele.MetricCovOf(T),
+    GG: relele.MetricConOf(T),
     gamma_adiab: f64,
     par: *const Params,
     comptime full: bool,
@@ -370,7 +370,7 @@ pub fn calcGiFromState(
     geom: *const Geometry,
     par: *const Params,
 ) relele.Error!Gi {
-    return calcGiFromStateG(f64, st, vprim, &geom.gg, &geom.GG, par);
+    return calcGiFromStateG(f64, st, vprim, geom.cov(), geom.con(), par);
 }
 
 /// Slim scalar calcGiFromState — the solver hot path (see calcGiFromStateSlimG).
@@ -380,7 +380,7 @@ pub fn calcGiFromStateSlim(
     geom: *const Geometry,
     par: *const Params,
 ) relele.Error!Gi {
-    return calcGiFromStateSlimG(f64, st, vprim, &geom.gg, &geom.GG, par);
+    return calcGiFromStateSlimG(f64, st, vprim, geom.cov(), geom.con(), par);
 }
 
 /// Slim calcGiFromState over lane type T: the implicit-residual path. Skips
@@ -392,8 +392,8 @@ pub fn calcGiFromStateSlimG(
     comptime T: type,
     st: *const RadStateOf(T),
     vprim: [3]T,
-    gg: *const [4][5]T,
-    GG: *const [4][5]T,
+    gg: relele.MetricCovOf(T),
+    GG: relele.MetricConOf(T),
     par: *const Params,
 ) GiOf(T) {
     return calcGiFromStateCoreG(T, st, vprim, gg, GG, par, false);
@@ -404,8 +404,8 @@ pub fn calcGiFromStateG(
     comptime T: type,
     st: *const RadStateOf(T),
     vprim: [3]T,
-    gg: *const [4][5]T,
-    GG: *const [4][5]T,
+    gg: relele.MetricCovOf(T),
+    GG: relele.MetricConOf(T),
     par: *const Params,
 ) GiOf(T) {
     return calcGiFromStateCoreG(T, st, vprim, gg, GG, par, true);
@@ -417,8 +417,8 @@ fn calcGiFromStateCoreG(
     comptime T: type,
     st: *const RadStateOf(T),
     vprim: [3]T,
-    gg: *const [4][5]T,
-    GG: *const [4][5]T,
+    gg: relele.MetricCovOf(T),
+    GG: relele.MetricConOf(T),
     par: *const Params,
     comptime full: bool,
 ) GiOf(T) {
@@ -561,13 +561,13 @@ pub fn calcChiSlim(
     // bmagcgs is the only radiation-independent term that needs b²).
     const u = relele.uconUcovFromPrimsG(f64, .{
         pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)],
-    }, &geom.gg, &geom.GG);
+    }, geom.cov(), geom.con());
 
     var bsq: f64 = 0;
     if (comptime L.hasVar(.b1)) {
         const bf = mhd.bconBcovBsqFrom4velG(f64, .{
             pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)],
-        }, u.con, u.cov, &geom.gg);
+        }, u.con, u.cov, geom.cov());
         bsq = bf.bsq;
     }
 

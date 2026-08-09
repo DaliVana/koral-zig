@@ -108,7 +108,7 @@ normal (Eulerian) observer — `VELR` in
 [`koral/relele.zig`](../koral/relele.zig) — which is robust in the ergoregion and
 at high Lorentz factor. Conversions among the four-velocity $u^\mu$ (VEL4), the
 coordinate three-velocity $u^i/u^t$ (VEL3) and $\tilde u^i$ (VELR) are all in
-`relele.zig` (`convVelsCore`).
+`relele.zig` (`convert`).
 
 The two extra module combinations that change $N_V$ (not used by PUFFY): adding
 two-temperature electrons gives $N_V = 15$; adding photon-number transport gives
@@ -289,7 +289,7 @@ $$R^{\mu\nu} = \frac{4}{3}\,\hat E\, u_r^\mu u_r^\nu + \frac{1}{3}\,\hat E\, g^{
 The $\tfrac43$/$\tfrac13$ split is the Eddington relation in the comoving frame
 ($P = \tfrac13 \hat E$). The radiation-frame 4-velocity is reconstructed from the
 VELR primitives by solving the normalization $u_r^\mu u_{r\mu} = -1$
-(`urfCon`, via `relele.convVels` VELR→VEL4).
+(`urfCon`, via `relele.convert` VELR→VEL4).
 
 ### 4.2 Fluid-frame radiation energy $\hat E_{\rm ff}$
 

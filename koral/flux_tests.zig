@@ -180,7 +180,7 @@ test "wavespeeds: boost along x is relativistic velocity addition" {
     const gam = 1.0 / @sqrt(1.0 - v * v);
     const ucon = [4]f64{ gam, gam * v, 0, 0 };
 
-    const a = wavespeeds.lrCore(ucon, &geo.GG, .{ wspeed2, wspeed2, wspeed2 }, .{ true, false, false });
+    const a = wavespeeds.lrCore(ucon, &geo, .{ wspeed2, wspeed2, wspeed2 }, .{ true, false, false });
     try expectClose(a[0], (v - c0) / (1.0 - v * c0), 1e-10);
     try expectClose(a[1], (v + c0) / (1.0 + v * c0), 1e-10);
 }
@@ -237,11 +237,10 @@ test "flux: p2u time-row consistency — F with u^i ∝ conserved density rows" 
 
         var uu: [L.count]f64 = @splat(0);
         try p2u_mod.p2uMhd(cfg, pp, &uu, &geo, pgamma);
-        const u = try relele.convVelsBoth(
+        const u = try relele.convertBoth(
             .{ 0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
             .velr,
-            &geo.gg,
-            &geo.GG,
+            &geo,
         );
         for (0..2) |idim| {
             const ff = try fluxmod.fFluxPrime(cfg, pp, idim, &geo, pgamma);

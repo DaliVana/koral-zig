@@ -170,7 +170,7 @@ fn m1Cold(geom: *const Geometry, avcov_in: [4]f64, gammarel2: f64) ColdResult {
 
     const erf = (0.75 * disc) / (utsq * (gn11 + utsq) * (gn11 + 4.0 * utsq));
 
-    const avcon = relele.indices12(avcov, GG);
+    const avcon = relele.raiseVec(avcov, geom);
 
     const gammarel = @sqrt(gammarel2);
     var urfconrel: [4]f64 = @splat(0);
@@ -205,7 +205,7 @@ pub fn u2pRad(
         uu[L.index(.fy)] / gdetu,
         uu[L.index(.fz)] / gdetu,
     };
-    var avcon = relele.indices12(avcov, GG);
+    var avcon = relele.raiseVec(avcov, geom);
 
     var gammarel2 = m1GammaRel2(geom, avcov);
     var erf = m1Erf(geom, avcon[0], gammarel2);
@@ -232,12 +232,12 @@ pub fn u2pRad(
         const fast = m1Cold(geom, avcov, gammamax * gammamax);
 
         if (@abs(slow.avcov[0] - avcov[0]) > @abs(fast.avcov[0] - avcov[0])) {
-            avcon = relele.indices12(fast.avcov, GG);
+            avcon = relele.raiseVec(fast.avcov, geom);
             urfcon = fast.urfconrel;
             gammarel2 = gammamax * gammamax;
             erf = fast.erf;
         } else {
-            avcon = relele.indices12(slow.avcov, GG);
+            avcon = relele.raiseVec(slow.avcov, geom);
             urfcon = slow.urfconrel;
             gammarel2 = one_eps * one_eps;
             erf = slow.erf;

@@ -5,6 +5,7 @@
 
 const simd = @import("../math/simd.zig");
 const relele = @import("../relele.zig");
+const Geometry = @import("../geometry.zig").Geometry;
 
 /// b^μ from B^i and the gas four-velocity (C: calc_bcon_4vel, magn.c:48).
 pub fn bconFrom4vel(B: [3]f64, ucon: [4]f64, ucov: [4]f64) [4]f64 {
@@ -28,14 +29,14 @@ pub fn Bfield4Of(comptime T: type) type {
 pub const Bfield4 = Bfield4Of(f64);
 
 /// b^μ, b_μ, b² in one go (C: calc_bcon_bcov_bsq_from_4vel, magn.c:11).
-pub fn bconBcovBsqFrom4vel(B: [3]f64, ucon: [4]f64, ucov: [4]f64, gg: *const [4][5]f64) Bfield4 {
-    return bconBcovBsqFrom4velG(f64, B, ucon, ucov, gg);
+pub fn bconBcovBsqFrom4vel(B: [3]f64, ucon: [4]f64, ucov: [4]f64, geom: *const Geometry) Bfield4 {
+    return bconBcovBsqFrom4velG(f64, B, ucon, ucov, geom.cov());
 }
 
 /// bconBcovBsqFrom4vel over lane type T.
-pub fn bconBcovBsqFrom4velG(comptime T: type, B: [3]T, ucon: [4]T, ucov: [4]T, gg: *const [4][5]T) Bfield4Of(T) {
+pub fn bconBcovBsqFrom4velG(comptime T: type, B: [3]T, ucon: [4]T, ucov: [4]T, gg: relele.MetricCovOf(T)) Bfield4Of(T) {
     const bcon = bconFrom4velG(T, B, ucon, ucov);
-    const bcov = relele.indices21G(T, bcon, gg);
+    const bcov = relele.lowerVecG(T, bcon, gg);
     return .{ .bcon = bcon, .bcov = bcov, .bsq = relele.dotG(T, bcon, bcov) };
 }
 

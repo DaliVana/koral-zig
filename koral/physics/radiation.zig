@@ -32,7 +32,7 @@ pub fn urfCon(
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
 ) relele.Error![4]f64 {
-    return urfConG(cfg, f64, pp, &geom.gg, &geom.GG);
+    return urfConG(cfg, f64, pp, geom.cov(), geom.con());
 }
 
 /// urfCon over lane type T (VELR → VEL4 is infallible).
@@ -40,8 +40,8 @@ pub fn urfConG(
     comptime cfg: config.Config,
     comptime T: type,
     pp: [layout.VarLayout(cfg).count]T,
-    gg: *const [4][5]T,
-    GG: *const [4][5]T,
+    gg: relele.MetricCovOf(T),
+    GG: relele.MetricConOf(T),
 ) [4]T {
     const L = layout.VarLayout(cfg);
     return relele.velrToVel4G(
@@ -59,7 +59,7 @@ pub fn calcRij(
     pp: [layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
 ) relele.Error![4][4]f64 {
-    return calcRijG(cfg, f64, pp, &geom.gg, &geom.GG);
+    return calcRijG(cfg, f64, pp, geom.cov(), geom.con());
 }
 
 /// calcRij over lane type T.
@@ -67,8 +67,8 @@ pub fn calcRijG(
     comptime cfg: config.Config,
     comptime T: type,
     pp: [layout.VarLayout(cfg).count]T,
-    gg: *const [4][5]T,
-    GG: *const [4][5]T,
+    gg: relele.MetricCovOf(T),
+    GG: relele.MetricConOf(T),
 ) [4][4]T {
     const sp = simd.splat;
     const L = layout.VarLayout(cfg);
@@ -78,7 +78,7 @@ pub fn calcRijG(
     var rij: [4][4]T = undefined;
     for (0..4) |i| {
         for (0..4) |j| {
-            rij[i][j] = sp(T, four_third) * erf * urf[i] * urf[j] + sp(T, one_third) * erf * GG[i][j];
+            rij[i][j] = sp(T, four_third) * erf * urf[i] * urf[j] + sp(T, one_third) * erf * GG.m[i][j];
         }
     }
     return rij;
@@ -100,7 +100,7 @@ pub fn calcFfRtt(
     );
 
     const rij_uu = try calcRij(cfg, pp, geom);
-    const rij_ud = relele.indices2221(rij_uu, &geom.gg);
+    const rij_ud = relele.lowerSecond(rij_uu, geom);
     var rtt: f64 = 0;
     for (0..4) |ia| {
         for (0..4) |ib| {
@@ -142,10 +142,9 @@ pub fn pradFf2Lab(
     const rij_uu = try frames.boost22Ff2Lab(
         rij_uu_ff,
         .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
-        &geom.gg,
-        &geom.GG,
+        geom,
     );
-    const rij_ud = relele.indices2221(rij_uu, &geom.gg);
+    const rij_ud = relele.lowerSecond(rij_uu, geom);
 
     const gdetu = geom.gdet; // GDETIN == 1
     var uu = [_]f64{0} ** L.count;
@@ -175,7 +174,7 @@ pub fn calcRadWavespeeds(
     var aval: [12]f64 = undefined;
 
     // unlimited rad wavespeeds, used for the time step
-    const a0 = wavespeeds.lrCore(urf, &geom.GG, .{ rv2rad, rv2rad, rv2rad }, active_dims);
+    const a0 = wavespeeds.lrCore(urf, geom, .{ rv2rad, rv2rad, rv2rad }, active_dims);
     aval[0..6].* = a0;
 
     // damped by the optical depth (Sądowski+13a); default branch only
@@ -192,7 +191,7 @@ pub fn calcRadWavespeeds(
     const rv2y = rv2dim[1];
     const rv2z = rv2dim[1]; // C quirk (rad.c:3702): z uses the y depth
 
-    const a1 = wavespeeds.lrCore(urf, &geom.GG, .{ rv2x, rv2y, rv2z }, active_dims);
+    const a1 = wavespeeds.lrCore(urf, geom, .{ rv2x, rv2y, rv2z }, active_dims);
     aval[6..12].* = a1;
 
     return aval;

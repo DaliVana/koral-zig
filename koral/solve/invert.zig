@@ -217,7 +217,6 @@ pub fn u2pSolverW(
 ) i32 {
     const L = layout.VarLayout(cfg);
     const gg = &geom.gg;
-    const GG = &geom.GG;
     const gdetu_inv = 1.0 / geom.gdet; // GDETIN == 1
     const alpha = geom.alpha;
 
@@ -230,7 +229,7 @@ pub fn u2pSolverW(
         uu[L.index(.vy)] * gdetu_inv * alpha,
         uu[L.index(.vz)] * gdetu_inv * alpha,
     };
-    const Qcon = relele.indices12(Qcov, GG);
+    const Qcon = relele.raiseVec(Qcov, geom);
 
     var Bcon: [4]f64 = @splat(0);
     var Bsq: f64 = 0;
@@ -242,14 +241,14 @@ pub fn u2pSolverW(
             uu[L.index(.b2)] * gdetu_inv * alpha,
             uu[L.index(.b3)] * gdetu_inv * alpha,
         };
-        const Bcov = relele.indices21(Bcon, gg);
+        const Bcov = relele.lowerVec(Bcon, geom);
         Bsq = relele.dot(Bcon, Bcov);
         QdotB = relele.dot(Qcov, Bcon);
     }
     const QdotBsq = QdotB * QdotB;
 
     const ncov = [4]f64{ -alpha, 0, 0, 0 };
-    const ncon = relele.indices12(ncov, GG);
+    const ncon = relele.raiseVec(ncov, geom);
     const Qn = Qcon[0] * ncov[0];
 
     // Q̃^ν = (δ^ν_μ + n^ν n_μ) Q^μ
@@ -260,7 +259,7 @@ pub fn u2pSolverW(
             Qtcon[i] += (relele.kron(i, j) + ncon[i] * ncov[j]) * Qcon[j];
         }
     }
-    const Qtcov = relele.indices21(Qtcon, gg);
+    const Qtcov = relele.lowerVec(Qtcon, geom);
     const Qt2 = relele.dot(Qtcon, Qtcov);
     const Qtsq = Qt2;
 
@@ -456,7 +455,6 @@ pub fn checkFloorsMhd(
 ) relele.Error!i32 {
     const L = layout.VarLayout(cfg);
     const gg = &geom.gg;
-    const GG = &geom.GG;
     var ret: i32 = 0;
 
     // C computes the conserved vector once at entry (u2p.c:433) — the ZAMO
@@ -497,7 +495,7 @@ pub fn checkFloorsMhd(
             .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
             u.con,
             u.cov,
-            gg,
+            geom,
         );
 
         var f: f64 = 1.0;
@@ -533,7 +531,7 @@ pub fn checkFloorsMhd(
                     for (0..4) |iv| ucondr[iv] = gammapar * (u.con[iv] + betapar * b.bcon[iv]);
 
                     const Bcon = [4]f64{ 0, pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] };
-                    const Bcov = relele.indices21(Bcon, gg);
+                    const Bcov = relele.lowerVec(Bcon, geom);
                     const Bmag = @sqrt(relele.dot(Bcon, Bcov));
 
                     const udotB = relele.dot(u.con, Bcov);
@@ -548,7 +546,7 @@ pub fn checkFloorsMhd(
                         vcon[iv] = vpar * Bcon[iv] / Bmag + ucondr[iv] / ucondr[0];
                     }
 
-                    const ucont = try relele.convVels(vcon, .vel3, .velr, gg, GG);
+                    const ucont = try relele.convert(vcon, .vel3, .velr, geom, .recompute_ut);
                     pp[L.index(.vx)] = ucont[1];
                     pp[L.index(.vy)] = ucont[2];
                     pp[L.index(.vz)] = ucont[3];
@@ -564,8 +562,8 @@ pub fn checkFloorsMhd(
                     const drho = pp[L.index(.rho)] * (f - 1.0);
 
                     // ZAMO 4-velocity = normal observer n^μ = −α g^{μ0}, → VELR
-                    const etacon = relele.normalObsNcon(GG, geom.alpha);
-                    const etarel = try relele.convVelsUt(etacon, .vel4, .velr, gg, GG);
+                    const etacon = relele.normalObsCon(geom);
+                    const etarel = try relele.convert(etacon, .vel4, .velr, geom, .trust_ut);
 
                     var dpp: [L.count]f64 = @splat(0);
                     dpp[L.index(.rho)] = drho;

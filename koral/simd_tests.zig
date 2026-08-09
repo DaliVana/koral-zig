@@ -24,7 +24,8 @@ const implicit = @import("solve/implicit.zig");
 const p2u_mod = @import("p2u.zig");
 const precompute = @import("metric/precompute.zig");
 const metric = @import("metric/metric.zig");
-const Geometry = @import("geometry.zig").Geometry;
+const geometry = @import("geometry.zig");
+const Geometry = geometry.Geometry;
 
 const expect = std.testing.expect;
 const geometryAt = precompute.geometryAt;
@@ -178,9 +179,11 @@ test "SIMD: fillRadState + residual lanes are bitwise equal to 4 scalar evaluati
             ppv[iv] = .{ lane_pp[0][iv], lane_pp[1][iv], lane_pp[2][iv], lane_pp[3][iv] };
             uuv[iv] = .{ lane_uu[0][iv], lane_uu[1][iv], lane_uu[2][iv], lane_uu[3][iv] };
         }
-        const ggv = simd.splatBlock(V4, &geo.gg);
-        const GGv = simd.splatBlock(V4, &geo.GG);
-        const stv = radforce.fillRadStateG(cfg, V4, ppv, &ggv, &GGv, gam, p);
+        const ggv_data = simd.splatBlock(V4, &geo.gg);
+        const GGv_data = simd.splatBlock(V4, &geo.GG);
+        const ggv: geometry.MetricCovOf(V4) = .{ .m = &ggv_data };
+        const GGv: geometry.MetricConOf(V4) = .{ .m = &GGv_data };
+        const stv = radforce.fillRadStateG(cfg, V4, ppv, ggv, GGv, gam, p);
 
         // per-lane state fill must match the scalar fill bitwise
         for (0..4) |j| {
@@ -193,7 +196,7 @@ test "SIMD: fillRadState + residual lanes are bitwise equal to 4 scalar evaluati
         // error norms) must match per lane, for every rung configuration
         const rung = rungs[it % rungs.len];
         var fv: [4]V4 = undefined;
-        const errv: [4]f64 = ImplT.residualG(V4, &uuv, &ppv, &stv, &uu00, &st00, dt, &ggv, &GGv, simd.splat(V4, geo.gdet), p, rung.p, rung.e, rung.fr, &fv);
+        const errv: [4]f64 = ImplT.residualG(V4, &uuv, &ppv, &stv, &uu00, &st00, dt, ggv, GGv, simd.splat(V4, geo.gdet), p, rung.p, rung.e, rung.fr, &fv);
         for (0..4) |j| {
             const st_scalar = try radforce.fillRadState(cfg, lane_pp[j], geo, gam, p);
             var fs: [4]f64 = undefined;

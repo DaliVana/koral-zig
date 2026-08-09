@@ -12,9 +12,6 @@ const config = @import("config.zig");
 const layout = @import("layout.zig");
 const Geometry = @import("geometry.zig").Geometry;
 
-const four_third: f64 = 4.0 / 3.0;
-const one_third: f64 = 1.0 / 3.0;
-
 /// 1 + u_t computed cancellation-free (C: calc_utp1, p2u.c:163; the
 /// VELPRIM == VELR branch — the only one KORAL's defaults ever take).
 pub fn calcUtp1(vcon: [4]f64, geom: *const Geometry) f64 {
@@ -54,7 +51,7 @@ pub fn p2uMhd(
     const s = pp[L.index(.entr)];
 
     const vcon = [4]f64{ 0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
-    const u = try relele.convVelsBoth(vcon, .velr, &geom.gg, &geom.GG);
+    const u = try relele.convertBoth(vcon, .velr, geom);
 
     var bcon: [4]f64 = @splat(0);
     var bcov: [4]f64 = @splat(0);
@@ -64,7 +61,7 @@ pub fn p2uMhd(
             .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
             u.con,
             u.cov,
-            &geom.gg,
+            geom,
         );
         bcon = b.bcon;
         bcov = b.bcov;
@@ -111,21 +108,23 @@ pub fn p2uRad(
 ) relele.Error!void {
     const L = layout.VarLayout(cfg);
     const gdetu = geom.gdet; // GDETIN == 1
+    const four_third: f64 = 4.0 / 3.0;
+    const one_third: f64 = 1.0 / 3.0;
 
     const erf = pp[L.index(.ee)];
-    const urf = try relele.convVels(
+    const urf = try relele.convert(
         .{ 0, pp[L.index(.fx)], pp[L.index(.fy)], pp[L.index(.fz)] },
         .velr,
         .vel4,
-        &geom.gg,
-        &geom.GG,
+        geom,
+        .recompute_ut,
     );
 
     var rtopp: [4]f64 = undefined;
     for (0..4) |i| {
-        rtopp[i] = four_third * erf * urf[0] * urf[i] + one_third * erf * geom.GG[0][i];
+        rtopp[i] = four_third * erf * urf[0] * urf[i] + (one_third) * erf * geom.GG[0][i];
     }
-    rtopp = relele.indices21(rtopp, &geom.gg); // R^t_μ
+    rtopp = relele.lowerVec(rtopp, geom); // R^t_μ
 
     for (0..4) |i| {
         uu[L.index(.ee) + i] = gdetu * rtopp[i];

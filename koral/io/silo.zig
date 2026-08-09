@@ -257,8 +257,8 @@ fn writeImpl(
 
                 // 4-velocity in BL
                 const vcon = [4]f64{ 0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
-                const ucon = try relele.convVels(vcon, .velr, .vel4, &geomBL.gg, &geomBL.GG);
-                const ucov = relele.indices21(ucon, &geomBL.gg);
+                const ucon = try relele.convert(vcon, .velr, .vel4, &geomBL, .recompute_ut);
+                const ucov = relele.lowerVec(ucon, &geomBL);
                 uc0[zi] = @abs(ucon[0]);
                 uc1[zi] = ucon[1];
                 uc2[zi] = ucon[2];
@@ -282,7 +282,7 @@ fn writeImpl(
                         .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
                         ucon,
                         ucov,
-                        &geomBL.gg,
+                        &geomBL,
                     );
                     bsq[zi] = bb.bsq;
                     b1c[zi] = pp[L.index(.b1)];

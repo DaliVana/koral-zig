@@ -117,7 +117,7 @@ pub fn mdot(comptime SimT: type, sim: *const SimT, ix: i64) relele.Error!f64 {
             sim.p.load(ix, iy, iz, &pp);
             const geom = sim.cache.fillGeometry(ix, iy, iz);
             const vcon = [4]f64{ 0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
-            const ucon = try relele.convVels(vcon, .velr, .vel4, &geom.gg, &geom.GG);
+            const ucon = try relele.convert(vcon, .velr, .vel4, &geom, .recompute_ut);
             const rhouconr = pp[rho_i] * ucon[1];
             const dy = sim.grid.cellSize(iy, 1);
             // C calc_mdot: dφ → 2π for TNZ==1, raw cell dφ × (2π/PHIWEDGE) for
@@ -163,17 +163,17 @@ pub fn lum(comptime SimT: type, sim: *const SimT, ix: i64) relele.Error!Lum {
             const dphBL = if (twod) 2.0 * pi else blPhiWidth(SimT, sim, ix, iy, iz) * (2.0 * pi / (sim.grid.maxz - sim.grid.minz));
 
             const vcon = [4]f64{ 0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
-            const ucon = try relele.convVels(vcon, .velr, .vel4, &geomBL.gg, &geomBL.GG);
+            const ucon = try relele.convert(vcon, .velr, .vel4, &geomBL, .recompute_ut);
             const rhour = pp[L.index(.rho)] * ucon[1];
 
             const tij_up = try hydro.calcTij(cfg, pp, &geomBL, sim.opt.gam);
-            const tij = relele.indices2221(tij_up, &geomBL.gg);
+            const tij = relele.lowerSecond(tij_up, &geomBL);
             const trt = tij[1][0];
 
             var rrt: f64 = 0;
             if (has_rad) {
                 const rij_up = try radiation.calcRij(cfg, pp, &geomBL);
-                const rij = relele.indices2221(rij_up, &geomBL.gg);
+                const rij = relele.lowerSecond(rij_up, &geomBL);
                 rrt = -rij[1][0]; // type 1
                 if (rrt < 0) rrt = 0;
                 radlum += geomBL.gdet * rrt * dthBL * dphBL;
@@ -299,7 +299,7 @@ pub fn maxPmagPtot(comptime SimT: type, sim: *const SimT) relele.Error!f64 {
                     .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
                     ug.con,
                     ug.cov,
-                    &geom.gg,
+                    &geom,
                 );
                 const pmag = bb.bsq / 2.0;
                 var ptot = (sim.opt.gam - 1.0) * pp[L.index(.uu)];

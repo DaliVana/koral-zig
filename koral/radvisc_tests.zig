@@ -153,11 +153,10 @@ test "M12 radviscosity: σ_μν is symmetric and u-orthogonal (kinematic shear i
     const sigma = sh.s;
 
     // the radiation-frame 4-velocity the shear is projected around.
-    const u = try relele.convVelsBoth(
+    const u = try relele.convertBoth(
         .{ 0, pp[LP.index(.fx)], pp[LP.index(.fy)], pp[LP.index(.fz)] },
         .velr,
-        &geom.gg,
-        &geom.GG,
+        &geom,
     );
 
     // scale for the tolerances, and a guard that the shear isn't trivially zero

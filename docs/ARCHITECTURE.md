@@ -300,6 +300,14 @@ The **4×5** layout is C's: columns 0..3 are the metric/inverse, column 4 packs 
 Reading the wrong column silently gives garbage — index only `[0..4][0..4]` for the tensor
 itself. `alpha = sqrt(-1/GG[0][0])`.
 
+`Geometry.cov()` and `.con()` return `MetricCovOf(f64)` / `MetricConOf(f64)` — one-pointer
+views of `gg` / `GG` that are nominally distinct types, so a typed view of one block cannot
+be passed where the other is expected. Scalar helpers (`relele.lowerVec`, `frames.boost*`,
+`wavespeeds.lrCore`, …) take the whole `*const Geometry` and select the block themselves;
+the lane-generic `<name>G` helpers take the two views, since a `@Vector` batch has no
+`Geometry` to select from. Build views with the accessors: an anonymous `.{ .m = … }`
+literal coerces to *either* view type and so silently defeats the distinction.
+
 The `MetricCache` (`koral/metric/precompute.zig`) is built once per run (in `sim.zig`) and
 stores, over all cells including ghosts: cell-center metric blocks, Christoffels, Jacobians
 to/from output coordinates, and per-face metric blocks. The solver reads geometry through
@@ -628,7 +636,7 @@ rather than recomputing the flat offset `NV` times.
 
 The **metric source** (`metricSource`, C `f_metric_source_term_arb`, GDETIN==1) only the
 Christoffel-contraction rows survive: it builds T^μν via `hydro.calcTij`, lowers one index
-via `relele.indices2221`, and accumulates `ss[row] += gdet · T^k_l · Γ^l_{ν k}` (and the
+via `relele.lowerSecond`, and accumulates `ss[row] += gdet · T^k_l · Γ^l_{ν k}` (and the
 analogous `R^k_l` term for radiation rows). This is the geometric momentum/energy source
 S_ν = √-g T^k_l Γ^l_{νk}.
 
@@ -773,7 +781,7 @@ back to donor cell at local extrema, so reconstruction order is not globally uni
 The kernel is `comptime T`-generic (`f64` or `@Vector(W, f64)`, limiter branches via
 `simd.select`) and lane-for-lane bit-identical to scalar.
 
-**Wavespeeds.** `lrCore(ucon, GG, wspeed2s, dims)` is the shared HARM characteristic-speed
+**Wavespeeds.** `lrCore(ucon, geom, wspeed2s, dims)` is the shared HARM characteristic-speed
 core (used by *both* gas and radiation): given a fluid-frame wavespeed² per direction, it
 solves the boosted characteristic quadratic for lab-frame dxⁱ/dt. `gasWspeed2` gives the
 relativistic magnetosonic speed² `cs² + vA² − cs²·vA²` (cs² ceiling 0.95, vA² floored at 0).
@@ -785,7 +793,7 @@ the same `lrCore` with the M1 rest-frame v²=1/3 (unlimited, for the timestep) a
 **Flux.** `fFluxPrime(cfg, pp, idim, geom, gamma)` is the advective flux of *all* conserved
 rows across a face: density/entropy advection, the cancellation-free energy row (same
 `calcUtp1` assembly as p2u), the momentum rows (`T^{idim}_i` via `hydro.calcTij` +
-`indices2221`), the antisymmetric induction fluxes `b^k u^d − b^d u^k`, and the pure-M1
+`lowerSecond`), the antisymmetric induction fluxes `b^k u^d − b^d u^k`, and the pure-M1
 radiation rows `R^{idim}_ν`. Every row is multiplied by `gdetu = geom.gdet`. The PUFFY
 radiative shear-viscosity term is *not* here — it is added at the faces separately (M12).
 

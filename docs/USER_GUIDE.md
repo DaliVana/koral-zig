@@ -669,7 +669,7 @@ pub const SpecificBc = *const fn (
 ```
 
 The callback is **fallible**: any frame/velocity conversion it performs
-(`frames.transPmhdCoco`, `relele.convVels`, …) returns `relele.Error`, so use
+(`frames.transPmhdCoco`, `relele.convert`, …) returns `relele.Error`, so use
 `try` and let it propagate — a boundary-adjacent cell can transiently reach a
 spacelike velocity, and `setBc` already threads the error to the driver's
 step-failure path (do **not** swallow it with `catch unreachable`). A BC that
@@ -1064,7 +1064,7 @@ In `koral/io/scalars.zig` and `koral/io/dump.zig`:
 1. Write a pure reduction in `scalars.zig` following the `mdot`/`lum` pattern
    (loop `nzi/nyi/nxi`, `sim.p.load`, `sim.cache.fillGeometry` for MYCOORDS or
    `blGeom` for BL-frame quantities, accumulate). Reuse `hydro.calcTij` /
-   `radiation.calcRij` + `relele.indices2221` for tensor fluxes rather than
+   `radiation.calcRij` + `relele.lowerSecond` for tensor fluxes rather than
    re-deriving the stress tensors.
 2. Add a field to `dump.ScalarRow`.
 3. Extend the `appendScalarLine` format string **and** its arg tuple (they must

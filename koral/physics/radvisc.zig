@@ -82,11 +82,10 @@ pub fn calcShearLab(
     var du2: [4][4]f64 = @splat(@splat(0));
 
     // center four-velocity
-    const uc = try relele.convVelsBoth(
+    const uc = try relele.convertBoth(
         .{ 0, pp0[istart], pp0[istart + 1], pp0[istart + 2] },
         whichvel,
-        gg,
-        &geom.GG,
+        &geom,
     );
     const ucon = uc.con;
     const ucov = uc.cov;
@@ -118,17 +117,15 @@ pub fn calcShearLab(
         const gm = sim.cache.fillGeometry(cm[0], cm[1], cm[2]);
         const gp = sim.cache.fillGeometry(cp[0], cp[1], cp[2]);
 
-        const um = try relele.convVelsBoth(
+        const um = try relele.convertBoth(
             .{ 0, ppm1[istart], ppm1[istart + 1], ppm1[istart + 2] },
             whichvel,
-            &gm.gg,
-            &gm.GG,
+            &gm,
         );
-        const up = try relele.convVelsBoth(
+        const up = try relele.convertBoth(
             .{ 0, ppp1[istart], ppp1[istart + 1], ppp1[istart + 2] },
             whichvel,
-            &gp.gg,
-            &gp.GG,
+            &gp,
         );
 
         const xm = gm.xxvec[idim];
@@ -335,7 +332,7 @@ pub fn calcRadShearViscosity(
 ) relele.Error!struct { shear: [4][4]f64, nu: f64 } {
     const L = SimT.Layout;
     const sh = try calcShearLab(SimT, sim, ix, iy, iz, comptime L.index(.fx), .velr);
-    const shear = relele.indices1122(sh.s, &geom.GG); // σ_ij → σ^ij
+    const shear = relele.raiseBoth(sh.s, geom); // σ_ij → σ^ij
     const nu = try calcRadViscCoeff(SimT, sim, ix, iy, iz, pp, geom, global_dt);
     return .{ .shear = shear, .nu = nu };
 }
@@ -361,7 +358,7 @@ pub fn calcRijVisc(
             rvisc[i][j] = -2.0 * rv.nu * erad * rv.shear[i][j];
         }
     }
-    return relele.indices2221(rvisc, &geom.gg); // R^ij → R^i_j
+    return relele.lowerSecond(rvisc, geom); // R^ij → R^i_j
 }
 
 /// C: calc_Rij_visc_total (rad.c:4628) — populate sim.rijvisc (R^i_j) over the

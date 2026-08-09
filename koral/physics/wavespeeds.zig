@@ -21,7 +21,7 @@ const Geometry = @import("../geometry.zig").Geometry;
 /// wspeed2x/y/z — the gas uses one value, the τ-damped rad speeds differ).
 pub fn lrCore(
     ucon: [4]f64,
-    GG: *const [4][5]f64,
+    geom: *const Geometry,
     wspeed2s: [3]f64,
     active_dims: [3]bool,
 ) [6]f64 {
@@ -31,7 +31,7 @@ pub fn lrCore(
     // vector, kept capitalized to avoid colliding with the magnetic
     // four-vector bcon/bcov/bsq used elsewhere in the codebase.
     const Bcov = [4]f64{ 1, 0, 0, 0 };
-    const Bcon = relele.indices12(Bcov, GG);
+    const Bcon = relele.raiseVec(Bcov, geom);
     const Bsq = relele.dot(Bcon, Bcov);
     const Bu = relele.dot(Bcov, ucon);
     const Bu2 = Bu * Bu;
@@ -41,7 +41,7 @@ pub fn lrCore(
             const wspeed2 = wspeed2s[dim];
             var Acov: [4]f64 = @splat(0);
             Acov[dim + 1] = 1;
-            const Acon = relele.indices12(Acov, GG);
+            const Acon = relele.raiseVec(Acov, geom);
 
             const Asq = relele.dot(Acon, Acov);
             const Au = relele.dot(Acov, ucon);
@@ -105,13 +105,13 @@ pub fn gasWavespeedsLr(
             .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
             u.con,
             u.cov,
-            &geom.gg,
+            geom,
         );
         bsq = b.bsq;
     }
 
     const vtot2 = gasWspeed2(pp[L.index(.rho)], pp[L.index(.uu)], bsq, gamma_adiab);
-    var a = lrCore(u.con, &geom.GG, .{ vtot2, vtot2, vtot2 }, active_dims);
+    var a = lrCore(u.con, geom, .{ vtot2, vtot2, vtot2 }, active_dims);
 
     // zero 'co-going' velocities (physics.c:602-607)
     for (0..3) |dim| {
