@@ -3,3 +3,4 @@ zig-out/
 zig-pkg/
 dumps/
 oracle/build/
+.DS_Store
