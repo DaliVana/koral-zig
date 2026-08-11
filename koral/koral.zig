@@ -166,6 +166,9 @@ test {
     _ = io.silo;
     _ = render;
     _ = render.image;
+    _ = render.series;
+    _ = render.sweep;
+    _ = render.adaptive;
     _ = @import("math/quad.zig");
     _ = @import("problems/puffy/puffy.zig");
     _ = @import("testing/tubes.zig");

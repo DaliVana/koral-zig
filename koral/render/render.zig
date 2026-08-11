@@ -29,6 +29,13 @@
 //! interpolant). Everything is problem-agnostic: Scene carries the grid,
 //! metric parameters, thermo constants and opacity channels; only the CLI
 //! wires in PUFFY.
+//!
+//! The integrator is RESUMABLE (advanceRay + RayState) and generic over a
+//! sampler: the fast-light path binds the single snapshot (SnapshotSampler,
+//! bit-identical to the old traceRay loop), while SLOW LIGHT binds a
+//! time-interpolating sampler over a KDMP series and drives rays through a
+//! streaming time window — see series.zig / sweep.zig, and adaptive.zig for
+//! photon-ring image-plane refinement (docs/SLOWLIGHT_2026-08-11.md).
 
 const std = @import("std");
 const config = @import("../config.zig");
@@ -48,12 +55,43 @@ const dump = @import("../io/dump.zig");
 pub const image = @import("image.zig");
 pub const emission = @import("emission.zig");
 pub const shadow = @import("shadow.zig");
+pub const series = @import("series.zig");
+pub const sweep = @import("sweep.zig");
+pub const adaptive = @import("adaptive.zig");
 
 pub const Grid = grid_mod.Grid;
 pub const MetricParams = metric.MetricParams;
 pub const Geometry = geometry.Geometry;
 
 // ---- dump payload ----------------------------------------------------------
+
+pub const LooseHeader = struct { h: dump.DumpHeader, body_off: usize };
+
+/// Parse a KDMP header, accepting v2 (the restart contract) AND the legacy
+/// v1 (32-byte header, no nstep/out_idx): rendering is read-only, so the
+/// strict version gate of io/dump.zig — which protects restart bookkeeping —
+/// does not apply here. Shared by DumpData.fromBytes and the slow-light
+/// series scanner (series.zig), which reads headers without bodies.
+pub fn parseHeaderLoose(bytes: []const u8) !LooseHeader {
+    const h = dump.parseDumpHeader(bytes) catch |err| switch (err) {
+        error.BadVersion => {
+            const v1_header = 32;
+            if (bytes.len < v1_header) return error.Truncated;
+            if (std.mem.readInt(u32, bytes[4..8], .little) != 1) return err;
+            return .{ .body_off = v1_header, .h = .{
+                .nx = std.mem.readInt(u32, bytes[8..12], .little),
+                .ny = std.mem.readInt(u32, bytes[12..16], .little),
+                .nz = std.mem.readInt(u32, bytes[16..20], .little),
+                .nv = std.mem.readInt(u32, bytes[20..24], .little),
+                .t = @bitCast(std.mem.readInt(u64, bytes[24..32], .little)),
+                .nstep = 0,
+                .out_idx = 0,
+            } };
+        },
+        else => return err,
+    };
+    return .{ .h = h, .body_off = dump.header_size };
+}
 
 /// A KDMP snapshot held as a flat primitive array p[iz][iy][ix][iv]
 /// (iv fastest — io/dump.zig's body order), decoupled from Sim so the
@@ -63,30 +101,9 @@ pub const DumpData = struct {
     body: []f64,
 
     pub fn fromBytes(allocator: std.mem.Allocator, bytes: []const u8) !DumpData {
-        // Accept v2 (the restart contract) AND the legacy v1 (32-byte header,
-        // no nstep/out_idx): rendering is read-only, so the strict version
-        // gate of io/dump.zig — which protects restart bookkeeping — does
-        // not apply here.
-        var h: dump.DumpHeader = undefined;
-        var body_off: usize = dump.header_size;
-        h = dump.parseDumpHeader(bytes) catch |err| switch (err) {
-            error.BadVersion => blk: {
-                const v1_header = 32;
-                if (bytes.len < v1_header) return error.Truncated;
-                if (std.mem.readInt(u32, bytes[4..8], .little) != 1) return err;
-                body_off = v1_header;
-                break :blk .{
-                    .nx = std.mem.readInt(u32, bytes[8..12], .little),
-                    .ny = std.mem.readInt(u32, bytes[12..16], .little),
-                    .nz = std.mem.readInt(u32, bytes[16..20], .little),
-                    .nv = std.mem.readInt(u32, bytes[20..24], .little),
-                    .t = @bitCast(std.mem.readInt(u64, bytes[24..32], .little)),
-                    .nstep = 0,
-                    .out_idx = 0,
-                };
-            },
-            else => return err,
-        };
+        const lh = try parseHeaderLoose(bytes);
+        const h = lh.h;
+        const body_off = lh.body_off;
         const n = @as(usize, h.nx) * h.ny * h.nz * h.nv;
         if (bytes.len < body_off + n * 8) return error.Truncated;
         const body = try allocator.alloc(f64, n);
@@ -236,8 +253,14 @@ pub fn tetradFromMetric(gcov: [4][4]f64) [4][4]f64 {
 /// essentially the poles); φ wraps periodically over the wedge, which both
 /// tiles a 3D wedge to 2π and revolves a 2D (nz = 1) slice.
 pub fn sample(comptime cfg: config.Config, s: *const Scene, x: [4]f64, pp: *[layout.VarLayout(cfg).count]f64) bool {
+    return sampleData(cfg, &s.grid, s.data, x, pp);
+}
+
+/// The sampling kernel with the snapshot made explicit, so time-aware
+/// samplers (series.zig) can interpolate between two of them. x[0] is
+/// ignored here — one snapshot has no time axis.
+pub fn sampleData(comptime cfg: config.Config, g: *const Grid, data: *const DumpData, x: [4]f64, pp: *[layout.VarLayout(cfg).count]f64) bool {
     const L = layout.VarLayout(cfg);
-    const g = &s.grid;
     const nx = g.nx;
     const ny = g.ny;
     const nz = g.nz;
@@ -267,14 +290,14 @@ pub fn sample(comptime cfg: config.Config, s: *const Scene, x: [4]f64, pp: *[lay
         tz = fz - @floor(fz);
     }
 
-    const c000 = s.data.cell(ix0, iy0, iz0);
-    const c100 = s.data.cell(ix1, iy0, iz0);
-    const c010 = s.data.cell(ix0, iy1, iz0);
-    const c110 = s.data.cell(ix1, iy1, iz0);
-    const c001 = s.data.cell(ix0, iy0, iz1);
-    const c101 = s.data.cell(ix1, iy0, iz1);
-    const c011 = s.data.cell(ix0, iy1, iz1);
-    const c111 = s.data.cell(ix1, iy1, iz1);
+    const c000 = data.cell(ix0, iy0, iz0);
+    const c100 = data.cell(ix1, iy0, iz0);
+    const c010 = data.cell(ix0, iy1, iz0);
+    const c110 = data.cell(ix1, iy1, iz0);
+    const c001 = data.cell(ix0, iy0, iz1);
+    const c101 = data.cell(ix1, iy0, iz1);
+    const c011 = data.cell(ix0, iy1, iz1);
+    const c111 = data.cell(ix1, iy1, iz1);
 
     for (0..L.count) |iv| {
         const v00 = c000[iv] * (1 - tx) + c100[iv] * tx;
@@ -598,46 +621,97 @@ fn stepSize(g: *const Grid, x: [4]f64, k: [4]f64, eps: f64) f64 {
     return eps / (a1 + a2 + a3 + ap + 1e-12);
 }
 
-/// Trace one ray backward from (x0, k0) at the camera, accumulating the
-/// attenuated-emission formal solution. k0 must be future-directed null
-/// with −k·u_cam = 1 (Camera.ray guarantees this).
-pub fn traceRay(comptime cfg: config.Config, s: *const Scene, x0: [4]f64, k0: [4]f64, opts: TraceOpts) TraceResult {
-    var x = x0;
-    var k = k0;
-    var intensity: f64 = 0;
-    var tau: f64 = 0;
-    var steps: usize = 0;
-    var captured = false;
+/// Why a ray stopped advancing. `.active` means "paused by the controller"
+/// (slow-light sweep parking); everything else is terminal.
+pub const RayStatus = enum(u8) {
+    active,
+    /// fell below r_capture (into the hole)
+    captured,
+    /// passed r_escape (out of the scene)
+    escaped,
+    /// accumulated optical depth exceeded tau_max
+    thick,
+    /// ran out of the step budget
+    exhausted,
+};
 
-    while (steps < opts.max_steps) : (steps += 1) {
-        const r = @exp(x[1]) + s.mp.mksr0;
-        if (r < s.r_capture) {
-            captured = true;
-            break;
+/// One ray's full integration state — everything traceRay used to keep in
+/// locals, so a trace can be paused and resumed (the slow-light sweep parks
+/// rays at time-window boundaries and resumes them when the window slides).
+pub const RayState = struct {
+    x: [4]f64,
+    k: [4]f64,
+    intensity: f64 = 0,
+    tau: f64 = 0,
+    steps: usize = 0,
+    status: RayStatus = .active,
+};
+
+/// Never pause: run the ray to a terminal status (the fast-light behavior).
+pub const NeverPause = struct {
+    pub inline fn pause(_: NeverPause, _: *const Scene, _: *const RayState, _: f64) bool {
+        return false;
+    }
+};
+
+/// The fast-light sampler: the Scene's single snapshot, no time axis.
+pub const SnapshotSampler = struct {
+    pub inline fn sample(_: SnapshotSampler, comptime c: config.Config, s: *const Scene, x: [4]f64, pp: *[layout.VarLayout(c).count]f64) bool {
+        return sampleData(c, &s.grid, s.data, x, pp);
+    }
+};
+
+/// Advance one ray backward (Δλ < 0, into the past) until it terminates —
+/// capture, escape, τ > tau_max, step budget — or `ctl.pause(s, st, r)`
+/// returns true (status stays .active; the caller may resume later, the
+/// state carries everything). `sampler.sample(cfg, s, x, pp)` supplies the
+/// primitives at the sampled EVENT — x includes the coordinate time x[0],
+/// which a time-aware sampler (series.WindowSampler) interpolates on and
+/// the fast-light SnapshotSampler ignores.
+///
+/// This is traceRay's old loop verbatim (same operation order, so the
+/// fast-light path stays bit-identical); only the control seams are new.
+pub fn advanceRay(comptime cfg: config.Config, s: *const Scene, sampler: anytype, st: *RayState, opts: TraceOpts, ctl: anytype) void {
+    while (true) {
+        if (st.steps >= opts.max_steps) {
+            st.status = .exhausted;
+            return;
         }
-        if (r > s.r_escape) break;
-        if (tau > opts.tau_max) break;
+        const r = @exp(st.x[1]) + s.mp.mksr0;
+        if (r < s.r_capture) {
+            st.status = .captured;
+            return;
+        }
+        if (r > s.r_escape) {
+            st.status = .escaped;
+            return;
+        }
+        if (st.tau > opts.tau_max) {
+            st.status = .thick;
+            return;
+        }
+        if (ctl.pause(s, st, r)) return;
 
-        const cd = metric.compute(.mks2, s.mp, x);
+        const cd = metric.compute(.mks2, s.mp, st.x);
 
         // -- geodesic step with Δλ = −h (into the past): RK4 everywhere;
         // a step that would cross a pole (rejected) becomes one short
         // flat-chart chord through the axis instead --
-        const h = stepSize(&s.grid, x, k, opts.eps);
-        var next = rk4Step(s.mp, &cd, x, k, -h);
-        if (!next.ok) next = flatPoleStep(s.mp, &cd, x, k, -h);
+        const h = stepSize(&s.grid, st.x, st.k, opts.eps);
+        var next = rk4Step(s.mp, &cd, st.x, st.k, -h);
+        if (!next.ok) next = flatPoleStep(s.mp, &cd, st.x, st.k, -h);
 
         // -- radiative transfer over the ACCEPTED segment length h --
         var pp: [layout.VarLayout(cfg).count]f64 = undefined;
-        if (!opts.screen and sample(cfg, s, x, &pp)) {
-            const geom = geomFromCoordData(x, &cd);
-            if (localState(cfg, s, &geom, pp)) |st| {
+        if (!opts.screen and sampler.sample(cfg, s, st.x, &pp)) {
+            const geom = geomFromCoordData(st.x, &cd);
+            if (localState(cfg, s, &geom, pp)) |lst| {
                 var kcov: [4]f64 = @splat(0);
                 for (0..4) |i| {
-                    for (0..4) |j| kcov[i] += cd.gcov[i][j] * k[j];
+                    for (0..4) |j| kcov[i] += cd.gcov[i][j] * st.k[j];
                 }
                 var nuhat: f64 = 0;
-                for (0..4) |i| nuhat -= kcov[i] * st.ucon[i];
+                for (0..4) |i| nuhat -= kcov[i] * lst.ucon[i];
                 if (nuhat > 1e-12) {
                     // M1 dipole for the scattering source: the field seen
                     // along the photon direction n̂ is J·(1 + 3 n̂·F̂/Ê) in
@@ -645,9 +719,9 @@ pub fn traceRay(comptime cfg: config.Config, s: *const Scene, x0: [4]f64, k0: [4
                     // (F̂ ⊥ u). Clamped at 0 — the linear expansion can go
                     // negative at free-streaming flux factors.
                     var kdotf: f64 = 0;
-                    for (0..4) |i| kdotf += kcov[i] * st.fhat[i];
-                    const dip = if (st.ehat > 1e-300)
-                        @max(0.0, 1.0 + 3.0 * kdotf / (nuhat * st.ehat))
+                    for (0..4) |i| kdotf += kcov[i] * lst.fhat[i];
+                    const dip = if (lst.ehat > 1e-300)
+                        @max(0.0, 1.0 + 3.0 * kdotf / (nuhat * lst.ehat))
                     else
                         0.0;
 
@@ -658,50 +732,77 @@ pub fn traceRay(comptime cfg: config.Config, s: *const Scene, x0: [4]f64, k0: [4
                     if (opts.nu_obs > 0) {
                         const un = &s.consts.units;
                         var sin_pitch: f64 = 0;
-                        if (st.bsq > 1e-30) {
+                        if (lst.bsq > 1e-30) {
                             var kdotb: f64 = 0;
-                            for (0..4) |i| kdotb += kcov[i] * st.bcon[i];
-                            const cosp = kdotb / (nuhat * @sqrt(st.bsq));
+                            for (0..4) |i| kdotb += kcov[i] * lst.bcon[i];
+                            const cosp = kdotb / (nuhat * @sqrt(lst.bsq));
                             sin_pitch = @sqrt(@max(0.0, 1.0 - cosp * cosp));
                         }
                         const em = emission.monoJChi(.{
                             .nu = opts.nu_obs * nuhat,
-                            .ne_cgs = st.ne * s.consts.numdensgu2cgs,
-                            .ni_cgs = st.rho * s.consts.one_over_mui_mp * s.consts.numdensgu2cgs,
-                            .te = st.te,
-                            .trad = st.trad,
-                            .b_gauss = @sqrt(s.consts.fourmpi * un.endenGu2Cgs(st.bsq)),
+                            .ne_cgs = lst.ne * s.consts.numdensgu2cgs,
+                            .ni_cgs = lst.rho * s.consts.one_over_mui_mp * s.consts.numdensgu2cgs,
+                            .te = lst.te,
+                            .trad = lst.trad,
+                            .b_gauss = @sqrt(s.consts.fourmpi * un.endenGu2Cgs(lst.bsq)),
                             .sin_pitch = sin_pitch,
-                            .chi_es_cgs = st.chi_es / un.masscm,
+                            .chi_es_cgs = lst.chi_es / un.masscm,
                             .dip = dip,
                         });
-                        jl = if (st.masked) 0.0 else em.j;
+                        jl = if (lst.masked) 0.0 else em.j;
                         chil = em.chi;
                         dl *= un.masscm; // path in cm for the CGS opacities
                         nup = nuhat * nuhat * nuhat; // I_ν/ν³ invariant
                     } else {
-                        jl = if (st.masked) 0.0 else st.j_therm + st.chi_es * (st.ehat / s.consts.fourmpi) * dip;
-                        chil = st.chi;
+                        jl = if (lst.masked) 0.0 else lst.j_therm + lst.chi_es * (lst.ehat / s.consts.fourmpi) * dip;
+                        chil = lst.chi;
                     }
 
                     const dtau = chil * dl;
-                    const att = @exp(-tau);
+                    const att = @exp(-st.tau);
                     if (dtau > 1e-8) {
-                        intensity += att * (jl / (chil * nup)) * (1.0 - @exp(-dtau));
+                        st.intensity += att * (jl / (chil * nup)) * (1.0 - @exp(-dtau));
                     } else {
-                        intensity += att * (jl / nup) * dl;
+                        st.intensity += att * (jl / nup) * dl;
                     }
-                    tau += dtau;
+                    st.tau += dtau;
                 }
             }
         }
 
-        x = next.x;
-        k = next.k;
+        st.x = next.x;
+        st.k = next.k;
+        st.steps += 1;
     }
+}
 
-    if (opts.screen) intensity = if (captured) 0.0 else 1.0;
-    return .{ .intensity = intensity, .tau = tau, .steps = steps, .captured = captured, .x = x, .k = k };
+/// Package a finished RayState as the caller-facing TraceResult.
+fn packResult(st: *const RayState, opts: TraceOpts) TraceResult {
+    var intensity = st.intensity;
+    if (opts.screen) intensity = if (st.status == .captured) 0.0 else 1.0;
+    return .{
+        .intensity = intensity,
+        .tau = st.tau,
+        .steps = st.steps,
+        .captured = st.status == .captured,
+        .x = st.x,
+        .k = st.k,
+    };
+}
+
+/// Trace one ray start-to-finish with an arbitrary sampler (slow light:
+/// series.WindowSampler). Same contract as traceRay otherwise.
+pub fn traceRayWith(comptime cfg: config.Config, s: *const Scene, sampler: anytype, x0: [4]f64, k0: [4]f64, opts: TraceOpts) TraceResult {
+    var st = RayState{ .x = x0, .k = k0 };
+    advanceRay(cfg, s, sampler, &st, opts, NeverPause{});
+    return packResult(&st, opts);
+}
+
+/// Trace one ray backward from (x0, k0) at the camera, accumulating the
+/// attenuated-emission formal solution. k0 must be future-directed null
+/// with −k·u_cam = 1 (Camera.ray guarantees this).
+pub fn traceRay(comptime cfg: config.Config, s: *const Scene, x0: [4]f64, k0: [4]f64, opts: TraceOpts) TraceResult {
+    return traceRayWith(cfg, s, SnapshotSampler{}, x0, k0, opts);
 }
 
 // ---- camera ----------------------------------------------------------------

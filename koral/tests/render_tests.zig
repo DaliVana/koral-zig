@@ -9,7 +9,15 @@
 //!    when gas and radiation are in equilibrium,
 //!  * φ-wedge periodic sampling,
 //!  * the PNG encoder (chunk CRCs, zlib stored blocks, pixel roundtrip)
-//!    and the afmhot colormap.
+//!    and the afmhot colormap,
+//!  * SLOW LIGHT (series/sweep/adaptive): time-lerp + edge clamping of the
+//!    window sampler; static-series identity BIT-FOR-BIT through both
+//!    traceRayWith and the full 3-phase sweep; a time-localized flare
+//!    arriving retarded by the Shapiro-corrected travel time; the radial
+//!    KS flight time Δt = Δr + 4M ln(...); consecutive photon-ring windings
+//!    delayed by the photon-orbit period 2π·3√3 M; and the adaptive
+//!    quadtree plan (exact pixel weights, capture-boundary marking,
+//!    antialiased shadow edge).
 
 const std = @import("std");
 const render = @import("../render/render.zig");
@@ -733,4 +741,394 @@ test "image: white point and stretch normalize to [0,1]" {
     image.stretch(&img, wp, 0.5);
     for (img) |v| try std.testing.expect(v >= 0 and v <= 1.0);
     try std.testing.expectEqual(@as(f64, 1.0), img[99]);
+}
+
+// ---- slow light: series, sweep, timing -------------------------------------
+
+/// Fill every cell of `d` with a uniform emissive LTE-ish state (gas at
+/// rest, no B): enough matter to make intensities nonzero, thin enough
+/// that rays cross the whole domain.
+fn fillUniform(d: *render.DumpData, rho: f64, tK: f64, consts: *const thermo.Consts) void {
+    const nv = d.header.nv;
+    const ncell = d.body.len / nv;
+    const uu = thermo.uFromTrho(consts, tK, rho, 5.0 / 3.0);
+    const ee = consts.lteEfromT(tK);
+    for (0..ncell) |c| {
+        d.body[c * nv + L.index(.rho)] = rho;
+        d.body[c * nv + L.index(.uu)] = uu;
+        d.body[c * nv + L.index(.ee)] = ee;
+    }
+}
+
+test "series: window sampler lerps primitives linearly in time and clamps at the edges" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+    var a = try zeroDump(allocator, 1, 1, 1);
+    defer allocator.free(a.body);
+    var b = try zeroDump(allocator, 1, 1, 1);
+    defer allocator.free(b.body);
+    for (a.body) |*v| v.* = 2.0;
+    for (b.body) |*v| v.* = 6.0;
+    const g = puffyGrid(1, 1, 1, mp, 1.85, 1000.0);
+    const scene = render.Scene.init(g, mp, testConsts(), opacities.Channels.puffy, 5.0 / 3.0, &a, 1000.0, 1000.0);
+
+    var smp = render.series.WindowSampler{ .lo = &a, .hi = &b, .t_lo = 10.0, .t_hi = 20.0 };
+    var pp: [L.count]f64 = undefined;
+
+    // interior: exact linear interpolation
+    var x = [4]f64{ 15.0, @log(20.0 - mp.mksr0), 0.5, 0 };
+    try std.testing.expect(smp.sample(cfg, &scene, x, &pp));
+    for (pp) |v| try std.testing.expectEqual(@as(f64, 4.0), v);
+    x[0] = 12.5;
+    try std.testing.expect(smp.sample(cfg, &scene, x, &pp));
+    for (pp) |v| try std.testing.expectEqual(@as(f64, 3.0), v);
+    try std.testing.expectEqual(@as(u64, 0), smp.n_below + smp.n_above);
+
+    // edges: clamp-and-count (hold the end frame)
+    x[0] = 5.0;
+    try std.testing.expect(smp.sample(cfg, &scene, x, &pp));
+    for (pp) |v| try std.testing.expectEqual(@as(f64, 2.0), v);
+    try std.testing.expectEqual(@as(u64, 1), smp.n_below);
+    x[0] = 25.0;
+    try std.testing.expect(smp.sample(cfg, &scene, x, &pp));
+    for (pp) |v| try std.testing.expectEqual(@as(f64, 6.0), v);
+    try std.testing.expectEqual(@as(u64, 1), smp.n_above);
+
+    // degenerate window (same frame twice) = plain snapshot sampling
+    var one = render.series.WindowSampler{ .lo = &a, .hi = &a, .t_lo = 0, .t_hi = 0 };
+    x[0] = -1e9;
+    try std.testing.expect(one.sample(cfg, &scene, x, &pp));
+    for (pp) |v| try std.testing.expectEqual(@as(f64, 2.0), v);
+    try std.testing.expectEqual(@as(u64, 0), one.n_below + one.n_above);
+}
+
+test "series: a static series reproduces the fast-light trace bit-for-bit" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.9375, .mksr0 = 0.1, .mksh0 = 0.9 };
+    const consts = testConsts();
+    var a = try zeroDump(allocator, 32, 24, 1);
+    defer allocator.free(a.body);
+    fillUniform(&a, 1.0e-26, 1.0e7, &consts);
+    var b = try zeroDump(allocator, 32, 24, 1);
+    defer allocator.free(b.body);
+    @memcpy(b.body, a.body);
+
+    const g = puffyGrid(32, 24, 1, mp, 1.25, 500.0);
+    const scene = render.Scene.init(g, mp, consts, opacities.Channels.puffy, 5.0 / 3.0, &a, 1000.0, 500.0);
+    var cam = render.Camera{ .r = 1000, .incl_deg = 60, .fov = 30, .width = 3, .height = 3, .ss = 1 };
+    cam.setup(mp);
+
+    // distinct frame pointers with identical bodies: the lerp path runs and
+    // must still be exact (the a + w*(b-a) form). Also pin stationarity:
+    // shifting the camera's coordinate time must change nothing.
+    var smp = render.series.WindowSampler{ .lo = &a, .hi = &b, .t_lo = 0.0, .t_hi = 50.0 };
+    for (0..3) |py| {
+        for (0..3) |px| {
+            const k0 = cam.ray(px, py);
+            var x0 = cam.x0;
+            const fast = render.traceRay(cfg, &scene, x0, k0, .{});
+            try std.testing.expect(fast.intensity > 0);
+            x0[0] = 500.0; // mid-window at depth, above it near the camera
+            const slow = render.traceRayWith(cfg, &scene, &smp, x0, k0, .{});
+            try std.testing.expectEqual(fast.intensity, slow.intensity);
+            try std.testing.expectEqual(fast.tau, slow.tau);
+            try std.testing.expectEqual(fast.steps, slow.steps);
+            for (0..4) |mu| {
+                if (mu != 0) try std.testing.expectEqual(fast.x[mu], slow.x[mu]);
+                try std.testing.expectEqual(fast.k[mu], slow.k[mu]);
+            }
+        }
+    }
+}
+
+test "sweep: static series through the full 3-phase sweep is bit-identical to direct tracing" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.9375, .mksr0 = 0.1, .mksh0 = 0.9 };
+    const consts = testConsts();
+    var a = try zeroDump(allocator, 32, 24, 1);
+    defer allocator.free(a.body);
+    fillUniform(&a, 1.0e-26, 1.0e7, &consts);
+    var b = try zeroDump(allocator, 32, 24, 1);
+    defer allocator.free(b.body);
+    @memcpy(b.body, a.body);
+
+    const g = puffyGrid(32, 24, 1, mp, 1.25, 500.0);
+    const scene = render.Scene.init(g, mp, consts, opacities.Channels.puffy, 5.0 / 3.0, &a, 1000.0, 500.0);
+    var cam = render.Camera{ .r = 1000, .incl_deg = 60, .fov = 30, .width = 6, .height = 6, .ss = 2 };
+    cam.setup(mp);
+
+    const specs = try render.sweep.uniformPlan(allocator, &cam);
+    defer allocator.free(specs);
+
+    // alternate two identical-content frames so every window pair has
+    // distinct pointers (the lerp path, not the degenerate shortcut)
+    const ts = [_]f64{ 0.0, 15.0, 30.0, 45.0 };
+    const frames = [_]*const render.DumpData{ &a, &b, &a, &b };
+    var src = render.series.SliceSource{ .ts = ts[0..], .frames = frames[0..] };
+
+    const opts = render.TraceOpts{};
+    var out = [_]f64{-1} ** 36;
+    const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, specs, out[0..], opts, .{ .t_cam = 1030.0, .r_slow = 40.0 }, 3, false);
+
+    // the sweep must actually have exercised its machinery
+    try std.testing.expect(stats.entered > 0);
+    try std.testing.expect(stats.rounds >= 3);
+    try std.testing.expect(stats.tails > 0);
+    try std.testing.expect(stats.past_start > 0);
+
+    // reference: plain fast-light tracing of the same plan
+    var want = [_]f64{0} ** 36;
+    for (specs) |sp| {
+        const res = render.traceRay(cfg, &scene, cam.x0, cam.rayAt(sp.fx, sp.fy), opts);
+        want[sp.pix] += sp.weight * res.intensity;
+    }
+    for (want, out) |w, o| try std.testing.expectEqual(w, o);
+    var sum: f64 = 0;
+    for (out) |o| sum += o;
+    try std.testing.expect(sum > 0);
+}
+
+test "sweep: a time-localized flare arrives retarded by the (Shapiro-corrected) travel time" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+    const consts = testConsts();
+    const nx = 64;
+    const ny = 32;
+
+    var zero = try zeroDump(allocator, nx, ny, 1);
+    defer allocator.free(zero.body);
+    var blob = try zeroDump(allocator, nx, ny, 1);
+    defer allocator.free(blob.body);
+
+    const g = puffyGrid(nx, ny, 1, mp, 1.85, 500.0);
+    // light up a small ring of cells around (r = 10, θ = π/3) — on the
+    // line of sight of a camera at incl 60°
+    const uu = thermo.uFromTrho(&consts, 1.0e7, 1.0e-26, 5.0 / 3.0);
+    const ee = consts.lteEfromT(1.0e7);
+    const th_c = pi / 3.0;
+    for (0..ny) |iy| {
+        const x2 = g.miny + (@as(f64, @floatFromInt(iy)) + 0.5) * g.dy;
+        const th = forms.mks2Theta(Dual3.constant(x2), mp.mksh0).v;
+        if (@abs(th - th_c) > 0.12) continue;
+        for (0..nx) |ix| {
+            const x1 = g.minx + (@as(f64, @floatFromInt(ix)) + 0.5) * g.dx;
+            const r = @exp(x1) + mp.mksr0;
+            if (r < 9.0 or r > 11.0) continue;
+            const base = (iy * nx + ix) * L.count;
+            blob.body[base + L.index(.rho)] = 1.0e-26;
+            blob.body[base + L.index(.uu)] = uu;
+            blob.body[base + L.index(.ee)] = ee;
+        }
+    }
+
+    // series: dark everywhere except ONE lit frame at t = 20 (linear ramps
+    // to the dark neighbors: emission is nonzero only for t_sample in (15, 25))
+    const ts = [_]f64{ 0, 5, 10, 15, 20, 25, 30, 35, 40 };
+    var frames: [9]*const render.DumpData = @splat(&zero);
+    frames[4] = &blob;
+    var src = render.series.SliceSource{ .ts = ts[0..], .frames = frames[0..] };
+
+    // reference frame (static zone + tails) = dark
+    const scene = render.Scene.init(g, mp, consts, opacities.Channels.puffy, 5.0 / 3.0, &zero, 200.0, 500.0);
+    var cam = render.Camera{ .r = 200, .incl_deg = 60, .fov = 2, .width = 1, .height = 1, .ss = 1 };
+    cam.setup(mp);
+    const specs = try render.sweep.uniformPlan(allocator, &cam);
+    defer allocator.free(specs);
+
+    // outgoing radial ray in Schwarzschild KS time: Δt = Δr + 4M ln((r_cam−2M)/(r_e−2M))
+    const r_b = 10.0;
+    const dt_travel = (cam.r - r_b) + 4.0 * @log((cam.r - 2.0) / (r_b - 2.0));
+
+    const I = struct {
+        fn at(alloc: std.mem.Allocator, sc: *const render.Scene, c: *const render.Camera, sr: *render.series.SliceSource, sp: []const render.sweep.RaySpec, t_cam: f64) !f64 {
+            var out = [_]f64{0} ** 1;
+            _ = try render.sweep.renderSlow(cfg, alloc, sc, c, sr, sp, out[0..], .{}, .{ .t_cam = t_cam, .r_slow = 40.0 }, 1, false);
+            return out[0];
+        }
+    };
+
+    const t_peak = 20.0 + dt_travel;
+    const bright = try I.at(allocator, &scene, &cam, &src, specs, t_peak);
+    const early = try I.at(allocator, &scene, &cam, &src, specs, t_peak - 12.0);
+    const late = try I.at(allocator, &scene, &cam, &src, specs, t_peak + 12.0);
+    const shoulder = try I.at(allocator, &scene, &cam, &src, specs, t_peak + 3.0);
+
+    // lit exactly when the RETARDED time at the blob falls in the lit window
+    try std.testing.expect(bright > 0);
+    try std.testing.expectEqual(@as(f64, 0), early);
+    try std.testing.expectEqual(@as(f64, 0), late);
+    try std.testing.expect(shoulder > 0 and shoulder < bright);
+}
+
+// ---- slow light: spacetime timing gates ------------------------------------
+
+test "render: radial flight time carries the Shapiro delay — Δt = Δr + 4M ln in KS time" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+    var data = try zeroDump(allocator, 64, 32, 1);
+    defer allocator.free(data.body);
+    const g = puffyGrid(64, 32, 1, mp, 1.85, 1000.0);
+    var scene = render.Scene.init(g, mp, testConsts(), opacities.Channels.puffy, 5.0 / 3.0, &data, 1000.0, 1000.0);
+
+    // stop the trace at r_e and interpolate the crossing with the endpoint k
+    const r_e = 10.0;
+    scene.r_capture = r_e;
+    const ray = launch(mp, 1000.0, pi / 3.0, .{ 1.0, 0.0, 0.0 });
+    const res = render.traceRay(cfg, &scene, ray.x, ray.k, .{ .eps = 0.1 });
+    try std.testing.expect(res.captured);
+    const r_end = @exp(res.x[1]) + mp.mksr0;
+    const t_cross = res.x[0] + (r_e - r_end) * res.k[0] / ((r_end - mp.mksr0) * res.k[1]);
+    const t_flight = -t_cross; // launched at x⁰ = 0, traced into the past
+
+    // ingoing-KS time along an OUTGOING radial null ray:
+    //   dt/dr = (r + 2M)/(r − 2M)  ⇒  Δt = Δr + 4M ln((r_cam−2M)/(r_e−2M)).
+    // The 4M ln term is 19.3 M here — the Shapiro delay slow light must
+    // carry (flat-space retardation would be just Δr).
+    const want = (1000.0 - r_e) + 4.0 * @log((1000.0 - 2.0) / (r_e - 2.0));
+    try std.testing.expectApproxEqAbs(want, t_flight, 0.05);
+}
+
+test "render: successive photon-ring windings are delayed by the photon-orbit period 2pi*3sqrt(27)... (a=0)" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+    var data = try zeroDump(allocator, 64, 32, 1);
+    defer allocator.free(data.body);
+    const g = puffyGrid(64, 32, 1, mp, 1.85, 1000.0);
+    var scene = render.Scene.init(g, mp, testConsts(), opacities.Channels.puffy, 5.0 / 3.0, &data, 100.0, 100.0);
+    scene.r_escape = 110.0;
+
+    const r_cam: f64 = 100.0;
+    const r_ref: f64 = 105.0; // interpolate the exit through this radius
+
+    // equatorial ray at impact angle α: Δφ and flight time at the exit
+    // sphere, or null for a captured ray. x[3] is never wrapped by the
+    // integrator, so it IS the unwrapped winding angle.
+    const Probe = struct {
+        fn shoot(sc: *const render.Scene, mpar: metric.MetricParams, alpha: f64) ?struct { dphi: f64, t: f64 } {
+            const ray = launch(mpar, r_cam, pi / 2.0, .{ @cos(alpha), 0, -@sin(alpha) });
+            const res = render.traceRay(cfg, sc, ray.x, ray.k, .{ .eps = 0.1, .max_steps = 400_000 });
+            if (res.captured) return null;
+            const r_end = @exp(res.x[1]) + mpar.mksr0;
+            const s_ = (r_ref - r_end) / ((r_end - mpar.mksr0) * res.k[1]);
+            return .{
+                .dphi = @abs(res.x[3] + s_ * res.k[3]),
+                .t = -(res.x[0] + s_ * res.k[0]),
+            };
+        }
+    };
+
+    // bisect α to a target total winding Δφ (monotone: smaller α → closer
+    // to b_crit → more winding; captured counts as "infinite winding")
+    const Find = struct {
+        fn at(sc: *const render.Scene, mpar: metric.MetricParams, target: f64) f64 {
+            var lo = std.math.asin(4.5 / r_cam); // captured side
+            var hi = std.math.asin(8.0 / r_cam); // weak-bending side
+            var t_best: f64 = 0;
+            for (0..80) |_| {
+                const mid = 0.5 * (lo + hi);
+                if (Probe.shoot(sc, mpar, mid)) |p| {
+                    if (p.dphi > target) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                    if (@abs(p.dphi - target) < 1e-4) return p.t;
+                    t_best = p.t;
+                } else {
+                    lo = mid; // captured: even more winding than target
+                }
+            }
+            return t_best;
+        }
+    };
+
+    // rays whose total Δφ differs by exactly 2π exit with IDENTICAL
+    // geometry — the extra turn happens on the photon shell, so their
+    // flight times differ by one photon-orbit period T = 2π·3√3 M.
+    // This is the subring delay slow light resolves (T/2 per subring).
+    const t3 = Find.at(&scene, mp, 3.0 * pi);
+    const t5 = Find.at(&scene, mp, 5.0 * pi);
+    const t7 = Find.at(&scene, mp, 7.0 * pi);
+    const period = 2.0 * pi * 3.0 * @sqrt(3.0);
+    try std.testing.expectApproxEqAbs(period, t5 - t3, 0.5);
+    try std.testing.expectApproxEqAbs(period, t7 - t5, 0.5);
+}
+
+// ---- adaptive refinement ---------------------------------------------------
+
+test "adaptive: quadtree plan conserves pixel weight, marks the capture boundary, antialiases it" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.9375, .mksr0 = 0.1, .mksh0 = 0.9 };
+    var data = try zeroDump(allocator, 32, 24, 1);
+    defer allocator.free(data.body);
+    const g = puffyGrid(32, 24, 1, mp, 1.25, 500.0);
+    var scene = render.Scene.init(g, mp, testConsts(), opacities.Channels.puffy, 5.0 / 3.0, &data, 300.0, 500.0);
+    // test-time economy: a close camera + early escape + coarse eps keep the
+    // Debug-mode step count down; the plan logic is resolution-independent
+    scene.r_escape = 330.0;
+    const n = 16;
+    var cam = render.Camera{ .r = 300, .incl_deg = 60, .fov = 18, .width = n, .height = n, .ss = 2 };
+    cam.setup(mp);
+
+    const opts = render.TraceOpts{ .eps = 1.0, .max_steps = 12_000 };
+    var plan = try render.adaptive.planRays(cfg, allocator, &scene, &cam, opts, .{ .depth = 2, .dt_thresh = 5.0, .probe_max_steps = 3_000 }, 2);
+    defer plan.deinit(allocator);
+    try std.testing.expect(plan.vacuum_rays > (n + 1) * (n + 1));
+
+    // Σ weight per pixel is EXACTLY 1 (powers of 1/4)
+    var wsum = [_]f64{0} ** (n * n);
+    for (plan.specs) |sp| wsum[sp.pix] += sp.weight;
+    for (wsum) |v| try std.testing.expectEqual(@as(f64, 1.0), v);
+
+    // the refined set is a band, not empty and not the whole frame
+    var nmark: usize = 0;
+    for (plan.marked) |m| nmark += @intFromBool(m);
+    try std.testing.expect(nmark > 4 and nmark < n * n / 2);
+
+    // the capture boundary (bisected independently along the middle row,
+    // both directions) lies in a marked pixel; a marked pixel carries at
+    // least the leaves of one subdivision
+    const Cap = struct {
+        fn at(sc: *const render.Scene, c: *const render.Camera, fx: f64, fy: f64) bool {
+            var o = render.TraceOpts{ .eps = 1.0, .max_steps = 12_000 };
+            o.screen = true;
+            return render.traceRay(cfg, sc, c.x0, c.rayAt(fx, fy), o).captured;
+        }
+    };
+    const fy_mid = @as(f64, n) / 2.0 + 0.5;
+    try std.testing.expect(Cap.at(&scene, &cam, @as(f64, n) / 2.0, fy_mid)); // hole center
+    for ([_]f64{ n - 0.1, 0.1 }) |fx_out| {
+        try std.testing.expect(!Cap.at(&scene, &cam, fx_out, fy_mid));
+        var in: f64 = @as(f64, n) / 2.0;
+        var out_: f64 = fx_out;
+        for (0..40) |_| {
+            const mid = 0.5 * (in + out_);
+            if (Cap.at(&scene, &cam, mid, fy_mid)) in = mid else out_ = mid;
+        }
+        const px: usize = @intFromFloat(std.math.clamp(0.5 * (in + out_), 0, n - 1));
+        const row = (n / 2) * n;
+        const hit = plan.marked[row + px] or
+            (px > 0 and plan.marked[row + px - 1]) or
+            (px + 1 < n and plan.marked[row + px + 1]);
+        try std.testing.expect(hit);
+        var count: usize = 0;
+        for (plan.specs) |sp| {
+            if (sp.pix == row + px and plan.marked[row + px]) count += 1;
+        }
+        if (plan.marked[row + px]) try std.testing.expect(count >= 4);
+    }
+
+    // planned screen render: fractional shadow-edge coverage, exact 0/1 core
+    var img = [_]f64{0} ** (n * n);
+    var o = render.TraceOpts{ .eps = 1.0, .max_steps = 12_000 };
+    o.screen = true;
+    try render.adaptive.renderPlan(cfg, allocator, &scene, &cam, plan.specs, img[0..], o, 2);
+    var frac: usize = 0;
+    for (img) |v| {
+        try std.testing.expect(v >= 0.0 and v <= 1.0);
+        if (v > 0.0 and v < 1.0) frac += 1;
+    }
+    try std.testing.expect(frac >= 6);
+    try std.testing.expectEqual(@as(f64, 0.0), img[(n / 2) * n + n / 2]);
+    try std.testing.expectEqual(@as(f64, 1.0), img[0]);
 }

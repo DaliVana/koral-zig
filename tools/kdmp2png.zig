@@ -8,6 +8,36 @@
 //! constants and opacity channels match what produced the checkpoint.
 //!
 //! usage: kdmp2png <params.toml> <file.kdmp> [out.png] [options]
+//!   slow light: kdmp2png <params.toml> --slow DIR [ref.kdmp] [out.png] [options]
+//!
+//!   --slow DIR     SLOW-LIGHT mode: sample the KDMP series in DIR at each
+//!                  photon's own retarded coordinate time x⁰ (the geodesic
+//!                  integrator carries it exactly — gravitational time
+//!                  delay, Shapiro delay and photon-ring lags included),
+//!                  interpolating linearly between bracketing frames. The
+//!                  sweep streams the series once, newest→oldest, keeping
+//!                  ≤ 2 frames + the reference resident (render/sweep.zig).
+//!                  An optional ref.kdmp positional overrides the reference
+//!                  frame used for the static zone r > rslow (default: the
+//!                  series frame nearest --tobs).
+//!   --tobs T       sim time imaged at the hole [M]: photons arrive at the
+//!                  camera at t = T + rcam (default: t_last − rslow, the
+//!                  latest T whose near side needs no extrapolation)
+//!   --stride N     use every Nth series frame, counted from the newest
+//!                  (default 1; the sgra_spin cadence of 0.3-0.8 M is much
+//!                  finer than the flow evolves — 4-8 is plenty)
+//!   --rslow R      treat the flow as static outside this radius [M]
+//!                  (default 40; the sampled time range inside spans about
+//!                  [T − R − windings, T + R])
+//!   --adapt D      adaptive photon-ring refinement: a vacuum pre-pass
+//!                  (geodesics only, no transfer) finds pixels straddling
+//!                  the critical curve — capture flips or corner flight
+//!                  times differing by > --adapt-dt — and subdivides them
+//!                  as a quadtree to depth D (default 0 = off; 6-10 gives
+//!                  sub-pixel photon-ring sampling; works in both modes)
+//!   --adapt-dt M   corner flight-time disagreement that triggers
+//!                  refinement (default 5 M; a photon half-orbit is ~16 M)
+//!
 //!   --size N       image width and height in pixels   (default 512)
 //!   --fov M        field of view at the hole, in GM/c² (default 100)
 //!   --incl DEG     inclination from the spin axis      (default 60)
@@ -31,6 +61,10 @@
 //!   --wp PCT       white-point percentile              (default 99.8)
 //!   --blur PX      Gaussian beam blur sigma, pixels    (default 0 = off)
 //!   --eps E        geodesic step, cells                (default 0.5)
+//!   --max-steps N  per-ray step budget (default 200000). Screen-mode
+//!                  deep-adapt renders want ~15000: with no absorber, rays
+//!                  pinned to the photon shell otherwise orbit out the
+//!                  whole budget (matter stops them via tau instead)
 //!   --tau T        optical-depth cutoff                (default 30)
 //!   --threads N    render threads                      (default: CPU count)
 //!
@@ -87,7 +121,14 @@ pub fn main(init: std.process.Init) !void {
     var blur: f64 = 0.0;
     var eps: f64 = 0.5;
     var tau_max: f64 = 30.0;
+    var max_steps: usize = 200_000;
     var nthreads: usize = std.Thread.getCpuCount() catch 8;
+    var slow_dir: ?[]const u8 = null;
+    var tobs: f64 = -1.0; // < 0 = auto (t_last − rslow)
+    var stride: usize = 1;
+    var rslow: f64 = 40.0;
+    var adapt: usize = 0;
+    var adapt_dt: f64 = 5.0;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--size")) {
@@ -127,6 +168,23 @@ pub fn main(init: std.process.Init) !void {
             eps = try parseF(args.next() orelse return usageErr(), "--eps");
         } else if (std.mem.eql(u8, arg, "--tau")) {
             tau_max = try parseF(args.next() orelse return usageErr(), "--tau");
+        } else if (std.mem.eql(u8, arg, "--max-steps")) {
+            const v = args.next() orelse return usageErr();
+            max_steps = std.fmt.parseInt(usize, v, 10) catch return usageErr();
+        } else if (std.mem.eql(u8, arg, "--slow")) {
+            slow_dir = args.next() orelse return usageErr();
+        } else if (std.mem.eql(u8, arg, "--tobs")) {
+            tobs = try parseF(args.next() orelse return usageErr(), "--tobs");
+        } else if (std.mem.eql(u8, arg, "--stride")) {
+            const v = args.next() orelse return usageErr();
+            stride = std.fmt.parseInt(usize, v, 10) catch return usageErr();
+        } else if (std.mem.eql(u8, arg, "--rslow")) {
+            rslow = try parseF(args.next() orelse return usageErr(), "--rslow");
+        } else if (std.mem.eql(u8, arg, "--adapt")) {
+            const v = args.next() orelse return usageErr();
+            adapt = std.fmt.parseInt(usize, v, 10) catch return usageErr();
+        } else if (std.mem.eql(u8, arg, "--adapt-dt")) {
+            adapt_dt = try parseF(args.next() orelse return usageErr(), "--adapt-dt");
         } else if (std.mem.startsWith(u8, arg, "--")) {
             std.debug.print("kdmp2png: unknown option '{s}'\n", .{arg});
             return usageErr();
@@ -141,14 +199,30 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     const ppath = params_path orelse return usageErr();
-    const kpath = kdmp_path orelse return usageErr();
 
-    // default output name: <dump-stem>.png next to the dump
+    // Slow mode makes the kdmp positional optional (it becomes a reference-
+    // frame OVERRIDE): a lone non-.kdmp second positional is the out path.
+    if (slow_dir != null) {
+        if (kdmp_path) |k| {
+            if (!std.mem.endsWith(u8, k, ".kdmp")) {
+                if (out_path != null) return usageErr();
+                out_path = k;
+                kdmp_path = null;
+            }
+        }
+    }
+    const kpath: ?[]const u8 = kdmp_path;
+    if (slow_dir == null and kpath == null) return usageErr();
+
+    // default output name: <dump-stem>.png next to the dump; the slow-mode
+    // default needs the resolved t_obs, so it is derived in the branch below
     var opath_buf: [1024]u8 = undefined;
-    const opath = out_path orelse blk: {
-        const stem = if (std.mem.lastIndexOfScalar(u8, kpath, '.')) |dot| kpath[0..dot] else kpath;
-        break :blk try std.fmt.bufPrint(&opath_buf, "{s}.png", .{stem});
-    };
+    var opath: []const u8 = out_path orelse "";
+    if (opath.len == 0 and slow_dir == null) {
+        const kp = kpath.?;
+        const stem = if (std.mem.lastIndexOfScalar(u8, kp, '.')) |dot| kp[0..dot] else kp;
+        opath = try std.fmt.bufPrint(&opath_buf, "{s}.png", .{stem});
+    }
 
     var p = koral.Params.load(allocator, io, ppath) catch |err| {
         std.debug.print("kdmp2png: cannot load params from '{s}': {s}\n", .{ ppath, @errorName(err) });
@@ -175,40 +249,19 @@ pub fn main(init: std.process.Init) !void {
         puffy.channels.mesa = &mtab.?;
     }
 
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, kpath, allocator, .limited(1 << 32)) catch |err| {
-        std.debug.print("kdmp2png: cannot read '{s}': {s}\n", .{ kpath, @errorName(err) });
-        return err;
+    const Load = struct {
+        fn kdmp(alloc: std.mem.Allocator, io_: std.Io, path: []const u8) !render.DumpData {
+            const bytes = std.Io.Dir.cwd().readFileAlloc(io_, path, alloc, .limited(1 << 33)) catch |err| {
+                std.debug.print("kdmp2png: cannot read '{s}': {s}\n", .{ path, @errorName(err) });
+                return err;
+            };
+            defer alloc.free(bytes);
+            return render.DumpData.fromBytes(alloc, bytes) catch |err| {
+                std.debug.print("kdmp2png: cannot parse '{s}': {s}\n", .{ path, @errorName(err) });
+                return err;
+            };
+        }
     };
-    defer allocator.free(bytes);
-
-    var data = render.DumpData.fromBytes(allocator, bytes) catch |err| {
-        std.debug.print("kdmp2png: cannot parse '{s}': {s}\n", .{ kpath, @errorName(err) });
-        return err;
-    };
-    defer data.deinit(allocator);
-    const h = data.header;
-    if (h.nv != koral.VarLayout(cfg).count) {
-        std.debug.print("kdmp2png: dump has nv={d}, puffy config expects {d}\n", .{ h.nv, koral.VarLayout(cfg).count });
-        return error.DimMismatch;
-    }
-
-    const grid = puffy.makeGridNz(h.nx, h.ny, h.nz);
-    var scene = render.Scene.init(
-        grid,
-        puffy.mp,
-        puffy.consts(),
-        puffy.channels,
-        puffy.gam,
-        &data,
-        rcam,
-        puffy.rmax,
-    );
-    scene.scattering = puffy.scattering;
-    scene.sigma_cut = sigma_cut;
-    if (floor_cut > 0) {
-        // PUFFY's floor atmosphere (setHdAtmosphere): ρ = RHOATMMIN·(r/2)^-1.5
-        scene.floor = .{ .rho0 = puffy.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
-    }
 
     var cam = render.Camera{
         .r = rcam,
@@ -219,21 +272,138 @@ pub fn main(init: std.process.Init) !void {
         .height = size,
         .ss = @max(ss, 1),
     };
-    cam.setup(scene.mp);
-
-    std.debug.print(
-        "kdmp2png: {s} ({d}x{d}x{d}, t={e:.4}) | a={d:.4} M={e:.3} Msun | cam r={d} incl={d} fov={d}M | {d}px ss{d} sigma-cut={d} floor-cut={e:.0} {d} threads\n",
-        .{ kpath, h.nx, h.ny, h.nz, h.t, puffy.mp.a, puffy.mass, rcam, incl, fov, size, ss, sigma_cut, floor_cut, nthreads },
-    );
+    cam.setup(puffy.mp);
 
     const img = try allocator.alloc(f64, size * size);
     defer allocator.free(img);
-
     const nu_obs = nu_ghz * 1.0e9;
-    const t0 = std.Io.Timestamp.now(io, .awake);
-    render.renderImage(cfg, &scene, &cam, img, .{ .eps = eps, .tau_max = tau_max, .nu_obs = nu_obs, .screen = screen }, nthreads);
-    const dur = t0.durationTo(std.Io.Timestamp.now(io, .awake));
-    const secs = @as(f64, @floatFromInt(@as(i64, @intCast(dur.nanoseconds)))) / 1e9;
+    const topts = render.TraceOpts{ .eps = eps, .tau_max = tau_max, .max_steps = max_steps, .nu_obs = nu_obs, .screen = screen };
+    const nvar = koral.VarLayout(cfg).count;
+    var secs: f64 = 0;
+
+    if (slow_dir) |sdir| {
+        // ---- slow light: retarded-time sampling of the whole series ----
+        var ser = render.series.Series.scan(allocator, io, sdir, stride) catch |err| {
+            std.debug.print("kdmp2png: cannot scan series '{s}': {s}\n", .{ sdir, @errorName(err) });
+            return err;
+        };
+        defer ser.deinit(allocator);
+        if (ser.shape.nv != nvar) {
+            std.debug.print("kdmp2png: series has nv={d}, puffy config expects {d}\n", .{ ser.shape.nv, nvar });
+            return error.DimMismatch;
+        }
+        const t_first = ser.ts[0];
+        const t_last = ser.ts[ser.ts.len - 1];
+        if (tobs < 0) tobs = @max(t_first, t_last - rslow);
+        if (opath.len == 0) {
+            opath = try std.fmt.bufPrint(&opath_buf, "{s}/slow_t{d:.0}.png", .{ sdir, tobs });
+        }
+
+        const grid = puffy.makeGridNz(ser.shape.nx, ser.shape.ny, ser.shape.nz);
+        var src = try render.series.FileSource.init(allocator, io, &ser);
+        defer src.deinit();
+
+        // reference frame for the static zone: explicit override, or the
+        // series frame nearest t_obs
+        var ref_owned: ?render.DumpData = null;
+        defer if (ref_owned) |*d| d.deinit(allocator);
+        var ref_idx: usize = 0;
+        var ref_acquired = false;
+        const ref: *const render.DumpData = if (kpath) |kp| blk: {
+            ref_owned = try Load.kdmp(allocator, io, kp);
+            const rh = ref_owned.?.header;
+            if (rh.nx != ser.shape.nx or rh.ny != ser.shape.ny or rh.nz != ser.shape.nz or rh.nv != ser.shape.nv) {
+                std.debug.print("kdmp2png: reference dump '{s}' shape differs from the series\n", .{kp});
+                return error.DimMismatch;
+            }
+            break :blk &ref_owned.?;
+        } else blk: {
+            ref_idx = ser.nearest(tobs);
+            ref_acquired = true;
+            break :blk try src.acquire(ref_idx);
+        };
+        defer if (ref_acquired) src.release(ref_idx);
+
+        var scene = render.Scene.init(grid, puffy.mp, puffy.consts(), puffy.channels, puffy.gam, ref, rcam, puffy.rmax);
+        scene.scattering = puffy.scattering;
+        scene.sigma_cut = sigma_cut;
+        if (floor_cut > 0) {
+            scene.floor = .{ .rho0 = puffy.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
+        }
+
+        std.debug.print(
+            "kdmp2png: SLOW LIGHT {s}: {d} frames ({d}x{d}x{d}), t=[{d:.2}, {d:.2}] M, stride {d} | t_obs={d:.2} (arrival t={d:.2}) r_slow={d} | a={d:.4} M={e:.3} Msun | cam r={d} incl={d} fov={d}M {d}px ss{d} {d} threads\n",
+            .{ sdir, ser.ts.len, ser.shape.nx, ser.shape.ny, ser.shape.nz, t_first, t_last, stride, tobs, tobs + rcam, rslow, puffy.mp.a, puffy.mass, rcam, incl, fov, size, ss, nthreads },
+        );
+
+        var plan_specs: []render.sweep.RaySpec = &.{};
+        var plan: ?render.adaptive.Plan = null;
+        defer if (plan) |*pl| pl.deinit(allocator) else allocator.free(plan_specs);
+        if (adapt > 0) {
+            plan = try render.adaptive.planRays(cfg, allocator, &scene, &cam, topts, .{ .depth = adapt, .dt_thresh = adapt_dt }, nthreads);
+            plan_specs = plan.?.specs;
+            var nmark: usize = 0;
+            for (plan.?.marked) |m| nmark += @intFromBool(m);
+            std.debug.print("kdmp2png: adaptive plan: {d} rays ({d} px refined to depth {d}, {d} vacuum probes)\n", .{ plan_specs.len, nmark, adapt, plan.?.vacuum_rays });
+        } else {
+            plan_specs = try render.sweep.uniformPlan(allocator, &cam);
+        }
+
+        const t0 = std.Io.Timestamp.now(io, .awake);
+        const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, plan_specs, img, topts, .{ .t_cam = tobs + rcam, .r_slow = rslow }, nthreads, true);
+        const dur = t0.durationTo(std.Io.Timestamp.now(io, .awake));
+        secs = @as(f64, @floatFromInt(@as(i64, @intCast(dur.nanoseconds)))) / 1e9;
+        std.debug.print(
+            "kdmp2png: sweep: {d} rounds, {d} frame loads | rays: {d} entered slow zone, {d} tails, {d} captured, {d} thick | series-edge holds: {d} samples late, {d} early, {d} rays past start\n",
+            .{ stats.rounds, src.loads, stats.entered, stats.tails, stats.captured, stats.thick, stats.clamped_above, stats.clamped_below, stats.past_start },
+        );
+    } else {
+        // ---- fast light: one snapshot everywhere (the original path) ----
+        var data = try Load.kdmp(allocator, io, kpath.?);
+        defer data.deinit(allocator);
+        const h = data.header;
+        if (h.nv != nvar) {
+            std.debug.print("kdmp2png: dump has nv={d}, puffy config expects {d}\n", .{ h.nv, nvar });
+            return error.DimMismatch;
+        }
+
+        const grid = puffy.makeGridNz(h.nx, h.ny, h.nz);
+        var scene = render.Scene.init(
+            grid,
+            puffy.mp,
+            puffy.consts(),
+            puffy.channels,
+            puffy.gam,
+            &data,
+            rcam,
+            puffy.rmax,
+        );
+        scene.scattering = puffy.scattering;
+        scene.sigma_cut = sigma_cut;
+        if (floor_cut > 0) {
+            // PUFFY's floor atmosphere (setHdAtmosphere): ρ = RHOATMMIN·(r/2)^-1.5
+            scene.floor = .{ .rho0 = puffy.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
+        }
+
+        std.debug.print(
+            "kdmp2png: {s} ({d}x{d}x{d}, t={e:.4}) | a={d:.4} M={e:.3} Msun | cam r={d} incl={d} fov={d}M | {d}px ss{d} sigma-cut={d} floor-cut={e:.0} {d} threads\n",
+            .{ kpath.?, h.nx, h.ny, h.nz, h.t, puffy.mp.a, puffy.mass, rcam, incl, fov, size, ss, sigma_cut, floor_cut, nthreads },
+        );
+
+        const t0 = std.Io.Timestamp.now(io, .awake);
+        if (adapt > 0) {
+            var plan = try render.adaptive.planRays(cfg, allocator, &scene, &cam, topts, .{ .depth = adapt, .dt_thresh = adapt_dt }, nthreads);
+            defer plan.deinit(allocator);
+            var nmark: usize = 0;
+            for (plan.marked) |m| nmark += @intFromBool(m);
+            std.debug.print("kdmp2png: adaptive plan: {d} rays ({d} px refined to depth {d}, {d} vacuum probes)\n", .{ plan.specs.len, nmark, adapt, plan.vacuum_rays });
+            try render.adaptive.renderPlan(cfg, allocator, &scene, &cam, plan.specs, img, topts, nthreads);
+        } else {
+            render.renderImage(cfg, &scene, &cam, img, topts, nthreads);
+        }
+        const dur = t0.durationTo(std.Io.Timestamp.now(io, .awake));
+        secs = @as(f64, @floatFromInt(@as(i64, @intCast(dur.nanoseconds)))) / 1e9;
+    }
 
     var max_i: f64 = 0;
     var sum_i: f64 = 0;
@@ -253,7 +423,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("kdmp2png: nu={d} GHz  I_max={e:.3} erg/s/cm2/sr/Hz  T_b,max={e:.3} K\n", .{ nu_ghz, max_i, tb_max });
         if (dist_kpc > 0) {
             const d_cm = dist_kpc * 3.086e21;
-            const pix_rad = fov * scene.consts.units.masscm / d_cm / @as(f64, @floatFromInt(size));
+            const pix_rad = fov * puffy.consts().units.masscm / d_cm / @as(f64, @floatFromInt(size));
             const s_jy = sum_i * pix_rad * pix_rad * 1.0e23;
             std.debug.print("kdmp2png: S_nu({d} GHz) = {e:.3} Jy at {d} kpc\n", .{ nu_ghz, s_jy, dist_kpc });
         }
@@ -328,9 +498,11 @@ pub fn main(init: std.process.Init) !void {
 fn usageErr() error{BadArgs} {
     std.debug.print(
         "usage: kdmp2png <params.toml> <file.kdmp> [out.png]\n" ++
+            "       kdmp2png <params.toml> --slow DIR [ref.kdmp] [out.png]   (slow light)\n" ++
             "       [--size N] [--fov M] [--incl DEG] [--phi DEG] [--rcam M]\n" ++
             "       [--ss N] [--sigma-cut S] [--floor-cut F] [--nu GHZ] [--dist KPC] [--screen]\n" ++
-            "       [--gamma G] [--wp PCT] [--blur PX] [--eps E] [--tau T] [--threads N]\n",
+            "       [--gamma G] [--wp PCT] [--blur PX] [--eps E] [--tau T] [--max-steps N] [--threads N]\n" ++
+            "       [--slow DIR] [--tobs T] [--stride N] [--rslow R] [--adapt D] [--adapt-dt M]\n",
         .{},
     );
     return error.BadArgs;

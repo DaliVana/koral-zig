@@ -55,6 +55,11 @@ pub fn VarLayout(comptime cfg: Config) type {
     // Build the ordered tag list. Relel bins occupy `n_relel_bins` slots
     // right after the electrons block (C: NEREL(i) = 8+i, inside NVHD).
     const built = comptime blk: {
+        // The tag-list build can exceed the default 1000-branch quota when
+        // its first evaluation is triggered from a deeply generic context
+        // (e.g. a sampler method's parameter type); comptime-only, no
+        // runtime effect.
+        @setEvalBranchQuota(100_000);
         var tags_buf: []const VarTag = &.{};
         var offsets: [std.enums.values(VarTag).len]?usize = @splat(null);
         var n: usize = 0;
