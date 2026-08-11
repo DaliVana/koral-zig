@@ -4,8 +4,8 @@
 //! The energy flux uses the same cancellation-free utp1 assembly as p2u.
 //! The radiative rows here are the pure M1 tensor; PUFFY's shear-viscosity
 //! correction (Rijvisc) is added on top at the faces by the sweep
-//! (sim.rijviscFace + radvisc.addRadViscFlux, M12), so it is absent from
-//! this function's golden records (harness_flux zeroes Rijviscglobal).
+//! (sim.rijviscFace + sim/rijvisc.zig addRadViscFlux, M12), so it is absent
+//! from this function's golden records (harness_flux zeroes Rijviscglobal).
 //!
 //! Divergence from C: C's f_flux_prime calls my_err + exit(-1) on a NaN stress
 //! tensor (physics.c:1230-1247); we return error.NanInFlux instead so the

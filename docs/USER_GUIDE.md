@@ -1149,7 +1149,7 @@ Where the major pieces live (all under `koral/` unless noted):
 | Implicit rad-gas source | `solve/implicit.zig` |
 | Reconstruction / wavespeeds / flux / Riemann | `fv/recon.zig`, `physics/wavespeeds.zig`, `physics/flux.zig`, `fv/laxf.zig` |
 | Evolution driver | `sim.zig`, `sim/storage.zig`, `sim/bc.zig`, `sim/threading.zig`, `sim/timers.zig` |
-| Constrained transport, dynamo, radiative viscosity | `magn/ct.zig`, `magn/dynamo.zig`, `physics/radvisc.zig` |
+| Constrained transport, dynamo, radiative viscosity | `magn/ct.zig`, `magn/dynamo.zig`, `physics/radvisc.zig` (pure kernels), `sim/rijvisc.zig` (gather + per-step pass) |
 | PUFFY problem + quadrature | `problems/puffy/puffy.zig`, `problems/puffy/main.zig`, `problems/puffy/*.toml`, `math/quad.zig` |
 | Diagnostics / I/O | `io/scalars.zig`, `io/dump.zig`, `io/silo.zig` (+ `io/silo_disabled.zig`) |
 | Build / tests / oracle / tools | `build.zig`, `koral.zig` (`test {}`), `tools/gen_golden.sh`, `tools/res2kdmp.zig`, `tools/bench_implicit.zig`, `testing/golden.zig`, `testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/` |

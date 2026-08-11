@@ -476,8 +476,11 @@ radiation), cold electrons down-scatter. Comptonization is a per-problem toggle
 ## 6. Radiative shear viscosity
 
 PUFFY includes an M1 radiative shear-viscosity closure that adds an anisotropic
-stress to the radiation flux
-([`koral/physics/radvisc.zig`](../koral/physics/radvisc.zig)).
+stress to the radiation flux. The pure per-cell kernels live in
+[`koral/physics/radvisc.zig`](../koral/physics/radvisc.zig); the sim-coupled
+half — the finite-difference shear gather, the ν-input gathering, and the
+once-per-step domain pass — in
+[`koral/sim/rijvisc.zig`](../koral/sim/rijvisc.zig).
 
 ### 6.1 Lab-frame shear tensor
 
@@ -494,7 +497,8 @@ The time components follow from $u^\mu\sigma_{\mu\nu} = 0$.
 ### 6.2 Viscosity coefficient
 
 The kinematic viscosity is the shear-$\alpha$ prescription with the photon mean
-free path (`calcRadVisccoeff`, KORAL `calc_rad_visccoeff`):
+free path (`calcRadViscCoeff` gathering the inputs of the pure `viscCoeff`,
+KORAL `calc_rad_visccoeff`):
 $$\nu = \alpha_{\rm visc}\,\lambda_{\rm mfp},\qquad \lambda_{\rm mfp} = 1/\chi,$$
 with $\alpha_{\rm visc} = 0.1$ (now a runtime knob, `radvisc.Params.alpha` on
 `Sim.Options`). The mean free path is capped by the BL radius, smoothly killed
@@ -510,17 +514,20 @@ The viscous stress is Navier–Stokes-like (`calcRijVisc`, KORAL `calc_Rij_visc`
 $$R^{ij}_{\rm visc} = -2\,\nu\,\hat E\,\sigma^{ij},$$
 with $\hat E = $ `pp[EE]` and $\sigma^{ij}$ from raising both indices of the shear
 tensor. It is precomputed once per step over the domain plus a ghost ring
-(corners excluded, `ifOutsideGc` — the C `if_outsidegc` rule)
+(corners excluded, `Sim.isCorner` — the C `if_outsidegc` rule)
 (`calcRijViscTotal`) and added at faces to the M1 radiation flux, damped by a
 characteristic-velocity cap `MAXRADVISCVEL` $= 0.1$ (runtime knob
-`radvisc.Params.maxvel`) to keep the diffusive flux causal (`addRadViscFlux`).
+`radvisc.Params.maxvel`) to keep the diffusive flux causal (`addRadViscFlux`
+wrapping the pure `addViscFlux`).
 
-The shear algebra itself is a pure function `shearFromGradients(du, du2, ucon,
-ucov, gg, kr)`, split out of `calcShearLab` so the invariants
-$\sigma_{\mu\nu} = \sigma_{\nu\mu}$ and $\sigma_{\mu\nu}u^\nu = 0$ can be gated
-on analytic velocity fields (`koral/tests/radvisc_tests.zig`); `calcShearLab` retains
-only the finite-difference gather with C's corner-avoidance one-sided-derivative
-rules.
+The per-cell algebra is entirely pure functions in `physics/radvisc.zig` —
+`shearFromGradients(du, du2, ucon, ucov, gg, kr)` (split out of `calcShearLab`
+so the invariants $\sigma_{\mu\nu} = \sigma_{\nu\mu}$ and
+$\sigma_{\mu\nu}u^\nu = 0$ can be gated on analytic velocity fields,
+`koral/tests/radvisc_tests.zig`), plus `viscCoeff`, `rijVisc`, and
+`addViscFlux`, each with values-in unit tests next to the kernels.
+`sim/rijvisc.zig`'s `calcShearLab` retains only the finite-difference gather
+with C's corner-avoidance one-sided-derivative rules.
 
 ---
 

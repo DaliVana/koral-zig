@@ -1,14 +1,18 @@
 //! M12 theory gates for radiative shear viscosity that the C golden does not
-//! reach: the RADVISCNUDAMP diffusion cap (calcRadViscCoeff) and the
-//! RADVISCMAXVELDAMP characteristic-velocity cap (addRadViscFlux). The shear
-//! tensor, the coefficient, and the assembled R^i_j are validated numerically
-//! against C in golden_visc_test.zig; here we pin the two limiter properties.
+//! reach: the RADVISCNUDAMP diffusion cap (sim/rijvisc.zig calcRadViscCoeff)
+//! and the RADVISCMAXVELDAMP characteristic-velocity cap (addRadViscFlux),
+//! exercised here through the sim wrappers on a real PUFFY state. The pure
+//! kernels behind them (physics/radvisc.zig viscCoeff / addViscFlux) carry
+//! their own values-in unit tests next to the kernels. The shear tensor, the
+//! coefficient, and the assembled R^i_j are validated numerically against C
+//! in visc_golden_tests.zig; here we pin the limiter properties.
 
 const std = @import("std");
 const config = @import("../config.zig");
 const sim_mod = @import("../sim.zig");
 const puffy = @import("../problems/puffy/puffy.zig");
 const radvisc = @import("../physics/radvisc.zig");
+const rijvisc = @import("../sim/rijvisc.zig");
 const invert = @import("../solve/invert.zig");
 const invert_rad = @import("../solve/invert_rad.zig");
 const radforce = @import("../physics/radforce.zig");
@@ -69,10 +73,10 @@ test "M12 radviscosity: RADVISCNUDAMP caps ν at mindx²/(4 global_dt)" {
     const geom = s.cache.fillGeometry(ix, iy, 0);
 
     // tiny dt → nulimit huge → ν = ALPHARADVISC·mfp (uncapped)
-    const nu_free = try radvisc.calcRadViscCoeff(SimP, &s, ix, iy, 0, &pp, &geom, 1e-30);
+    const nu_free = try rijvisc.calcRadViscCoeff(SimP, &s, ix, iy, 0, &pp, &geom, 1e-30);
     // huge dt → nulimit tiny → ν clamped to nulimit
     const big_dt: f64 = 1e10;
-    const nu_capped = try radvisc.calcRadViscCoeff(SimP, &s, ix, iy, 0, &pp, &geom, big_dt);
+    const nu_capped = try rijvisc.calcRadViscCoeff(SimP, &s, ix, iy, 0, &pp, &geom, big_dt);
 
     const mindx = mindxAt(&s, ix, iy);
     const nulimit = mindx * mindx / 2.0 / big_dt / 2.0;
@@ -103,14 +107,14 @@ test "M12 radviscosity: RADVISCMAXVELDAMP caps the viscous flux above MAXRADVISC
     for (1..4) |i| rv[dim + 1][i] = 1.0; // large relative to the rad conserveds
 
     var ff1: [SimP.nv]f64 = @splat(0);
-    try radvisc.addRadViscFlux(SimP, &s, &ff1, &pp, &geom, dim, &rv);
+    try rijvisc.addRadViscFlux(SimP, &s, &ff1, &pp, &geom, dim, &rv);
 
     // scale the tensor by 10 — already past the cap, so the *damped* flux must
     // be (nearly) unchanged (dampfac ∝ 1/|R|), not 10× larger
     var rv10: [4][4]f64 = @splat(@splat(0));
     for (1..4) |i| rv10[dim + 1][i] = 10.0;
     var ff10: [SimP.nv]f64 = @splat(0);
-    try radvisc.addRadViscFlux(SimP, &s, &ff10, &pp, &geom, dim, &rv10);
+    try rijvisc.addRadViscFlux(SimP, &s, &ff10, &pp, &geom, dim, &rv10);
 
     // the velocity-limited flux saturates: ff10 ≈ ff1 (not 10×)
     var any_nonzero = false;
@@ -149,7 +153,7 @@ test "M12 radviscosity: σ_μν is symmetric and u-orthogonal (kinematic shear i
     const geom = s.cache.fillGeometry(ix, iy, 0);
 
     // σ_μν (both indices lowered) in the radiation frame (FX..FZ, VELR).
-    const sh = try radvisc.calcShearLab(SimP, &s, ix, iy, 0, comptime LP.index(.fx), .velr);
+    const sh = try rijvisc.calcShearLab(SimP, &s, ix, iy, 0, comptime LP.index(.fx), .velr);
     const sigma = sh.s;
 
     // the radiation-frame 4-velocity the shear is projected around.

@@ -47,6 +47,7 @@ const implicit = @import("solve/implicit.zig");
 const radiation = @import("physics/radiation.zig");
 const radforce = @import("physics/radforce.zig");
 const radvisc_mod = @import("physics/radvisc.zig");
+const rijvisc_mod = @import("sim/rijvisc.zig");
 const p2u_mod = @import("p2u.zig");
 const laxf_mod = @import("fv/laxf.zig");
 const ct = @import("magn/ct.zig");
@@ -647,7 +648,9 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
 
         /// C: if_outsidegc — true for ghost *corner* cells (≥2 dims outside).
-        fn isCorner(self: *const Self, ix: i64, iy: i64, iz: i64) bool {
+        /// `pub` so the sim/-side passes (sim/rijvisc.zig) share the one
+        /// definition of the corner convention with wavespeedRows.
+        pub fn isCorner(self: *const Self, ix: i64, iy: i64, iz: i64) bool {
             var n: u8 = 0;
             if (ix < 0 or ix >= self.nxi()) n += 1;
             if (iy < 0 or iy >= self.nyi()) n += 1;
@@ -1339,7 +1342,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                 // radiative viscosity: face i is between cells i−1 and i
                 if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
                     const rv = self.rijviscFace(dim, cell[0], cell[1], cell[2]);
-                    try radvisc_mod.addRadViscFlux(Self, self, &ffl, &pl, &geom, dim, &rv);
+                    try rijvisc_mod.addRadViscFlux(Self, self, &ffl, &pl, &geom, dim, &rv);
                 }
             }
             if (dor) {
@@ -1351,7 +1354,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                 // radiative viscosity: face i+1 is between cells i and i+1
                 if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
                     const rv = self.rijviscFace(dim, cp[0], cp[1], cp[2]);
-                    try radvisc_mod.addRadViscFlux(Self, self, &ffr, &pr, &geom, dim, &rv);
+                    try rijvisc_mod.addRadViscFlux(Self, self, &ffr, &pr, &geom, dim, &rv);
                 }
             }
 
@@ -1810,7 +1813,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
                 self.timers.begin(.radvisc);
                 defer self.timers.end();
-                try radvisc_mod.calcRijViscTotal(Self, self, dt);
+                try rijvisc_mod.calcRijViscTotal(Self, self, dt);
             }
 
             const gam_imex = 1.0 - 1.0 / @sqrt(2.0);

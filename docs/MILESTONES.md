@@ -208,7 +208,9 @@ natural conserved scale.
       analytic atmosphere matches near machine precision (full cell-by-cell
       + attribution under -Dslow-tests)
 - [x] M12 — dynamo + radiative viscosity + Comptonization.
-      **Radiative shear viscosity** (koral/physics/radvisc.zig, PUFFY's
+      **Radiative shear viscosity** (koral/physics/radvisc.zig — since the
+      2026-08 split the pure kernels; gather + per-step pass in
+      koral/sim/rijvisc.zig — PUFFY's
       RADVISCOSITY==SHEARVISCOSITY): calc_shear_lab (the lab-frame σ_ij from
       the radiation-frame velocity field with Christoffel corrections + the
       grid-corner-avoidance branches), calc_rad_visccoeff (ν = ALPHARADVISC·mfp

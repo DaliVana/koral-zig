@@ -27,7 +27,7 @@ const grid_mod = @import("../../grid.zig");
 const sim_mod = @import("../../sim.zig");
 const golden = @import("../../testing/golden.zig");
 const puffy = @import("../../problems/puffy/puffy.zig");
-const radvisc = @import("../../physics/radvisc.zig");
+const rijvisc = @import("../../sim/rijvisc.zig");
 const invert = @import("../../solve/invert.zig");
 const invert_rad = @import("../../solve/invert_rad.zig");
 
@@ -75,7 +75,7 @@ test "M12 radviscosity: shear + nu + R^i_j vs C (PUFFY t=0, 384×360)" {
     // full init leaves the "stale ghost" state the first-step
     // calc_Rij_visc_total sees (no set_bc after postinit) — matches harness
     _ = try puffy.initAll(SimP, &s);
-    try radvisc.calcRijViscTotal(SimP, &s, global_dt_golden);
+    try rijvisc.calcRijViscTotal(SimP, &s, global_dt_golden);
 
     const nx = s.nxi();
     const ny = s.nyi();
@@ -97,7 +97,7 @@ test "M12 radviscosity: shear + nu + R^i_j vs C (PUFFY t=0, 384×360)" {
                 var pp: [SimP.nv]f64 = undefined;
                 s.p.load(ix, iy, 0, &pp);
                 const geom = s.cache.fillGeometry(ix, iy, 0);
-                const rv = try radvisc.calcRadShearViscosity(SimP, &s, ix, iy, 0, &pp, &geom, global_dt_golden);
+                const rv = try rijvisc.calcRadShearViscosity(SimP, &s, ix, iy, 0, &pp, &geom, global_dt_golden);
                 for (0..4) |i| {
                     for (0..4) |j| dev_shear.add(kshear.data[base + i * 4 + j], rv.shear[i][j]);
                 }

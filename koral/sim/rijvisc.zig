@@ -1,0 +1,333 @@
+//! Radiative shear viscosity — the sim-coupled half, SimT-generic (the house
+//! `fn f(comptime SimT: type, sim: *SimT)` pattern, like sim/bc.zig):
+//!
+//!   calcShearLab          — FD gather of the velocity gradients over the ±1
+//!                           stencil (prims from sim.p, metrics from the
+//!                           cache), fed to the pure shear algebra
+//!                           (C: calc_shear_lab, rad.c:3952).
+//!   calcRadViscCoeff      — gathers χ (calcChiSlim), the smallest proper
+//!                           cell size and the cached BL radius for the pure
+//!                           ν limiter (C: calc_rad_visccoeff, rad.c:4508).
+//!   calcRadShearViscosity — σ^ij (indices_1122) + ν (C: rad.c:3912).
+//!   calcRijVisc           — per-cell R^i_j via the pure kernel
+//!                           (C: calc_Rij_visc, rad.c:4670).
+//!   calcRijViscTotal      — the once-per-step threaded domain pass filling
+//!                           sim.rijvisc (C: calc_Rij_visc_total, rad.c:4628).
+//!   addRadViscFlux        — p2u of the face state + the pure velocity-damped
+//!                           flux addition (C: the RADVISCMAXVELDAMP block of
+//!                           f_flux_prime_rad_total, rad.c:3799).
+//!
+//! The per-cell tensor algebra and limiter chains — and the PUFFY switch
+//! notes — live in physics/radvisc.zig. ACCELRADVISCOSITY is OFF (recompute
+//! every step, no radvisclasttime caching); derivatives are always centered
+//! (C's derdir option — see the branch comment in calcShearLab).
+
+const relele = @import("../relele.zig");
+const radvisc = @import("../physics/radvisc.zig");
+const radforce = @import("../physics/radforce.zig");
+const p2u_mod = @import("../p2u.zig");
+const metric = @import("../metric/metric.zig");
+const threading = @import("threading.zig");
+const Geometry = @import("../geometry.zig").Geometry;
+
+/// threading.Error's shape (the union parallelRangeErr workers return) — the
+/// same local alias sim/bc.zig uses.
+const Error = relele.Error || error{OutOfMemory};
+
+/// C: calc_shear_lab (rad.c:3952), the RAD branch (VELPRIMRAD, FX..FZ). The
+/// gas branch (VELPRIM, VX..VZ) is available via `istart`/`whichvel` but
+/// PUFFY only uses RAD. Center and neighbour prims both come from sim.p,
+/// neighbour metrics and coordinates from the metric cache; Christoffels from
+/// the center cell. The assembled gradients go to the pure
+/// radvisc.shearFromGradients kernel.
+pub fn calcShearLab(
+    comptime SimT: type,
+    sim: *const SimT,
+    ix: i64,
+    iy: i64,
+    iz: i64,
+    comptime istart: usize,
+    comptime whichvel: relele.VelType,
+) relele.Error!radvisc.ShearOut {
+    const NV = SimT.nv;
+
+    // Center prims from the live state — loaded here (not passed in) so they
+    // cannot diverge from the ±1 neighbours the FD stencil reads from sim.p.
+    var pp0: [NV]f64 = undefined;
+    sim.p.load(ix, iy, iz, &pp0);
+
+    const geom = sim.cache.fillGeometry(ix, iy, iz);
+    const gg = &geom.gg;
+
+    // du_i,j (covariant velocity) and du^i,j (contravariant, only used on the
+    // diagonal for the expansion). Time column forced to zero (d/dt = 0).
+    var du: [4][4]f64 = @splat(@splat(0));
+    var du2: [4][4]f64 = @splat(@splat(0));
+
+    // center four-velocity
+    const uc = try relele.convertBoth(
+        .{ 0, pp0[istart], pp0[istart + 1], pp0[istart + 2] },
+        whichvel,
+        &geom,
+    );
+    const ucon = uc.con;
+    const ucov = uc.cov;
+
+    const nd = [3]i64{ sim.nDim(0), sim.nDim(1), sim.nDim(2) };
+    const nx = nd[0];
+    const ny = nd[1];
+    const nz = nd[2];
+
+    var idim: usize = 1;
+    while (idim < 4) : (idim += 1) {
+        const dim = idim - 1;
+
+        // A collapsed dimension has bit-identical prims and metric on both
+        // sides (axisymmetric metric, no z-dependence) → derivative ≡ 0.
+        // C computes exactly 0 there; we skip the (nonexistent) z-ghosts.
+        if (nd[dim] <= 1) continue;
+
+        var cm = [3]i64{ ix, iy, iz };
+        var cp = [3]i64{ ix, iy, iz };
+        cm[dim] -= 1;
+        cp[dim] += 1;
+
+        var ppm1: [NV]f64 = undefined;
+        var ppp1: [NV]f64 = undefined;
+        sim.p.load(cm[0], cm[1], cm[2], &ppm1);
+        sim.p.load(cp[0], cp[1], cp[2], &ppp1);
+
+        const gm = sim.cache.fillGeometry(cm[0], cm[1], cm[2]);
+        const gp = sim.cache.fillGeometry(cp[0], cp[1], cp[2]);
+
+        const um = try relele.convertBoth(
+            .{ 0, ppm1[istart], ppm1[istart + 1], ppm1[istart + 2] },
+            whichvel,
+            &gm,
+        );
+        const up = try relele.convertBoth(
+            .{ 0, ppp1[istart], ppp1[istart + 1], ppp1[istart + 2] },
+            whichvel,
+            &gp,
+        );
+
+        const xm = gm.xxvec[idim];
+        const xc = geom.xxvec[idim];
+        const xp = gp.xxvec[idim];
+
+        for (0..4) |i| {
+            const dc = (up.cov[i] - um.cov[i]) / (xp - xm);
+            const dr = (up.cov[i] - ucov[i]) / (xp - xc);
+            const dl = (ucov[i] - um.cov[i]) / (xc - xm);
+            const dc2 = (up.con[i] - um.con[i]) / (xp - xm);
+            const dr2 = (up.con[i] - ucon[i]) / (xp - xc);
+            const dl2 = (ucon[i] - um.con[i]) / (xc - xm);
+
+            // corner avoidance (rad.c:4110-4137): a cell adjacent to a grid
+            // corner uses a one-sided derivative in the other dimensions so
+            // it never reads the (unfilled) diagonal corner. iz≡0≡NZ-1 in 2D.
+            if ((ix < 0 and iy == 0 and iz == 0 and idim != 1) or
+                (iy < 0 and ix == 0 and iz == 0 and idim != 2) or
+                (iz < 0 and ix == 0 and iy == 0 and idim != 3))
+            {
+                du[i][idim] = dr;
+                du2[i][idim] = dr2;
+            } else if ((ix < 0 and iy == ny - 1 and iz == nz - 1 and idim != 1) or
+                (iy < 0 and ix == nx - 1 and iz == nz - 1 and idim != 2) or
+                (iz < 0 and ix == nx - 1 and iy == ny - 1 and idim != 3))
+            {
+                du[i][idim] = dl;
+                du2[i][idim] = dl2;
+            } else if ((ix >= nx and iy == 0 and iz == 0 and idim != 1) or
+                (iy >= ny and ix == 0 and iz == 0 and idim != 2) or
+                (iz >= nz and ix == 0 and iy == 0 and idim != 3))
+            {
+                du[i][idim] = dr;
+                du2[i][idim] = dr2;
+            } else if ((ix >= nx and iy == ny - 1 and iz == nz - 1 and idim != 1) or
+                (iy >= ny and ix == nx - 1 and iz == nz - 1 and idim != 2) or
+                (iz >= nz and ix == nx - 1 and iy == ny - 1 and idim != 3))
+            {
+                du[i][idim] = dl;
+                du2[i][idim] = dl2;
+            } else {
+                // derdir ≡ 0 (centered) everywhere PUFFY uses this
+                du[i][idim] = dc;
+                du2[i][idim] = dc2;
+            }
+        }
+    }
+
+    // Hand the assembled velocity gradients to the pure shear algebra. The
+    // gather above (neighbour prims + metrics via the FD stencil) is all the
+    // sim/grid coupling; everything below is local tensor algebra.
+    const kr_blk = sim.cache.krBlock(ix, iy, iz);
+    return radvisc.shearFromGradients(&du, &du2, ucon, ucov, gg, kr_blk);
+}
+
+/// C: calc_rad_visccoeff (rad.c:4508) — gathers χ (calcChiSlim), the
+/// smallest active proper cell size, and the cached BL radius, then applies
+/// the pure limiter chain (radvisc.viscCoeff). `global_dt` is the step's dt
+/// (C: global_dt, set before the RK stages).
+pub fn calcRadViscCoeff(
+    comptime SimT: type,
+    sim: *const SimT,
+    ix: i64,
+    iy: i64,
+    iz: i64,
+    pp: *const [SimT.nv]f64,
+    geom: *const Geometry,
+    global_dt: f64,
+) relele.Error!f64 {
+    const cfg = SimT.Cfg;
+    // Sim.init rejects radviscosity with a null opac (there is no meaningful
+    // ν without opacities — cf. the precondition check), so on the production
+    // path this capture always binds. The `else return 0` stays as a defensive
+    // guard for any direct call; the optional-pointer capture avoids copying
+    // the whole ~300-byte Params to a stack temporary per cell per step (the
+    // idiom sim.zig uses at the wavespeed τ-limiter).
+    const opac = if (sim.opt.opac) |*o| o else return 0;
+
+    const chi = try radforce.calcChiSlim(cfg, pp.*, geom, sim.opt.gam, opac);
+
+    const g = &sim.grid;
+    const gg = &geom.gg;
+    const dx = [3]f64{
+        g.cellSize(ix, 0) * @sqrt(gg[1][1]),
+        g.cellSize(iy, 1) * @sqrt(gg[2][2]),
+        g.cellSize(iz, 2) * @sqrt(gg[3][3]),
+    };
+    const ny = sim.nDim(1);
+    const nz = sim.nDim(2);
+    const mindx = if (ny == 1 and nz == 1)
+        dx[0]
+    else if (nz == 1)
+        @min(dx[0], dx[1])
+    else if (ny == 1)
+        @min(dx[0], dx[2])
+    else
+        @min(dx[0], @min(dx[1], dx[2]));
+
+    // BL radius from the cached BL geometry — bit-identical to
+    // coco.cocoN(geom.xxvec, coords, .bl, mp)[1].
+    return radvisc.viscCoeff(.{
+        .chi = chi,
+        .mindx = mindx,
+        .r_bl = sim.cache.blGeom(ix, iy, iz).xxvec[1],
+        .rhor = metric.rHorizonBL(sim.opt.mp.a),
+        .alpha = sim.opt.radvisc.alpha,
+        .global_dt = global_dt,
+    });
+}
+
+/// C: calc_rad_shearviscosity (rad.c:3912) — σ^ij (both indices raised) and ν.
+pub fn calcRadShearViscosity(
+    comptime SimT: type,
+    sim: *const SimT,
+    ix: i64,
+    iy: i64,
+    iz: i64,
+    pp: *const [SimT.nv]f64,
+    geom: *const Geometry,
+    global_dt: f64,
+) relele.Error!struct { shear: [4][4]f64, nu: f64 } {
+    const L = SimT.Layout;
+    const sh = try calcShearLab(SimT, sim, ix, iy, iz, comptime L.index(.fx), .velr);
+    const shear = relele.raiseBoth(sh.s, geom); // σ_ij → σ^ij
+    const nu = try calcRadViscCoeff(SimT, sim, ix, iy, iz, pp, geom, global_dt);
+    return .{ .shear = shear, .nu = nu };
+}
+
+/// C: calc_Rij_visc (rad.c:4670) — σ^ij + ν gathered here, the R^i_j tensor
+/// assembled by the pure kernel. ACCELRADVISCOSITY off ⇒ always recomputed.
+pub fn calcRijVisc(
+    comptime SimT: type,
+    sim: *const SimT,
+    ix: i64,
+    iy: i64,
+    iz: i64,
+    pp: *const [SimT.nv]f64,
+    geom: *const Geometry,
+    global_dt: f64,
+) relele.Error![4][4]f64 {
+    const L = SimT.Layout;
+    const rv = try calcRadShearViscosity(SimT, sim, ix, iy, iz, pp, geom, global_dt);
+    return radvisc.rijVisc(rv.nu, pp[L.index(.ee)], &rv.shear, geom);
+}
+
+/// C: calc_Rij_visc_total (rad.c:4628) — populate sim.rijvisc (R^i_j) over the
+/// domain plus a one-cell ghost ring, skipping corners (sim.isCorner). Called
+/// once per step (problem.c:127) with the step's global_dt. P1: band-parallel
+/// over iy rows (each cell writes only its own rijvisc block; the ±1-stencil
+/// reads of p are frozen during the pass).
+pub fn calcRijViscTotal(comptime SimT: type, sim: *SimT, global_dt: f64) Error!void {
+    threading.parallelZero(sim.team, sim.rijvisc.data);
+
+    const ny = sim.nyi();
+    const ylim: i64 = if (ny > 1) 1 else 0;
+
+    const Ctx = struct { sim: *SimT, dt: f64 };
+    var ctx = Ctx{ .sim = sim, .dt = global_dt };
+    const W = struct {
+        fn w(c: *Ctx, iy0: i64, iy1: i64) Error!void {
+            try rijViscRows(SimT, c.sim, c.dt, iy0, iy1);
+        }
+    };
+    try threading.parallelRangeErr(Ctx, &ctx, sim.team, -ylim, ny + ylim, W.w);
+}
+
+/// The per-cell R^i_j body for iy ∈ [iy0, iy1) (all iz, ix incl. the ring).
+fn rijViscRows(comptime SimT: type, sim: *SimT, global_dt: f64, iy0: i64, iy1: i64) relele.Error!void {
+    const nx = sim.nxi();
+    const nz = sim.nzi();
+    const lim: i64 = 1;
+
+    const xlim: i64 = if (nx > 1) lim else 0;
+    const zlim: i64 = if (nz > 1) lim else 0;
+
+    var iz: i64 = -zlim;
+    while (iz < nz + zlim) : (iz += 1) {
+        var iy: i64 = iy0;
+        while (iy < iy1) : (iy += 1) {
+            var ix: i64 = -xlim;
+            while (ix < nx + xlim) : (ix += 1) {
+                if (sim.isCorner(ix, iy, iz)) continue; // C: if_outsidegc
+                var pp: [SimT.nv]f64 = undefined;
+                sim.p.load(ix, iy, iz, &pp);
+                const geom = sim.cache.fillGeometry(ix, iy, iz);
+                const rvisc = try calcRijVisc(SimT, sim, ix, iy, iz, &pp, &geom, global_dt);
+                // [4][4]f64 is row-major contiguous → bit-identical flatten.
+                const t: [16]f64 = @bitCast(rvisc);
+                sim.rijvisc.store(ix, iy, iz, &t);
+            }
+        }
+    }
+}
+
+/// C: the RADVISCMAXVELDAMP block of f_flux_prime_rad_total (rad.c:3799-3845)
+/// — p2u of the face state, then the pure velocity-damped flux addition
+/// (radvisc.addViscFlux). `rijvisc` is the face-averaged R^i_j (undamped);
+/// `dim` == ifacedim.
+pub fn addRadViscFlux(
+    comptime SimT: type,
+    sim: *const SimT,
+    ff: *[SimT.nv]f64,
+    pp: *const [SimT.nv]f64,
+    geom: *const Geometry,
+    dim: usize,
+    rijvisc: *const [4][4]f64,
+) relele.Error!void {
+    const cfg = SimT.Cfg;
+    const uu = try p2u_mod.p2u(cfg, pp.*, geom, sim.opt.gam);
+    radvisc.addViscFlux(
+        cfg,
+        ff,
+        &uu,
+        rijvisc,
+        geom,
+        dim,
+        sim.nDim(1) > 1,
+        sim.nDim(2) > 1,
+        sim.opt.radvisc.maxvel,
+    );
+}

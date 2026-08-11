@@ -1,37 +1,29 @@
-//! Radiative shear viscosity (PUFFY's RADVISCOSITY == SHEARVISCOSITY),
-//! transcribed from KORAL rad.c:
+//! Radiative shear viscosity — the pure per-cell kernels (PUFFY's
+//! RADVISCOSITY == SHEARVISCOSITY, KORAL rad.c):
 //!
-//!   calc_shear_lab           rad.c:3952  — lab-frame shear tensor σ_ij from
-//!                                          the radiation-rest-frame velocity
-//!                                          field (FX/FY/FZ, VELPRIMRAD) with
-//!                                          Christoffel corrections.
-//!   calc_rad_visccoeff       rad.c:4508  — ν = ALPHARADVISC·mfp, the
-//!                                          RADVISCMFPSPH mfp limiter and the
-//!                                          RADVISCNUDAMP diffusion cap.
-//!   calc_rad_shearviscosity  rad.c:3912  — σ^ij (indices_1122) + ν.
-//!   calc_Rij_visc            rad.c:4670  — R^ij_visc = −2 ν Ê σ^ij → R^i_j.
-//!   calc_Rij_visc_total      rad.c:4628  — fill the per-cell store over the
-//!                                          domain + one non-corner ghost ring.
-//!   f_flux_prime_rad_total   rad.c:3724  — the face average of R^i_j_visc,
-//!                                          the RADVISCMAXVELDAMP velocity cap,
-//!                                          and the addition to the M1 flux.
+//!   shearFromGradients  rad.c:4090  — σ_μν and the expansion θ from
+//!                                     assembled velocity gradients.
+//!   viscCoeff           rad.c:4508  — ν = ALPHARADVISC·mfp with the
+//!                                     RADVISCMFPSPH mfp limiter and the
+//!                                     RADVISCNUDAMP diffusion cap.
+//!   rijVisc             rad.c:4670  — R^ij_visc = −2 ν Ê σ^ij → R^i_j.
+//!   addViscFlux         rad.c:3799  — the RADVISCMAXVELDAMP velocity cap
+//!                                     and the face addition to the M1 flux.
+//!
+//! Everything here is values-in/values-out — no grid, no stencil, no
+//! threading, like the rest of physics/. The sim-coupled half (the FD gather
+//! of the velocity gradients, the χ/cell-size/BL-radius inputs of ν, and the
+//! once-per-step threaded domain pass) lives in sim/rijvisc.zig.
 //!
 //! PUFFY switches (define.h:96-102): RADVISCMFPSPH (no RMIN/MAX overrides →
 //! rmin = 1.2·r_horizon), RADVISCNUDAMP, RADVISCMAXVELDAMP, ALPHARADVISC 0.1,
-//! MAXRADVISCVEL 0.1. ACCELRADVISCOSITY is OFF (recompute every step, no
-//! radvisclasttime caching). Derivatives are always centered (derdir≡0):
-//! calc_Rij_visc_total and the face path both pass {0,0,0}.
+//! MAXRADVISCVEL 0.1.
 
 const std = @import("std");
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const relele = @import("../relele.zig");
-const radiation = @import("radiation.zig");
-const radforce = @import("radforce.zig");
-const p2u_mod = @import("../p2u.zig");
-const metric = @import("../metric/metric.zig");
 const misc = @import("../math/misc.zig");
-const threading = @import("../sim/threading.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 const small: f64 = 1.0e-80; // C: SMALL
@@ -45,152 +37,22 @@ pub const Params = struct {
     maxvel: f64 = 0.1,
 };
 
-/// Result of calc_shear_lab: the lab-frame shear tensor σ_ij (all 16
+/// Result of the shear assembly: the lab-frame shear tensor σ_ij (all 16
 /// components) and the expansion θ = u^μ_{;μ}.
 pub const ShearOut = struct {
     s: [4][4]f64,
     div: f64,
 };
 
-/// C: calc_shear_lab (rad.c:3952), the RAD branch (VELPRIMRAD, FX..FZ). The
-/// gas branch (VELPRIM, VX..VZ) is available via `istart`/`whichvel` but
-/// PUFFY only uses RAD. Center and neighbour prims both come from sim.p,
-/// neighbour metrics and coordinates from the metric cache; Christoffels from
-/// the center cell.
-pub fn calcShearLab(
-    comptime SimT: type,
-    sim: *const SimT,
-    ix: i64,
-    iy: i64,
-    iz: i64,
-    comptime istart: usize,
-    comptime whichvel: relele.VelType,
-) relele.Error!ShearOut {
-    const NV = SimT.nv;
-
-    // Center prims from the live state — loaded here (not passed in) so they
-    // cannot diverge from the ±1 neighbours the FD stencil reads from sim.p.
-    var pp0: [NV]f64 = undefined;
-    sim.p.load(ix, iy, iz, &pp0);
-
-    const geom = sim.cache.fillGeometry(ix, iy, iz);
-    const gg = &geom.gg;
-
-    // du_i,j (covariant velocity) and du^i,j (contravariant, only used on the
-    // diagonal for the expansion). Time column forced to zero (d/dt = 0).
-    var du: [4][4]f64 = @splat(@splat(0));
-    var du2: [4][4]f64 = @splat(@splat(0));
-
-    // center four-velocity
-    const uc = try relele.convertBoth(
-        .{ 0, pp0[istart], pp0[istart + 1], pp0[istart + 2] },
-        whichvel,
-        &geom,
-    );
-    const ucon = uc.con;
-    const ucov = uc.cov;
-
-    const nd = [3]i64{ sim.nDim(0), sim.nDim(1), sim.nDim(2) };
-    const nx = nd[0];
-    const ny = nd[1];
-    const nz = nd[2];
-
-    var idim: usize = 1;
-    while (idim < 4) : (idim += 1) {
-        const dim = idim - 1;
-
-        // A collapsed dimension has bit-identical prims and metric on both
-        // sides (axisymmetric metric, no z-dependence) → derivative ≡ 0.
-        // C computes exactly 0 there; we skip the (nonexistent) z-ghosts.
-        if (nd[dim] <= 1) continue;
-
-        var cm = [3]i64{ ix, iy, iz };
-        var cp = [3]i64{ ix, iy, iz };
-        cm[dim] -= 1;
-        cp[dim] += 1;
-
-        var ppm1: [NV]f64 = undefined;
-        var ppp1: [NV]f64 = undefined;
-        sim.p.load(cm[0], cm[1], cm[2], &ppm1);
-        sim.p.load(cp[0], cp[1], cp[2], &ppp1);
-
-        const gm = sim.cache.fillGeometry(cm[0], cm[1], cm[2]);
-        const gp = sim.cache.fillGeometry(cp[0], cp[1], cp[2]);
-
-        const um = try relele.convertBoth(
-            .{ 0, ppm1[istart], ppm1[istart + 1], ppm1[istart + 2] },
-            whichvel,
-            &gm,
-        );
-        const up = try relele.convertBoth(
-            .{ 0, ppp1[istart], ppp1[istart + 1], ppp1[istart + 2] },
-            whichvel,
-            &gp,
-        );
-
-        const xm = gm.xxvec[idim];
-        const xc = geom.xxvec[idim];
-        const xp = gp.xxvec[idim];
-
-        for (0..4) |i| {
-            const dc = (up.cov[i] - um.cov[i]) / (xp - xm);
-            const dr = (up.cov[i] - ucov[i]) / (xp - xc);
-            const dl = (ucov[i] - um.cov[i]) / (xc - xm);
-            const dc2 = (up.con[i] - um.con[i]) / (xp - xm);
-            const dr2 = (up.con[i] - ucon[i]) / (xp - xc);
-            const dl2 = (ucon[i] - um.con[i]) / (xc - xm);
-
-            // corner avoidance (rad.c:4110-4137): a cell adjacent to a grid
-            // corner uses a one-sided derivative in the other dimensions so
-            // it never reads the (unfilled) diagonal corner. iz≡0≡NZ-1 in 2D.
-            if ((ix < 0 and iy == 0 and iz == 0 and idim != 1) or
-                (iy < 0 and ix == 0 and iz == 0 and idim != 2) or
-                (iz < 0 and ix == 0 and iy == 0 and idim != 3))
-            {
-                du[i][idim] = dr;
-                du2[i][idim] = dr2;
-            } else if ((ix < 0 and iy == ny - 1 and iz == nz - 1 and idim != 1) or
-                (iy < 0 and ix == nx - 1 and iz == nz - 1 and idim != 2) or
-                (iz < 0 and ix == nx - 1 and iy == ny - 1 and idim != 3))
-            {
-                du[i][idim] = dl;
-                du2[i][idim] = dl2;
-            } else if ((ix >= nx and iy == 0 and iz == 0 and idim != 1) or
-                (iy >= ny and ix == 0 and iz == 0 and idim != 2) or
-                (iz >= nz and ix == 0 and iy == 0 and idim != 3))
-            {
-                du[i][idim] = dr;
-                du2[i][idim] = dr2;
-            } else if ((ix >= nx and iy == ny - 1 and iz == nz - 1 and idim != 1) or
-                (iy >= ny and ix == nx - 1 and iz == nz - 1 and idim != 2) or
-                (iz >= nz and ix == nx - 1 and iy == ny - 1 and idim != 3))
-            {
-                du[i][idim] = dl;
-                du2[i][idim] = dl2;
-            } else {
-                // derdir ≡ 0 (centered) everywhere PUFFY uses this
-                du[i][idim] = dc;
-                du2[i][idim] = dc2;
-            }
-        }
-    }
-
-    // Hand the assembled velocity gradients to the pure shear algebra. The
-    // gather above (neighbour prims + metrics via the FD stencil) is all the
-    // sim/grid coupling; everything below is local tensor algebra.
-    const kr_blk = sim.cache.krBlock(ix, iy, iz);
-    return shearFromGradients(&du, &du2, ucon, ucov, gg, kr_blk);
-}
-
-/// Pure lab-frame shear algebra (rad.c:4090-4180 tail), extracted from
-/// calcShearLab so it can be exercised in isolation. Given the covariant
+/// Pure lab-frame shear algebra (rad.c:4090-4180 tail). Given the covariant
 /// velocity gradient du_i,j = ∂_j u_i and its contravariant counterpart du2
 /// (only the diagonal is read, for the expansion), the frame 4-velocity
 /// (ucon/ucov), the metric `gg`, and the Christoffel block `kr`
 /// (kr[k·16 + i·4 + j] = Γ^k_ij), build σ_μν and the expansion θ. No grid or
-/// sim access — feed it an analytic gradient and check the kinematic invariants
-/// (σ symmetric, σ_μν u^ν = 0) directly. calcShearLab is the thin sim wrapper
-/// that assembles the gradients by finite-differencing neighbour cells.
+/// sim access — feed it an analytic gradient and check the kinematic
+/// invariants (σ symmetric, σ_μν u^ν = 0) directly. The FD stencil that
+/// assembles the gradients from neighbour cells is sim/rijvisc.zig's
+/// calcShearLab.
 pub fn shearFromGradients(
     du: *const [4][4]f64,
     du2: *const [4][4]f64,
@@ -255,217 +117,206 @@ pub fn shearFromGradients(
     return .{ .s = s, .div = theta };
 }
 
-/// C: calc_rad_visccoeff (rad.c:4508) with RADVISCMFPSPH + RADVISCNUDAMP.
-/// `global_dt` is the step's dt (C: global_dt, set before the RK stages).
-pub fn calcRadViscCoeff(
-    comptime SimT: type,
-    sim: *const SimT,
-    ix: i64,
-    iy: i64,
-    iz: i64,
-    pp: *const [SimT.nv]f64,
-    geom: *const Geometry,
+/// Inputs of viscCoeff, named so the same-typed scalars (in particular the
+/// two radii) cannot be transposed at a call site.
+pub const ViscCoeffIn = struct {
+    /// total opacity κ + κ_es (the mfp is 1/χ)
+    chi: f64,
+    /// smallest active proper cell size
+    mindx: f64,
+    /// BL radius of the cell
+    r_bl: f64,
+    /// horizon radius
+    rhor: f64,
+    /// C: ALPHARADVISC
+    alpha: f64,
+    /// the step's dt (C: global_dt, set before the RK stages)
     global_dt: f64,
-) relele.Error!f64 {
-    const cfg = SimT.Cfg;
-    // Sim.init rejects radviscosity with a null opac (there is no meaningful
-    // ν without opacities — cf. the precondition check), so on the production
-    // path this capture always binds. The `else return 0` stays as a defensive
-    // guard for any direct call; the optional-pointer capture avoids copying
-    // the whole ~300-byte Params to a stack temporary per cell per step (the
-    // idiom sim.zig uses at the wavespeed τ-limiter).
-    const opac = if (sim.opt.opac) |*o| o else return 0;
+};
 
-    const chi = try radforce.calcChiSlim(cfg, pp.*, geom, sim.opt.gam, opac);
-    var mfp = 1.0 / chi;
-
-    const g = &sim.grid;
-    const gg = &geom.gg;
-    const dx = [3]f64{
-        g.cellSize(ix, 0) * @sqrt(gg[1][1]),
-        g.cellSize(iy, 1) * @sqrt(gg[2][2]),
-        g.cellSize(iz, 2) * @sqrt(gg[3][3]),
-    };
-    const ny = sim.nDim(1);
-    const nz = sim.nDim(2);
-    const mindx = if (ny == 1 and nz == 1)
-        dx[0]
-    else if (nz == 1)
-        @min(dx[0], dx[1])
-    else if (ny == 1)
-        @min(dx[0], dx[2])
-    else
-        @min(dx[0], @min(dx[1], dx[2]));
+/// C: calc_rad_visccoeff (rad.c:4508) with RADVISCMFPSPH + RADVISCNUDAMP —
+/// the pure limiter chain.
+pub inline fn viscCoeff(in: ViscCoeffIn) f64 {
+    var mfp = 1.0 / in.chi;
 
     // RADVISCMFPSPH: mfp capped by the spherical (BL) radius, killed inside
-    // rmin = 1.2·r_horizon (no RADVISCMFPSPHRMIN / RADVISCMFPSPHMAX for PUFFY).
-    // BL radius from the cached BL geometry (finding #1) — bit-identical to
-    // coco.cocoN(geom.xxvec, coords, .bl, mp)[1].
-    const rhor = metric.rHorizonBL(sim.opt.mp.a);
-    const rmin = 1.2 * rhor;
-    const r_bl = sim.cache.blGeom(ix, iy, iz).xxvec[1];
-    const mfplim = r_bl;
-    if (mfp > mfplim or chi < small) mfp = mfplim;
+    // rmin = 1.2·r_horizon (no RADVISCMFPSPHRMIN / MAX for PUFFY).
+    const rmin = 1.2 * in.rhor;
+    const mfplim = in.r_bl;
+    if (mfp > mfplim or in.chi < small) mfp = mfplim;
     if (mfp < 0 or !std.math.isFinite(mfp)) mfp = 0;
-    mfp *= misc.stepFunction(r_bl - rmin, 0.2 * rmin);
-    if (r_bl <= 1.0 * rhor) mfp = 0;
+    mfp *= misc.stepFunction(in.r_bl - rmin, 0.2 * rmin);
+    if (in.r_bl <= 1.0 * in.rhor) mfp = 0;
 
-    var nu = sim.opt.radvisc.alpha * mfp;
+    var nu = in.alpha * mfp;
 
     // RADVISCNUDAMP: cap ν at the maximal stable diffusion coefficient.
-    const nulimit = mindx * mindx / 2.0 / global_dt / 2.0;
+    const nulimit = in.mindx * in.mindx / 2.0 / in.global_dt / 2.0;
     if (nu > nulimit) nu = nulimit;
 
     return nu;
 }
 
-/// C: calc_rad_shearviscosity (rad.c:3912) — σ^ij (both indices raised) and ν.
-pub fn calcRadShearViscosity(
-    comptime SimT: type,
-    sim: *const SimT,
-    ix: i64,
-    iy: i64,
-    iz: i64,
-    pp: *const [SimT.nv]f64,
-    geom: *const Geometry,
-    global_dt: f64,
-) relele.Error!struct { shear: [4][4]f64, nu: f64 } {
-    const L = SimT.Layout;
-    const sh = try calcShearLab(SimT, sim, ix, iy, iz, comptime L.index(.fx), .velr);
-    const shear = relele.raiseBoth(sh.s, geom); // σ_ij → σ^ij
-    const nu = try calcRadViscCoeff(SimT, sim, ix, iy, iz, pp, geom, global_dt);
-    return .{ .shear = shear, .nu = nu };
-}
-
-/// C: calc_Rij_visc (rad.c:4670) — R^ij_visc = −2 ν Ê_rest σ^ij, returned as
-/// R^i_j (indices_2221). ACCELRADVISCOSITY off ⇒ always recomputed.
-pub fn calcRijVisc(
-    comptime SimT: type,
-    sim: *const SimT,
-    ix: i64,
-    iy: i64,
-    iz: i64,
-    pp: *const [SimT.nv]f64,
-    geom: *const Geometry,
-    global_dt: f64,
-) relele.Error![4][4]f64 {
-    const L = SimT.Layout;
-    const rv = try calcRadShearViscosity(SimT, sim, ix, iy, iz, pp, geom, global_dt);
-    const erad = pp[L.index(.ee)];
+/// C: calc_Rij_visc (rad.c:4670) — R^ij_visc = −2 ν Ê σ^ij (σ^ij both
+/// indices raised), returned lowered to R^i_j (indices_2221).
+pub inline fn rijVisc(nu: f64, erad: f64, shear: *const [4][4]f64, geom: *const Geometry) [4][4]f64 {
     var rvisc: [4][4]f64 = undefined;
     for (0..4) |i| {
         for (0..4) |j| {
-            rvisc[i][j] = -2.0 * rv.nu * erad * rv.shear[i][j];
+            rvisc[i][j] = -2.0 * nu * erad * shear[i][j];
         }
     }
     return relele.lowerSecond(rvisc, geom); // R^ij → R^i_j
 }
 
-/// C: calc_Rij_visc_total (rad.c:4628) — populate sim.rijvisc (R^i_j) over the
-/// domain plus a one-cell ghost ring, skipping corners (if_outsidegc). Called
-/// once per step (problem.c:127) with the step's global_dt. P1: band-parallel
-/// over iy rows (each cell writes only its own rijvisc block; the ±1-stencil
-/// reads of p are frozen during the pass).
-pub fn calcRijViscTotal(comptime SimT: type, sim: *SimT, global_dt: f64) (relele.Error || error{OutOfMemory})!void {
-    threading.parallelZero(sim.team, sim.rijvisc.data);
-
-    const ny = sim.nyi();
-    const ylim: i64 = if (ny > 1) 1 else 0;
-
-    const Ctx = struct { sim: *SimT, dt: f64 };
-    var ctx = Ctx{ .sim = sim, .dt = global_dt };
-    const W = struct {
-        fn w(c: *Ctx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            rijViscRows(SimT, c.sim, c.dt, iy0, iy1) catch |e| {
-                res.err = e;
-            };
-        }
-    };
-    const res = threading.parallelRange(Ctx, &ctx, sim.team, -ylim, ny + ylim, W.w);
-    if (res.err) |e| return e;
-}
-
-/// The per-cell R^i_j body for iy ∈ [iy0, iy1) (all iz, ix incl. the ring).
-fn rijViscRows(comptime SimT: type, sim: *SimT, global_dt: f64, iy0: i64, iy1: i64) relele.Error!void {
-    const nx = sim.nxi();
-    const ny = sim.nyi();
-    const nz = sim.nzi();
-    const lim: i64 = 1;
-
-    const xlim: i64 = if (nx > 1) lim else 0;
-    const zlim: i64 = if (nz > 1) lim else 0;
-
-    var iz: i64 = -zlim;
-    while (iz < nz + zlim) : (iz += 1) {
-        var iy: i64 = iy0;
-        while (iy < iy1) : (iy += 1) {
-            var ix: i64 = -xlim;
-            while (ix < nx + xlim) : (ix += 1) {
-                if (ifOutsideGc(nx, ny, nz, ix, iy, iz)) continue; // avoid corners
-                var pp: [SimT.nv]f64 = undefined;
-                sim.p.load(ix, iy, iz, &pp);
-                const geom = sim.cache.fillGeometry(ix, iy, iz);
-                const rvisc = try calcRijVisc(SimT, sim, ix, iy, iz, &pp, &geom, global_dt);
-                // [4][4]f64 is row-major contiguous → bit-identical flatten.
-                const t: [16]f64 = @bitCast(rvisc);
-                sim.rijvisc.store(ix, iy, iz, &t);
-            }
-        }
-    }
-}
-
-/// C: if_outsidegc (finite.c) — true (skip) for corner ghost cells, where two
-/// or more of (ix,iy,iz) are simultaneously outside the domain [0,n).
-fn ifOutsideGc(nx: i64, ny: i64, nz: i64, ix: i64, iy: i64, iz: i64) bool {
-    var outside: u2 = 0;
-    if (ix < 0 or ix >= nx) outside += 1;
-    if (iy < 0 or iy >= ny) outside += 1;
-    if (iz < 0 or iz >= nz) outside += 1;
-    return outside >= 2;
-}
-
 /// C: the RADVISCMAXVELDAMP block of f_flux_prime_rad_total (rad.c:3799-3845).
 /// Adds the face-averaged, velocity-damped viscous flux to the M1 rad rows of
-/// `ff`. `rijvisc` is the face-averaged R^i_j (undamped). `dim` == ifacedim.
-pub fn addRadViscFlux(
-    comptime SimT: type,
-    sim: *const SimT,
-    ff: *[SimT.nv]f64,
-    pp: *const [SimT.nv]f64,
+/// `ff`. `uu` are the conserveds of the face state, `rijvisc` the
+/// face-averaged R^i_j (undamped), `dim` == ifacedim, `maxvel` C's
+/// MAXRADVISCVEL. `y_active`/`z_active` gate the ii == 2/3 components of the
+/// velocity probe; C never skips x, so there is deliberately no x flag.
+pub fn addViscFlux(
+    comptime cfg: config.Config,
+    ff: *[layout.VarLayout(cfg).count]f64,
+    uu: *const [layout.VarLayout(cfg).count]f64,
+    rijvisc: *const [4][4]f64,
     geom: *const Geometry,
     dim: usize,
-    rijvisc: *const [4][4]f64,
-) relele.Error!void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
+    y_active: bool,
+    z_active: bool,
+    maxvel: f64,
+) void {
+    const L = layout.VarLayout(cfg);
     const ee0 = comptime L.index(.ee);
     const gdetu = geom.gdet;
     const gg = &geom.gg;
 
-    const uu = try p2u_mod.p2u(cfg, pp.*, geom, sim.opt.gam);
-
-    const ny = sim.nDim(1);
-    const nz = sim.nDim(2);
-
     // characteristic viscous velocity per dimension (rad.c:3808-3819). Note
-    // vel[idim] is *overwritten* per i, ending on the last non-skipped i — a
+    // vel[id] is *overwritten* per ii, ending on the last non-skipped ii — a
     // C quirk transcribed verbatim.
     var vel = [3]f64{ 0, 0, 0 };
     for (0..3) |id| {
         var ii: usize = 1;
         while (ii < 4) : (ii += 1) {
-            if (ii == 2 and ny == 1) continue;
-            if (ii == 3 and nz == 1) continue;
+            if (ii == 2 and !y_active) continue;
+            if (ii == 3 and !z_active) continue;
             if (@abs(uu[ee0 + ii]) < 1.0e-10 * @abs(uu[ee0])) continue;
             vel[id] = rijvisc[id + 1][ii] / (uu[ee0 + ii] / gdetu) * @sqrt(gg[id + 1][id + 1]);
         }
     }
-    const maxvel = @abs(vel[dim]); // face flux → maxvel = |vel[ifacedim]|
+    const maxv = @abs(vel[dim]); // face flux → the cap tests |vel[ifacedim]|
 
     var dampfac: f64 = 1.0;
-    if (maxvel > sim.opt.radvisc.maxvel) dampfac = sim.opt.radvisc.maxvel / maxvel;
+    if (maxv > maxvel) dampfac = maxvel / maxv;
 
     for (0..4) |nu| {
         ff[ee0 + nu] += gdetu * dampfac * rijvisc[dim + 1][nu];
     }
+}
+
+/// Minkowski geometry for the values-in kernel tests: g = diag(−1,1,1,1),
+/// √−g = 1 (gg[3][4]), no derivative extras.
+fn minkGeometry() Geometry {
+    var g = Geometry{
+        .coords = .mink,
+        .xxvec = .{ 0, 0, 0, 0 },
+        .gg = @splat(@splat(0)),
+        .GG = @splat(@splat(0)),
+        .gdet = 1.0,
+        .alpha = 1.0,
+        .gttpert = 0.0,
+    };
+    g.gg[0][0] = -1.0;
+    g.GG[0][0] = -1.0;
+    for (1..4) |i| {
+        g.gg[i][i] = 1.0;
+        g.GG[i][i] = 1.0;
+    }
+    g.gg[3][4] = 1.0; // √−g
+    return g;
+}
+
+test "radvisc: viscCoeff limiter chain — free, mfp-capped, horizon kill, ν cap" {
+    const expectEqual = std.testing.expectEqual;
+    const rhor: f64 = 2.0;
+    const rmin = 1.2 * rhor;
+
+    // free regime: ν = α·(1/χ)·step, no cap bites (expected mirrors the
+    // kernel's expression shape, so equality is exact)
+    const step_far = misc.stepFunction(100.0 - rmin, 0.2 * rmin);
+    const free = viscCoeff(.{ .chi = 10.0, .mindx = 1.0, .r_bl = 100.0, .rhor = rhor, .alpha = 0.1, .global_dt = 1e-30 });
+    try expectEqual(0.1 * ((1.0 / 10.0) * step_far), free);
+
+    // χ < SMALL ⇒ mfp = r_bl (the RADVISCMFPSPH limit)
+    const capped = viscCoeff(.{ .chi = 1e-100, .mindx = 1.0, .r_bl = 100.0, .rhor = rhor, .alpha = 0.1, .global_dt = 1e-30 });
+    try expectEqual(0.1 * (100.0 * step_far), capped);
+
+    // inside the horizon the coefficient is exactly zero
+    const killed = viscCoeff(.{ .chi = 10.0, .mindx = 1.0, .r_bl = rhor, .rhor = rhor, .alpha = 0.1, .global_dt = 1e-30 });
+    try expectEqual(@as(f64, 0.0), killed);
+
+    // RADVISCNUDAMP: huge dt ⇒ ν clamps to mindx²/(4·dt)
+    const damped = viscCoeff(.{ .chi = 10.0, .mindx = 0.5, .r_bl = 100.0, .rhor = rhor, .alpha = 0.1, .global_dt = 1e10 });
+    try expectEqual(0.5 * 0.5 / 2.0 / 1e10 / 2.0, damped);
+}
+
+test "radvisc: rijVisc = −2νÊσ^ij lowered on the second index" {
+    const geom = minkGeometry();
+    var shear: [4][4]f64 = @splat(@splat(0));
+    shear[0][0] = 1.0;
+    shear[1][0] = 0.25;
+    shear[1][2] = 0.5;
+    shear[2][1] = 0.5;
+
+    // ν = 2, Ê = 3 ⇒ R^ij = −12 σ^ij; Minkowski lowering negates column 0.
+    const r = rijVisc(2.0, 3.0, &shear, &geom);
+    try std.testing.expectEqual(@as(f64, 12.0), r[0][0]);
+    try std.testing.expectEqual(@as(f64, 3.0), r[1][0]);
+    try std.testing.expectEqual(@as(f64, -6.0), r[1][2]);
+    try std.testing.expectEqual(@as(f64, -6.0), r[2][1]);
+    try std.testing.expectEqual(@as(f64, 0.0), r[3][3]);
+}
+
+test "radvisc: addViscFlux — undamped add, cap saturation, z-flag gating" {
+    const cfg = config.puffy;
+    const L = layout.VarLayout(cfg);
+    const ee0 = comptime L.index(.ee);
+    const geom = minkGeometry();
+
+    var uu: [L.count]f64 = @splat(0);
+    uu[ee0] = 1.0;
+    uu[ee0 + 1] = 0.1;
+
+    // below the cap: vel = 1e-3/0.1 = 1e-2 ≤ maxvel ⇒ dampfac = 1, exact add
+    var rv: [4][4]f64 = @splat(@splat(0));
+    rv[1][0] = 2.0;
+    rv[1][1] = 1.0e-3;
+    var ff: [L.count]f64 = @splat(0);
+    addViscFlux(cfg, &ff, &uu, &rv, &geom, 0, true, false, 0.1);
+    try std.testing.expectEqual(@as(f64, 2.0), ff[ee0]);
+    try std.testing.expectEqual(@as(f64, 1.0e-3), ff[ee0 + 1]);
+
+    // above the cap the damped flux saturates: 10× the tensor, same flux
+    var rva: [4][4]f64 = @splat(@splat(0));
+    rva[1][1] = 1.0; // vel = 10 > maxvel
+    var ffa: [L.count]f64 = @splat(0);
+    addViscFlux(cfg, &ffa, &uu, &rva, &geom, 0, true, false, 0.1);
+    var rvb: [4][4]f64 = @splat(@splat(0));
+    rvb[1][1] = 10.0;
+    var ffb: [L.count]f64 = @splat(0);
+    addViscFlux(cfg, &ffb, &uu, &rvb, &geom, 0, true, false, 0.1);
+    try std.testing.expect(ffa[ee0 + 1] > 0);
+    try std.testing.expectApproxEqRel(ffa[ee0 + 1], ffb[ee0 + 1], 1e-12);
+
+    // z_active = false gates ii == 3 out of the velocity probe even when the
+    // z conserved is huge — but the flux add itself still covers all columns
+    var uuz = uu;
+    uuz[ee0 + 3] = 1.0e30;
+    var rvz: [4][4]f64 = @splat(@splat(0));
+    rvz[1][1] = 1.0e-3;
+    rvz[1][3] = 5.0; // would dominate vel if ii == 3 were probed
+    var ffz: [L.count]f64 = @splat(0);
+    addViscFlux(cfg, &ffz, &uuz, &rvz, &geom, 0, true, false, 0.1);
+    try std.testing.expectEqual(@as(f64, 1.0e-3), ffz[ee0 + 1]); // undamped
+    try std.testing.expectEqual(@as(f64, 5.0), ffz[ee0 + 3]);
 }

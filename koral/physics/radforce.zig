@@ -532,7 +532,7 @@ pub fn calcChi(
 }
 
 /// Slim calc_chi for the wavespeed τ-limiter (sim.zig) and the radviscosity
-/// mean-free-path (radvisc.zig) — finding #5. χ = κ + κ_es needs neither the
+/// mean-free-path (sim/rijvisc.zig) — finding #5. χ = κ + κ_es needs neither the
 /// radiation frame (Rij / Ê / TradBB) nor the four Trad-dependent opacity
 /// channels: κ = opac.gas_abs depends only on (ρ, Te, ne, b²) and the
 /// standalone κ_es uses Trad = Te. So this skips calcRij, the Ehat

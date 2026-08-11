@@ -140,7 +140,8 @@ does `const koral = @import("koral");` and reaches everything through it.
                   │  imports koral
   ┌───────────────▼─────────────────────────────────────────────────────┐
   │ sim.zig  — Sim(cfg): owns all state buffers, orchestrates the step    │
-  │   (+ sim/storage · sim/bc · sim/polaraxis · sim/threading · sim/timers)│
+  │   (+ sim/storage · sim/bc · sim/polaraxis · sim/threading · sim/timers │
+  │      · sim/rijvisc)                                                   │
   └── calls ──┬───────────┬───────────┬──────────┬──────────┬────────────┘
              │           │           │          │          │
     ┌────────▼──┐  ┌─────▼────┐ ┌────▼─────┐ ┌──▼──────┐ ┌─▼──────────┐
@@ -480,6 +481,11 @@ condition logic, [§9](#9-boundary-conditions-and-polar-axis-correction)),
 `sim/timers.zig` — always-on per-pass wall-clock self-time instrumentation (`Pass`,
 `PassTimers`; a pass stack prevents nested timed calls from double-counting) that
 `step()` feeds via `timers.begin/end` and the driver prints at scalar cadence.
+A sixth module, `sim/rijvisc.zig` — the sim-coupled half of the radiative shear
+viscosity ([§8.3](#83-radiative-shear-viscosity--filled-oncestep-added-at-faces):
+the FD shear gather, the ν-input gathering, and the once-per-step threaded pass
+filling `sim.rijvisc`) — is called internally without being re-exported; its pure
+per-cell kernels live in `physics/radvisc.zig`.
 
 `Options` carries the runtime configuration: `coords`, metric params `mp`, `gam`,
 `tsteplim`, `minmod_theta`, `floors` (`FloorParams`), `rad` (`RadParams`), `opac`
@@ -607,7 +613,7 @@ opExplicit(dt):
          invert.checkFloorsMhd on each reconstructed state
          flux_mod.fFluxPrime(pl, dim, geom, gam) → ffl        one-sided flux vectors
          flux_mod.fFluxPrime(pr, dim, geom, gam) → ffr
-         if radviscosity: radvisc.addRadViscFlux adds the M12 shear term
+         if radviscosity: rijvisc_mod.addRadViscFlux (sim/rijvisc.zig) adds the M12 shear term
          store pb_r[dim]@i ← pl,  fl_r[dim]@i ← ffl
          store pb_l[dim]@(i+1) ← pr,  fl_l[dim]@(i+1) ← ffr
 
@@ -812,7 +818,8 @@ must never share a wavespeed.
 
 ## 8. MHD specifics and the extra physics in the step
 
-`koral/magn/*` and `koral/physics/radvisc.zig`.
+`koral/magn/*`, `koral/physics/radvisc.zig` (pure radviscosity kernels), and
+`koral/sim/rijvisc.zig` (the sim-coupled radviscosity gather + per-step pass).
 
 ### 8.1 Constrained transport (flux-CT)
 
@@ -833,15 +840,17 @@ dynamo calls.
 
 ### 8.3 Radiative shear viscosity — filled once/step, added at faces
 
-`radvisc.calcRijViscTotal(sim, dt)` runs **once per step** (from `step()`, before the RK
-stages) with `global_dt = this step's dt`, populating `sim.rijvisc` (the viscous R^i_j over
-domain + one ghost ring). The stress is `R^{ij}_visc = −2ν Ê σ^{ij}`, with the shear tensor
-σ from the radiation-frame velocity field (`calcShearLab`) and the viscosity coefficient
-`ν = α·mfp` (mfp = 1/χ, capped by the local BL radius and by the max stable explicit
-diffusion coefficient `mindx²/(2·global_dt·2)`). During each direction's flux sweep,
-`addRadViscFlux` face-averages the stored R^i_j, damps it by the characteristic viscous
-velocity (`MAXRADVISCVEL = 0.1`), and adds `gdet·dampfac·R^i_j` into the M1 radiation flux
-rows.
+`calcRijViscTotal(sim, dt)` (`koral/sim/rijvisc.zig`) runs **once per step** (from
+`step()`, before the RK stages) with `global_dt = this step's dt`, populating `sim.rijvisc`
+(the viscous R^i_j over domain + one ghost ring). The stress is `R^{ij}_visc = −2ν Ê σ^{ij}`,
+with the shear tensor σ from the radiation-frame velocity field (`calcShearLab` gathers the
+FD gradients, the pure `shearFromGradients` builds σ) and the viscosity coefficient
+`ν = α·mfp` (the pure `viscCoeff`: mfp = 1/χ, capped by the local BL radius and by the max
+stable explicit diffusion coefficient `mindx²/(2·global_dt·2)`). During each direction's
+flux sweep, `addRadViscFlux` face-averages the stored R^i_j and hands it to the pure
+`addViscFlux`, which damps it by the characteristic viscous velocity (`MAXRADVISCVEL = 0.1`)
+and adds `gdet·dampfac·R^i_j` into the M1 radiation flux rows. The pure kernels live in
+`koral/physics/radvisc.zig`.
 
 ### 8.4 The mimic dynamo — run after each explicit sub-step
 
@@ -1044,7 +1053,7 @@ deviations are **expected**, not regressions — a real bug shows far above that
 | **Implicit radiation-gas source solver** | `koral/solve/implicit.zig` |
 | **Reconstruction + wavespeeds + flux + Riemann** | `koral/fv/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`, `koral/fv/laxf.zig` |
 | **Evolution driver** | `koral/sim.zig`, `koral/sim/storage.zig`, `koral/sim/bc.zig`, `koral/sim/polaraxis.zig`, `koral/sim/threading.zig`, `koral/sim/timers.zig` |
-| **Constrained transport + dynamo + radiative viscosity** | `koral/magn/ct.zig`, `koral/magn/dynamo.zig`, `koral/physics/radvisc.zig` |
+| **Constrained transport + dynamo + radiative viscosity** | `koral/magn/ct.zig`, `koral/magn/dynamo.zig`, `koral/physics/radvisc.zig` (pure kernels), `koral/sim/rijvisc.zig` (gather + per-step pass) |
 | **PUFFY problem (IC, driver, quadrature, presets)** | `koral/problems/puffy/puffy.zig`, `koral/problems/puffy/main.zig`, `koral/problems/puffy/*.toml`, `koral/math/quad.zig` |
 | **Diagnostics + output** | `koral/io/scalars.zig`, `koral/io/dump.zig`, `koral/io/silo.zig` (+ `silo_disabled.zig` stub) |
 | **Build + oracle + goldens + tools** | `build.zig`, `tools/gen_golden.sh`, `tools/res2kdmp.zig`, `tools/bench_implicit.zig`, `koral/testing/golden.zig`, `koral/testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/**` |
