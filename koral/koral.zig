@@ -92,6 +92,10 @@ pub const problems = struct {
 pub const testing = struct {
     pub const golden = @import("testing/golden.zig");
     pub const tubes = @import("testing/tubes.zig");
+    /// Zig-generated regression baselines — NOT the C oracle; see the module
+    /// header for what a mismatch does and does not mean.
+    pub const selfgolden = @import("testing/selfgolden.zig");
+    pub const selfscenarios = @import("testing/selfscenarios.zig");
 };
 
 pub const comm = struct {
@@ -184,6 +188,7 @@ test {
     _ = @import("tests/render_tests.zig");
     _ = @import("tests/restart_tests.zig");
     _ = @import("tests/scalars_tests.zig");
+    _ = @import("tests/selfgolden_tests.zig");
     _ = @import("tests/sim_tests.zig");
     _ = @import("tests/simd_tests.zig");
     _ = @import("tests/state_tests.zig");

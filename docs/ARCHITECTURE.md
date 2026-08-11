@@ -936,12 +936,12 @@ regardless of `nthreads`.
 
 ## 11. Testing and the oracle
 
-koral-zig's correctness rests on three complementary layers, and — importantly — there are
+koral-zig's correctness rests on four complementary layers, and — importantly — there are
 **no end-to-end run-to-completion tests**. Confidence in the full production run comes from
 the t=0 init keystone plus per-function goldens plus a reduced-grid step test plus the
 threading bit-identity, not from a single long integration.
 
-### 11.1 The three test layers
+### 11.1 The test layers
 
 1. **Theory gates** (`*_tests.zig`) — mathematical identities and documented quirks, no
    golden data: conservation, symmetry, the M1 closure trace `R^μ_μ = 0`, round-trips
@@ -957,6 +957,31 @@ threading bit-identity, not from a single long integration.
    from init-quadrature discrepancies and from CFL choices. The PUFFY t=0 keystone
    (`puffy_golden_tests` reading `.kini.gz`) is the cell-by-cell init comparison
    (full-grid only under `-Dslow-tests`).
+4. **Self-goldens** (`selfgolden_tests.zig` reading `.kslf` from `tests/selfgolden/`) —
+   the assembled PUFFY pipeline re-run and compared against a baseline **this repository
+   generated**, not the C oracle. Layers 2–3 answer *"is the transcription faithful?"*;
+   this one answers *"did our own numbers move?"* — a question the theory gates cannot
+   ask, since they check identities and known solutions rather than the composition of
+   init → CFL → RK2IMEX → BCs → fixups. It exists because layers 2–3 are committed but
+   not *regenerable* once the Zig side deliberately stops matching koral_lite:
+   `tools/gen_golden.sh` then describes code that no longer exists, and the self-goldens
+   are what remains of end-to-end coverage.
+
+   Two granularities per scenario, both including ghosts: per-step **scalars** (t, dt, the
+   CFL denominators, the implicit counters — seven f64, so every step keeps them and they
+   localize *when* a run diverged) and full **field snapshots** at the endpoints only
+   (~350 KiB gzipped each, and a perturbation at step k is still present at step n). The
+   gate is **bit identity**, the same standard the threading determinism test holds to —
+   a tolerance gate would let a real sub-1e-12 change through, which is exactly what a
+   regression baseline exists to catch. The 1e-12 threshold is a *diagnosis* line only,
+   separating a reported `REGRESSION` from a bit-level `DRIFT`.
+
+   `koral/testing/selfscenarios.zig` defines the scenarios **once** and is shared by the
+   checker and by `zig build update-self-goldens`, so a baseline cannot describe something
+   the test does not re-run. The generator builds against the same `koral` module at the
+   same `-Doptimize` as the test artifact, which is what makes bit identity achievable;
+   regenerate with plain defaults. Regenerating is a deliberate act — the committed files
+   are the record of what this code used to compute.
 
 All golden readers return `error.SkipZigTest` when the file is absent, so the suite is
 green on a machine that never ran the oracle. `DevTracker` accumulates the worst normalised
@@ -1023,6 +1048,7 @@ deviations are **expected**, not regressions — a real bug shows far above that
 | **PUFFY problem (IC, driver, quadrature, presets)** | `koral/problems/puffy/puffy.zig`, `koral/problems/puffy/main.zig`, `koral/problems/puffy/*.toml`, `koral/math/quad.zig` |
 | **Diagnostics + output** | `koral/io/scalars.zig`, `koral/io/dump.zig`, `koral/io/silo.zig` (+ `silo_disabled.zig` stub) |
 | **Build + oracle + goldens + tools** | `build.zig`, `tools/gen_golden.sh`, `tools/res2kdmp.zig`, `tools/bench_implicit.zig`, `koral/testing/golden.zig`, `koral/testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/**` |
+| **Self-goldens (Zig-generated baseline)** | `koral/testing/selfgolden.zig`, `koral/testing/selfscenarios.zig`, `koral/tests/selfgolden_tests.zig`, `tools/gen_self_golden.zig`, `tests/selfgolden/**` |
 
 ### Starting points for common tasks
 
@@ -1041,3 +1067,5 @@ deviations are **expected**, not regressions — a real bug shows far above that
   auto-discovers it.
 - **Regenerate goldens after a koral_lite change** → run `tools/gen_golden.sh` and commit
   `tests/golden/**` + `manifest.json` ([§11](#11-testing-and-the-oracle)).
+- **Deliberately change the numerics** → review what the self-golden reports moved, then
+  `zig build update-self-goldens` and commit `tests/selfgolden/**` ([§11](#11-testing-and-the-oracle)).

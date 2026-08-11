@@ -506,16 +506,23 @@ failed` / `run test` block around it — that framing is boilerplate. The signal
 (`readGolden`/`readKstp`/`readKini`) return `error.SkipZigTest` when a golden file
 is absent, so the suite is green on a machine that never ran `gen_golden.sh`. A
 deleted golden shows as a skip, not a pass — keep that in mind when auditing
-coverage.
+coverage. The **self**-golden reader deliberately does not do this: it fails with
+`error.SelfGoldenMissing`, because those baselines need no C toolchain and are
+regenerable from this repository alone, so an absent one means it was never
+committed rather than never generated.
 
 ### Test-file inventory
 
-Three complementary layers (there are deliberately **no** run-to-completion
+Four complementary layers (there are deliberately **no** run-to-completion
 end-to-end tests). Test files live apart from the code they gate, one folder per
 family, with one naming rule each so a subsystem's files sort adjacently: theory
 gates are `koral/tests/<subsystem>_tests.zig`, C-oracle goldens are
 `koral/tests/golden/<subsystem>_golden_tests.zig` (the `.kgld`/`.kstp`/`.kini.gz`
-data they read stays in the repo-root `tests/golden/`). New test files must be
+data they read stays in the repo-root `tests/golden/`), and the Zig-generated
+self-golden baseline is `koral/tests/selfgolden_tests.zig` over `.kslf` files in
+`tests/selfgolden/` — a separate tree on purpose, so the provenance of a failure
+is never ambiguous: `tests/golden` answers "does this match KORAL C",
+`tests/selfgolden` answers "did our own numbers move". New test files must be
 listed in `koral/koral.zig`'s `test` block — and `build.zig` enforces this at
 configure time: any test file missing its `@import` fails the build with
 `error.UnregisteredTestFile`, so a forgotten registration can't silently drop
@@ -599,6 +606,29 @@ Large snapshots are `gzip -9`'d in the repo; the readers auto-inflate. A
 `manifest.json` records the koral_lite SHA, PROBLEM list, compiler, and per-file
 schema. After regenerating, commit the updated `tests/golden/**` and
 `manifest.json`.
+
+### Regenerating the self-goldens
+
+```sh
+zig build update-self-goldens    # rewrites tests/selfgolden/**, no C toolchain needed
+```
+
+Different contract from the above: the baseline comes from *this* repository, so
+there is nothing external to be faithful to and regenerating is cheap. That is
+exactly why it needs a rule — **only run it once you have read what the failing
+test says moved, and decided the change was intended.** The committed `.kslf`
+files are the record of what this code used to compute; rewriting them without
+looking silently destroys the only evidence that a refactor changed behaviour.
+
+Regenerate with the same `-Doptimize` you test with (i.e. plain defaults): the
+generator and the test share the `koral` module, which is what lets the comparison
+gate on bit identity rather than a tolerance. A `DRIFT` verdict (bits moved, but by
+less than 1e-12) means either the toolchain changed or the code changed by a very
+small amount — the magnitude cannot distinguish them, so if you did not change
+compilers, treat it as a code change.
+
+Scenarios are defined in `koral/testing/selfscenarios.zig` and shared by the
+generator and the checker; edit them there and regenerate, never one side alone.
 
 ---
 

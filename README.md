@@ -188,7 +188,7 @@ was checked against C.
 ## Testing
 
 End-to-end regression against the C code is impossible (turbulent GR-RMHD runs are
-chaotic), so correctness is pinned two ways:
+chaotic), so correctness is pinned three ways:
 
 - **Theory tests** — pure Zig unit/property tests of analytic identities
   (`g·G = δ`, Christoffel symmetry, p2u↔u2p round-trips, M1 closure invariants,
@@ -198,15 +198,27 @@ chaotic), so correctness is pinned two ways:
   [`oracle/`](oracle/) (compiled against the C KORAL) plus short forced-`dt` step
   comparisons on tiny grids, committed under `tests/golden/`. The 2D and 3D PUFFY
   problems match C bit-for-bit.
+- **Self-goldens** — the assembled PUFFY pipeline (init → CFL → RK2IMEX → BCs →
+  fixups) run for a few steps and pinned against a baseline this repository
+  generated itself, under `tests/selfgolden/`. These say nothing about whether
+  the physics is *right* — that is the C goldens' job — only whether our own
+  numbers have **moved**, which the theory tests cannot see because they check
+  identities and known solutions rather than the composition. They are the
+  end-to-end net that survives if the Zig side ever stops matching koral_lite
+  bit-for-bit, since at that point the C baseline can no longer be regenerated.
 
 ```sh
 zig build test                    # the fast battery
 zig build test -Dslow-tests       # + convergence studies, soaks, full-grid PUFFY t=0 keystone
+zig build update-self-goldens     # rewrite the self-golden baseline — see the caveat below
 ```
 
-Regenerating goldens needs `clang`, GSL (`brew install gsl`), and a sibling checkout
-of [koral_lite](https://github.com/achael/koral_lite); the committed goldens mean you
-only need the Zig toolchain to build, run, and test. Details in the
+Regenerating the C goldens needs `clang`, GSL (`brew install gsl`), and a sibling
+checkout of [koral_lite](https://github.com/achael/koral_lite); the committed goldens
+mean you only need the Zig toolchain to build, run, and test. The self-goldens need
+nothing but the Zig toolchain — but regenerate them only after reviewing what moved:
+the committed files *are* the record of what this code used to compute, and rewriting
+them without looking discards it. Details in the
 [User Guide](docs/USER_GUIDE.md#5-running-the-tests) and the
 [validation log](docs/MILESTONES.md).
 

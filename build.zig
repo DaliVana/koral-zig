@@ -155,6 +155,11 @@ pub fn build(b: *std.Build) !void {
     build_opts.addOption(bool, "slow_tests", slow_tests);
     build_opts.addOption(bool, "silo", enable_silo);
     build_opts.addOption([]const u8, "golden_dir", b.pathFromRoot("tests/golden"));
+    // Zig-generated regression baselines (tests/selfgolden), kept in a separate
+    // tree from the C-oracle goldens so the provenance of a failure is never
+    // ambiguous: tests/golden says "does this match KORAL C", tests/selfgolden
+    // says "did our own numbers move".
+    build_opts.addOption([]const u8, "selfgolden_dir", b.pathFromRoot("tests/selfgolden"));
 
     const koral = b.addModule("koral", .{
         .root_source_file = b.path("koral/koral.zig"),
@@ -243,6 +248,30 @@ pub fn build(b: *std.Build) !void {
     if (b.args) |args| run_bench.addArgs(args);
     b.step("bench-implicit", "time the implicit solver: scalar vs SIMD Jacobian")
         .dependOn(&run_bench.step);
+
+    // update-self-goldens: rewrite tests/selfgolden/** from THIS build. Needs
+    // no C toolchain (unlike tools/gen_golden.sh) — the baseline is this
+    // repository's own output.
+    //
+    // Deliberately built against the SAME `koral` module the test artifact
+    // uses, so it honors -Doptimize instead of pinning ReleaseFast: generator
+    // and checker then share a codegen path and the comparison can be gated at
+    // machine precision. Regenerate with the same -Doptimize you test with
+    // (i.e. plain defaults); a ReleaseFast baseline checked in Debug would
+    // burn most of the tolerance on FP contraction differences.
+    const gen_self = b.addExecutable(.{
+        .name = "gen_self_golden",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/gen_self_golden.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "koral", .module = koral }},
+        }),
+    });
+    const run_gen_self = b.addRunArtifact(gen_self);
+    run_gen_self.addArg(b.pathFromRoot("tests/selfgolden"));
+    b.step("update-self-goldens", "regenerate tests/selfgolden/** from this build")
+        .dependOn(&run_gen_self.step);
 
     // res2kdmp: convert a C KORAL serial restart (res####.head/.dat) into a Zig
     // KDMP checkpoint so a C-initialized run can be continued by `puffy
