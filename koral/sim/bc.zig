@@ -45,21 +45,18 @@ pub fn setBc(comptime SimT: type, sim: *SimT, t: f64, ifinit: bool) Error!void {
 
     // x boundaries (ghost columns, domain rows) — banded over iy
     if (g.ngx > 0) {
-        const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nyi(), xFacesWorker(SimT));
-        if (res.err) |e| return e;
+        try threading.parallelRangeErr(Ctx, &ctx, sim.team, 0, sim.nyi(), xFacesFn(SimT));
     }
     // y boundaries — banded over ix
     if (g.ngy > 0) {
-        const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nxi(), yFacesWorker(SimT));
-        if (res.err) |e| return e;
+        try threading.parallelRangeErr(Ctx, &ctx, sim.team, 0, sim.nxi(), yFacesFn(SimT));
     }
     // z boundaries — banded over ix; interior z faces get p2u-of-exchanged-p
     if (g.ngz > 0) {
-        const res = if (z_physical)
-            threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nxi(), zFacesWorker(SimT))
+        if (z_physical)
+            try threading.parallelRangeErr(Ctx, &ctx, sim.team, 0, sim.nxi(), zFacesFn(SimT))
         else
-            threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nxi(), zGhostP2uWorker(SimT));
-        if (res.err) |e| return e;
+            try threading.parallelRangeErr(Ctx, &ctx, sim.team, 0, sim.nxi(), zGhostP2uFn(SimT));
     }
 
     if (comptime SimT.Cfg.has(.mhd)) {
@@ -79,12 +76,10 @@ fn BcCtx(comptime SimT: type) type {
     return struct { sim: *SimT, t: f64, ifinit: bool };
 }
 
-fn xFacesWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+fn xFacesFn(comptime SimT: type) fn (*BcCtx(SimT), i64, i64) Error!void {
     return struct {
-        fn w(c: *BcCtx(SimT), iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            xFacesBand(SimT, c, iy0, iy1) catch |e| {
-                res.err = e;
-            };
+        fn w(c: *BcCtx(SimT), iy0: i64, iy1: i64) Error!void {
+            return xFacesBand(SimT, c, iy0, iy1);
         }
     }.w;
 }
@@ -107,12 +102,10 @@ fn xFacesBand(comptime SimT: type, c: *BcCtx(SimT), iy0: i64, iy1: i64) Error!vo
     }
 }
 
-fn yFacesWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+fn yFacesFn(comptime SimT: type) fn (*BcCtx(SimT), i64, i64) Error!void {
     return struct {
-        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
-            yFacesBand(SimT, c, ix0, ix1) catch |e| {
-                res.err = e;
-            };
+        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!void {
+            return yFacesBand(SimT, c, ix0, ix1);
         }
     }.w;
 }
@@ -135,12 +128,10 @@ fn yFacesBand(comptime SimT: type, c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!vo
     }
 }
 
-fn zFacesWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+fn zFacesFn(comptime SimT: type) fn (*BcCtx(SimT), i64, i64) Error!void {
     return struct {
-        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
-            zFacesBand(SimT, c, ix0, ix1) catch |e| {
-                res.err = e;
-            };
+        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!void {
+            return zFacesBand(SimT, c, ix0, ix1);
         }
     }.w;
 }
@@ -167,12 +158,10 @@ fn zFacesBand(comptime SimT: type, c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!vo
 /// `mpi_isitBC(BCtype)==0` branch): the exchange already deposited fresh
 /// primitives in the z-ghost planes; recompute only the conserveds there.
 /// Same cell set as zFacesBand (domain ix/iy — corners are treated later).
-fn zGhostP2uWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+fn zGhostP2uFn(comptime SimT: type) fn (*BcCtx(SimT), i64, i64) Error!void {
     return struct {
-        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
-            zGhostP2uBand(SimT, c, ix0, ix1) catch |e| {
-                res.err = e;
-            };
+        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!void {
+            return zGhostP2uBand(SimT, c, ix0, ix1);
         }
     }.w;
 }
@@ -573,23 +562,15 @@ fn fillMiddleCornersZ(comptime SimT: type, sim: *SimT, t: f64, ifinit: bool) Err
     const Ctx = BcCtx(SimT);
     var ctx = Ctx{ .sim = sim, .t = t, .ifinit = ifinit };
     // XBCLO/XBCHI × ZBCLO/ZBCHI (finite.c:4463+): domain iy, x-ghost, z-ghost
-    {
-        const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nyi(), midXWorker(SimT));
-        if (res.err) |e| return e;
-    }
+    try threading.parallelRangeErr(Ctx, &ctx, sim.team, 0, sim.nyi(), midXFn(SimT));
     // YBCLO/YBCHI × ZBCLO/ZBCHI (finite.c:4569+): domain ix, y-ghost, z-ghost
-    {
-        const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, sim.nxi(), midYWorker(SimT));
-        if (res.err) |e| return e;
-    }
+    try threading.parallelRangeErr(Ctx, &ctx, sim.team, 0, sim.nxi(), midYFn(SimT));
 }
 
-fn midXWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+fn midXFn(comptime SimT: type) fn (*BcCtx(SimT), i64, i64) Error!void {
     return struct {
-        fn w(c: *BcCtx(SimT), iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            midXBand(SimT, c, iy0, iy1) catch |e| {
-                res.err = e;
-            };
+        fn w(c: *BcCtx(SimT), iy0: i64, iy1: i64) Error!void {
+            return midXBand(SimT, c, iy0, iy1);
         }
     }.w;
 }
@@ -614,12 +595,10 @@ fn midXBand(comptime SimT: type, c: *BcCtx(SimT), iy0: i64, iy1: i64) Error!void
     }
 }
 
-fn midYWorker(comptime SimT: type) fn (*BcCtx(SimT), i64, i64, *threading.ChunkResult) void {
+fn midYFn(comptime SimT: type) fn (*BcCtx(SimT), i64, i64) Error!void {
     return struct {
-        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
-            midYBand(SimT, c, ix0, ix1) catch |e| {
-                res.err = e;
-            };
+        fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!void {
+            return midYBand(SimT, c, ix0, ix1);
         }
     }.w;
 }

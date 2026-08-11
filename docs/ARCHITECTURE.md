@@ -140,7 +140,7 @@ does `const koral = @import("koral");` and reaches everything through it.
                   │  imports koral
   ┌───────────────▼─────────────────────────────────────────────────────┐
   │ sim.zig  — Sim(cfg): owns all state buffers, orchestrates the step    │
-  │   (+ sim/storage · sim/bc · sim/threading · sim/timers)               │
+  │   (+ sim/storage · sim/bc · sim/polaraxis · sim/threading · sim/timers)│
   └── calls ──┬───────────┬───────────┬──────────┬──────────┬────────────┘
              │           │           │          │          │
     ┌────────▼──┐  ┌─────▼────┐ ┌────▼─────┐ ┌──▼──────┐ ┌─▼──────────┐
@@ -472,9 +472,10 @@ per-cell integer `flags`, the face flux/state stores (`flb`, `fl_l`, `fl_r`, `pb
 cfg.has(.mhd)` (mirrors C's `MPI4CORNERS`) makes MHD sweeps reach ±1 ghost row and fill 2D
 corners; `base_order` (0/1/2) comes from `cfg.reconstruction`.
 
-`sim.zig` itself is a facade over four support modules it re-exports: `sim/storage.zig`
+`sim.zig` itself is a facade over five support modules it re-exports: `sim/storage.zig`
 (`FaceStore`, the `Flag`/`Scal` enums and slot tables), `sim/bc.zig` (all boundary-
 condition logic, [§9](#9-boundary-conditions-and-polar-axis-correction)),
+`sim/polaraxis.zig` (the polar-axis band, same section),
 `sim/threading.zig` (the worker team, [§10](#10-the-threading-model)), and
 `sim/timers.zig` — always-on per-pass wall-clock self-time instrumentation (`Pass`,
 `PassTimers`; a pass stack prevents nested timed calls from double-counting) that
@@ -495,8 +496,11 @@ would otherwise drive a padded index negative — a safe-build panic / ReleaseFa
 `.specific` axis requires a non-null `specific_bc`, `opt.coords == cfg.coords` (the runtime
 metric coords must match the comptime coords the physics layer reads via `Cfg.coords`),
 `radviscosity` requires a non-null `opac` (ν = α·mfp needs opacities — otherwise C's
-SKIPRADSOURCE keeps viscosity active but the Zig path would silently store ν = 0), and
-`correct_polaraxis` requires `ny > 2·nccorrectpolar`.
+SKIPRADSOURCE keeps viscosity active but the Zig path would silently store ν = 0),
+`correct_polaraxis` requires `ny > 2·nccorrectpolar`, and `correct_polaraxis` requires
+spherical coords (on `.mink` the overwrite returns early while the
+`isCellCorrectedPolaraxis` predicate does not, so the three evolution passes would skip
+polar rows nothing then supplies — see [§9](#9-boundary-conditions-and-polar-axis-correction)).
 
 ### 5.2 The stage buffers (what each one holds)
 
@@ -872,13 +876,22 @@ from adjacent domain rows/columns and averaging diagonal cells. The only unimple
 case is the x-z 2D layout (`ny==1, nz>1`), which `@panic`s (no target needs it). All of
 this lives in `koral/sim/bc.zig`, re-exported by `sim.zig`.
 
-**Polar-axis correction.** When `opt.correct_polaraxis` is set, `doCorrect` →
-`correctPolaraxis` overwrites the `nccorrectpolar` most-polar rows at each θ-edge from a
-source row, scaling the θ-velocity components by `fac = |θ − θ_axis|/|θ_src − θ_axis|` (so
-they ramp to zero at the pole) while copying other scalars/velocities verbatim; p2u at the
-*target* geometry rewrites the conserveds. B is untouched. Corrected-polar cells are
-special-cased in four places: `u2pRows` (B-only inversion), `cellFixup` (skipped),
-`implicitRowsWorker` (skipped), and `correctPolaraxis` itself (does the overwrite).
+**Polar-axis correction.** Lives in `koral/sim/polaraxis.zig`, fronted by `sim.zig`'s
+`doCorrect` and `isCellCorrectedPolaraxis`. `polaraxis.correct` overwrites the
+`nccorrectpolar` most-polar rows at each θ-edge from a source row, scaling the θ-velocity
+components by `fac = |θ − θ_axis|/|θ_src − θ_axis|` (so they ramp to zero at the pole)
+while copying other scalars/velocities verbatim; p2u at the *target* geometry rewrites the
+conserveds. B is untouched.
+
+The overwrite and the predicate are **one contract**: corrected-polar cells are
+special-cased in four places — `u2pRows` (B-only inversion), `cellFixup` (skipped),
+`implicitRowsWorker` (skipped), and the overwrite itself, which is what supplies the
+values the other three decline to compute. Both halves derive their row set from a single
+`polaraxis.band()`, which returns null (treatment inactive) unless `opt.correct_polaraxis`
+is set *and* the coords are spherical; `Sim.init` preconditions (5) and (7) reject the two
+configs that would make the contract unsatisfiable. The polar-axis EMF zeroing
+(`adjust_fluxcttoth_emfs`) belongs in this module when it is transcribed, even though C
+keeps it in `magn.c`.
 
 The PUFFY driver's `specific_bc` implements: xhi outflow with radial rescaling and a
 no-inflow clamp; xlo plain copy (no inflow check because `RMIN = 1.85 < r_horizon = 2`, so
@@ -1005,7 +1018,7 @@ deviations are **expected**, not regressions — a real bug shows far above that
 | **Opacities / thermodynamics / four-force** | `koral/physics/thermo.zig`, `koral/physics/opacities.zig`, `koral/physics/mesa.zig`, `koral/physics/radforce.zig`, `koral/units.zig` |
 | **Implicit radiation-gas source solver** | `koral/solve/implicit.zig` |
 | **Reconstruction + wavespeeds + flux + Riemann** | `koral/fv/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`, `koral/fv/laxf.zig` |
-| **Evolution driver** | `koral/sim.zig`, `koral/sim/storage.zig`, `koral/sim/bc.zig`, `koral/sim/threading.zig`, `koral/sim/timers.zig` |
+| **Evolution driver** | `koral/sim.zig`, `koral/sim/storage.zig`, `koral/sim/bc.zig`, `koral/sim/polaraxis.zig`, `koral/sim/threading.zig`, `koral/sim/timers.zig` |
 | **Constrained transport + dynamo + radiative viscosity** | `koral/magn/ct.zig`, `koral/magn/dynamo.zig`, `koral/physics/radvisc.zig` |
 | **PUFFY problem (IC, driver, quadrature, presets)** | `koral/problems/puffy/puffy.zig`, `koral/problems/puffy/main.zig`, `koral/problems/puffy/*.toml`, `koral/math/quad.zig` |
 | **Diagnostics + output** | `koral/io/scalars.zig`, `koral/io/dump.zig`, `koral/io/silo.zig` (+ `silo_disabled.zig` stub) |

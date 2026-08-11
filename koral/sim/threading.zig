@@ -326,6 +326,31 @@ pub fn parallelRange(
     return res;
 }
 
+/// `parallelRange` for the passes whose only `ChunkResult` use is the error
+/// slot — the great majority. The worker returns `Error!void` directly and the
+/// first failing band's error is propagated (`merge` keeps the first), so each
+/// call site drops both its hand-written `catch |e| { res.err = e; }` shim and
+/// its `if (res.err) |e| return e;` tail. Passes that also *reduce* keep the
+/// explicit `ChunkResult` form: wavespeeds (tsd_max/min) and the implicit
+/// operator (iteration/solve/failure counters).
+pub fn parallelRangeErr(
+    comptime CtxT: type,
+    ctx: *CtxT,
+    team: ?*Team,
+    lo: i64,
+    hi: i64,
+    comptime worker: fn (ctx: *CtxT, b_lo: i64, b_hi: i64) Error!void,
+) Error!void {
+    const Shim = struct {
+        fn w(c: *CtxT, b_lo: i64, b_hi: i64, res: *ChunkResult) void {
+            worker(c, b_lo, b_hi) catch |e| {
+                res.err = e;
+            };
+        }
+    };
+    if (parallelRange(CtxT, ctx, team, lo, hi, Shim.w).err) |e| return e;
+}
+
 const CopyCtx = struct { dst: []f64, src: []const f64 };
 
 fn copyWorker(c: *CopyCtx, lo: i64, hi: i64, res: *ChunkResult) void {

@@ -2,8 +2,9 @@
 //! below violates exactly one invariant and must be rejected with
 //! error.InvalidConfig instead of failing far downstream (a negative-index panic
 //! in the sweep, a null-unwrap in setBc, silently-mixed coordinate systems, a
-//! silent ν=0 viscous no-op, or order-dependent polar garbage); the final test
-//! pins that a clean config still succeeds.
+//! silent ν=0 viscous no-op, order-dependent polar garbage, or a polar-axis
+//! predicate with no matching overwrite); the final test pins that a clean
+//! config still succeeds.
 
 const std = @import("std");
 const config = @import("../config.zig");
@@ -67,11 +68,20 @@ test "Sim.init rejects correct_polaraxis when ny <= 2*nccorrectpolar" {
     }));
 }
 
+test "Sim.init rejects correct_polaraxis on non-spherical coords" {
+    // correctPolaraxis returns early on .mink but isCellCorrectedPolaraxis does
+    // not: u2p would invert B only, cell_fixup and op_implicit would skip the
+    // polar rows, and nothing would overwrite them — p silently decoupled from
+    // u, with every fixup flag zeroed on that path. The spherical positive case
+    // is covered by tests/polaraxis_tests.zig.
+    try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(3, 8), .{
+        .coords = .mink,
+        .correct_polaraxis = true,
+        .nccorrectpolar = 2,
+    }));
+}
+
 test "Sim.init accepts a clean config" {
     var s = try SimT.init(a, grid(3, 8), .{ .coords = .mink });
     defer s.deinit();
-    // radviscosity+opac is legal once opac is present (spot-check the opposite
-    // of the rejection above is not accidentally over-broad):
-    var s2 = try SimT.init(a, grid(3, 8), .{ .coords = .mink, .correct_polaraxis = true, .nccorrectpolar = 2 });
-    defer s2.deinit();
 }

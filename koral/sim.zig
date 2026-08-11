@@ -53,6 +53,7 @@ const ct = @import("magn/ct.zig");
 const dynamo_mod = @import("magn/dynamo.zig");
 const storage = @import("sim/storage.zig");
 const bc = @import("sim/bc.zig");
+const polaraxis = @import("sim/polaraxis.zig");
 const threading = @import("sim/threading.zig");
 const timers_mod = @import("sim/timers.zig");
 const comm_mod = @import("comm/comm.zig");
@@ -342,6 +343,16 @@ pub fn Sim(comptime cfg: config.Config) type {
             if (opt.comm) |c| {
                 if (c.size() != dc.ntz) return error.InvalidConfig;
             }
+            // (7) correct_polaraxis is spherical-only, and only ONE half of it
+            //     knows that: correctPolaraxis returns early on .mink while
+            //     isCellCorrectedPolaraxis does not. The predicate would still
+            //     claim the polar rows — u2p inverts B only, cell_fixup skips
+            //     them "because they are overwritten later on", op_implicit
+            //     skips them — while the overwrite that was to supply them
+            //     never runs. p decouples from u and feeds back inward through
+            //     reconstruction, with every fixup flag deliberately zeroed on
+            //     that path, so nothing reports it. Reject outright (as (4)).
+            if (opt.correct_polaraxis and cfg.coords == .mink) return error.InvalidConfig;
 
             var self: Self = undefined;
             self.allocator = allocator;
@@ -626,14 +637,13 @@ pub fn Sim(comptime cfg: config.Config) type {
             }
         }
 
-        /// C: is_cell_corrected_polaraxis (finite.c:6132) — within
-        /// NCCORRECTPOLAR of either θ-edge (no HALFTHETA; serial owns both
-        /// tiles). Note C does NOT check the coordinate system here — only
-        /// correct_polaraxis' overwrite does.
+        /// C: is_cell_corrected_polaraxis (finite.c:6132) — the other half of
+        /// doCorrect's contract: these rows are not evolved, they are
+        /// overwritten. Derived from the same `polaraxis.band()`, so the
+        /// predicate and the overwrite cannot claim different rows.
         fn isCellCorrectedPolaraxis(self: *const Self, iy: i64) bool {
-            if (!self.opt.correct_polaraxis) return false;
-            return iy < self.opt.nccorrectpolar or
-                iy > self.nyi() - self.opt.nccorrectpolar - 1;
+            const b = polaraxis.band(Self, self) orelse return false;
+            return b.owns(iy);
         }
 
         /// C: if_outsidegc — true for ghost *corner* cells (≥2 dims outside).
@@ -881,14 +891,14 @@ pub fn Sim(comptime cfg: config.Config) type {
         // ---- band-parallel dispatch ----------------------------------------
         // The persistent team + dynamic-tile mechanism (parallelRange +
         // ChunkResult) lives in sim/threading.zig; the sim-specific worker
-        // bodies stay here. Convention: `xxxRowsWorker` adapts `xxxRows`
-        // (the banded loop body) to the dispatch signature.
-
-        fn u2pRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            self.u2pRows(iy0, iy1) catch |e| {
-                res.err = e;
-            };
-        }
+        // bodies stay here. Most passes only ever report an error, so they
+        // hand their banded loop body (`xxxRows` / `xxxBand`, or an `xxxFn`
+        // closure when it takes a comptime parameter) straight to
+        // `parallelRangeErr`. Two categories keep the raw `parallelRange`:
+        // the passes that *reduce* — wavespeeds (tsd_max/min) and the
+        // implicit operator (iteration/solve/failure counters) — consume the
+        // merged `ChunkResult` themselves, and the infallible ones (the
+        // stage arithmetic, magn/ct.zig) discard it.
 
         /// C: calc_u2p (finite.c:546) — per-cell inversion + floors, then
         /// fixup averaging and a boundary refresh.
@@ -900,8 +910,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub fn calcU2p(self: *Self, t: f64) Error!void {
             self.timers.begin(.u2p);
             defer self.timers.end();
-            const res = threading.parallelRange(Self, self, self.team, 0, self.nyi(), u2pRowsWorker);
-            if (res.err) |e| return e;
+            try threading.parallelRangeErr(Self, self, self.team, 0, self.nyi(), u2pRows);
 
             try self.cellFixup(.hd_fixup);
             if (comptime L.hasVar(.ee)) {
@@ -916,6 +925,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             while (iz < self.nzi()) : (iz += 1) {
                 var iy: i64 = iy0;
                 while (iy < iy1) : (iy += 1) {
+                    // Row-invariant: hoisted out of the ix loop.
+                    const polar = self.isCellCorrectedPolaraxis(iy);
                     var ix: i64 = 0;
                     while (ix < self.nxi()) : (ix += 1) {
                         var uu: [NV]f64 = undefined;
@@ -928,7 +939,7 @@ pub fn Sim(comptime cfg: config.Config) type {
 
                         const geom = self.cache.fillGeometry(ix, iy, iz);
 
-                        if (self.isCellCorrectedPolaraxis(iy)) {
+                        if (polar) {
                             // C: u2p_solver_Bonly (u2p.c:57) — invert only B
                             // (the rest is overwritten by do_correct); both
                             // floor checks skipped (u2p.c:80-92); corrected/
@@ -1027,19 +1038,16 @@ pub fn Sim(comptime cfg: config.Config) type {
             // the averaging loop is parallel-safe as-is: flags are frozen
             // during the pass, reads touch only non-flagged neighbours of
             // the (frozen) p, writes only the flagged cells' _bak slots
-            const res = threading.parallelRange(Self, self, self.team, 0, self.nyi(), fixupRowsWorker(which));
-            if (res.err) |e| return e;
+            try threading.parallelRangeErr(Self, self, self.team, 0, self.nyi(), fixupRowsFn(which));
 
             threading.parallelCopy(self.team, self.u.data, self.u_bak.data);
             threading.parallelCopy(self.team, self.p.data, self.p_bak.data);
         }
 
-        fn fixupRowsWorker(comptime which: Flag) fn (*Self, i64, i64, *threading.ChunkResult) void {
+        fn fixupRowsFn(comptime which: Flag) fn (*Self, i64, i64) Error!void {
             return struct {
-                fn w(s: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-                    s.fixupRows(which, iy0, iy1) catch |e| {
-                        res.err = e;
-                    };
+                fn w(s: *Self, iy0: i64, iy1: i64) Error!void {
+                    return s.fixupRows(which, iy0, iy1);
                 }
             }.w;
         }
@@ -1054,10 +1062,11 @@ pub fn Sim(comptime cfg: config.Config) type {
             while (iz < nz) : (iz += 1) {
                 var iy: i64 = iy0;
                 while (iy < iy1) : (iy += 1) {
+                    // C: "do not correct if overwritten later on" — row-
+                    // invariant, so skip the whole row rather than each cell.
+                    if (self.isCellCorrectedPolaraxis(iy)) continue;
                     var ix: i64 = 0;
                     while (ix < nx) : (ix += 1) {
-                        // C: "do not correct if overwritten later on"
-                        if (self.isCellCorrectedPolaraxis(iy)) continue;
                         if (self.getFlag(which, ix, iy, iz) == 0) continue;
 
                         var ppn: [6][NV]f64 = undefined;
@@ -1206,16 +1215,13 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.timers.begin(.sweep);
             defer self.timers.end();
             const cross = comptime crossDims(dim);
-            const res = threading.parallelRange(Self, self, self.team, self.crossLo(cross[0]), self.crossHi(cross[0]), sweepBandWorker(dim));
-            if (res.err) |e| return e;
+            try threading.parallelRangeErr(Self, self, self.team, self.crossLo(cross[0]), self.crossHi(cross[0]), sweepBandFn(dim));
         }
 
-        fn sweepBandWorker(comptime dim: usize) fn (*Self, i64, i64, *threading.ChunkResult) void {
+        fn sweepBandFn(comptime dim: usize) fn (*Self, i64, i64) Error!void {
             return struct {
-                fn w(s: *Self, c0_lo: i64, c0_hi: i64, res: *threading.ChunkResult) void {
-                    s.sweepBand(dim, c0_lo, c0_hi) catch |e| {
-                        res.err = e;
-                    };
+                fn w(s: *Self, c0_lo: i64, c0_hi: i64) Error!void {
+                    return s.sweepBand(dim, c0_lo, c0_hi);
                 }
             }.w;
         }
@@ -1370,18 +1376,15 @@ pub fn Sim(comptime cfg: config.Config) type {
             inline for (0..3) |dim| {
                 if (self.nDim(dim) > 1) {
                     const cross = comptime crossDims(dim);
-                    const res = threading.parallelRange(Self, self, self.team, self.crossLo(cross[0]), self.crossHi(cross[0]), fluxesBandWorker(dim));
-                    if (res.err) |e| return e;
+                    try threading.parallelRangeErr(Self, self, self.team, self.crossLo(cross[0]), self.crossHi(cross[0]), fluxesBandFn(dim));
                 }
             }
         }
 
-        fn fluxesBandWorker(comptime dim: usize) fn (*Self, i64, i64, *threading.ChunkResult) void {
+        fn fluxesBandFn(comptime dim: usize) fn (*Self, i64, i64) Error!void {
             return struct {
-                fn w(s: *Self, c0_lo: i64, c0_hi: i64, res: *threading.ChunkResult) void {
-                    s.fluxesBand(dim, c0_lo, c0_hi) catch |e| {
-                        res.err = e;
-                    };
+                fn w(s: *Self, c0_lo: i64, c0_hi: i64) Error!void {
+                    return s.fluxesBand(dim, c0_lo, c0_hi);
                 }
             }.w;
         }
@@ -1512,8 +1515,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                 self.timers.begin(.update);
                 defer self.timers.end();
                 var ctx = DtCtx{ .sim = self, .dt = dtin };
-                const res = threading.parallelRange(DtCtx, &ctx, self.team, 0, self.nyi(), updateRowsWorker);
-                if (res.err) |e| return e;
+                try threading.parallelRangeErr(DtCtx, &ctx, self.team, 0, self.nyi(), updateRowsBand);
             }
 
             // (EXPLICIT_LAB_RAD_SOURCE not used — PUFFY couples implicitly)
@@ -1522,10 +1524,8 @@ pub fn Sim(comptime cfg: config.Config) type {
             // (MIXENTROPIESPROPERLY off)
         }
 
-        fn updateRowsWorker(ctx: *DtCtx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            ctx.sim.updateRows(ctx.dt, iy0, iy1) catch |e| {
-                res.err = e;
-            };
+        fn updateRowsBand(ctx: *DtCtx, iy0: i64, iy1: i64) Error!void {
+            return ctx.sim.updateRows(ctx.dt, iy0, iy1);
         }
 
         /// The conserved update (flux divergence + metric source) for
@@ -1674,14 +1674,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub fn updateEntropy(self: *Self) Error!void {
             self.timers.begin(.entropy);
             defer self.timers.end();
-            const res = threading.parallelRange(Self, self, self.team, 0, self.nyi(), entropyRowsWorker);
-            if (res.err) |e| return e;
-        }
-
-        fn entropyRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            self.entropyRows(iy0, iy1) catch |e| {
-                res.err = e;
-            };
+            try threading.parallelRangeErr(Self, self, self.team, 0, self.nyi(), entropyRows);
         }
 
         fn entropyRows(self: *Self, iy0: i64, iy1: i64) Error!void {
@@ -1743,13 +1736,12 @@ pub fn Sim(comptime cfg: config.Config) type {
             while (iz < self.nzi()) : (iz += 1) {
                 var iy: i64 = iy0;
                 while (iy < iy1) : (iy += 1) {
+                    // C: finite.c:1427 — polar-corrected cells skip the
+                    // implicit entirely (is_cell_active ≡ 1 and PUFFY defines
+                    // no SKIPIMPLICIT_* hooks). Row-invariant: skip the row.
+                    if (self.isCellCorrectedPolaraxis(iy)) continue;
                     var ix: i64 = 0;
                     while (ix < self.nxi()) : (ix += 1) {
-                        // C: finite.c:1427 — polar-corrected cells skip the
-                        // implicit entirely (is_cell_active ≡ 1 and PUFFY
-                        // defines no SKIPIMPLICIT_* hooks)
-                        if (self.isCellCorrectedPolaraxis(iy)) continue;
-
                         var uu: [NV]f64 = undefined;
                         var pp: [NV]f64 = undefined;
                         self.u.load(ix, iy, iz, &uu);
@@ -1775,97 +1767,15 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
 
         /// C: do_correct (finite.c:594) — CORRECT_POLARAXIS only; the 3D /
-        /// smoothing / NS-surface variants are not PUFFY machinery.
+        /// smoothing / NS-surface variants are not PUFFY machinery. The
+        /// overwrite, the band predicate and (later) the polar-axis EMF
+        /// zeroing live in sim/polaraxis.zig; this is the stable method entry
+        /// point that problems and tests call.
         pub fn doCorrect(self: *Self) Error!void {
-            if (self.opt.correct_polaraxis) {
-                self.timers.begin(.correct);
-                defer self.timers.end();
-                try self.correctPolaraxis();
-            }
-        }
-
-        /// C: correct_polaraxis (finite.c:5525) — the NCCORRECTPOLAR
-        /// most-polar rows are not evolved but overwritten per (ix,iz)
-        /// column from row nc: scalars and in-row velocities copied, the
-        /// θ-components scaled by |θ−θ_axis|/|θ_src−θ_axis| (internal x2),
-        /// then p2u at the target geometry rewrites all conserveds. B is
-        /// untouched: PUFFY does not define CORRECTMAGNFIELD. C only acts
-        /// on spherical-like MYCOORDS. Band-parallel over ix columns (each
-        /// column reads its own row-nc source and writes its own polar rows).
-        fn correctPolaraxis(self: *Self) Error!void {
-            if (comptime cfg.coords == .mink) return;
-            const res = threading.parallelRange(Self, self, self.team, 0, self.nxi(), polarColsWorker);
-            if (res.err) |e| return e;
-        }
-
-        fn polarColsWorker(self: *Self, ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
-            self.polarCols(ix0, ix1) catch |e| {
-                res.err = e;
-            };
-        }
-
-        fn polarCols(self: *Self, ix0: i64, ix1: i64) Error!void {
-            const g = &self.grid;
-            const nc = self.opt.nccorrectpolar;
-            const ny = self.nyi();
-
-            var iz: i64 = 0;
-            while (iz < self.nzi()) : (iz += 1) {
-                var ix: i64 = ix0;
-                while (ix < ix1) : (ix += 1) {
-                    // upper axis
-                    {
-                        const thaxis = g.yl(0);
-                        var ic: i64 = 0;
-                        while (ic < nc) : (ic += 1) {
-                            const iy = ic;
-                            const iysrc = nc;
-                            const th = g.yc(iy);
-                            const thsrc = g.yc(iysrc);
-                            const fac = @abs((th - thaxis) / (thsrc - thaxis));
-                            try self.polarOverwriteCell(ix, iy, iz, iysrc, fac);
-                        }
-                    }
-                    // lower axis (no HALFTHETA)
-                    {
-                        const thaxis = g.yl(ny);
-                        var ic: i64 = 0;
-                        while (ic < nc) : (ic += 1) {
-                            const iy = ny - 1 - ic;
-                            const iysrc = ny - 1 - nc;
-                            const th = g.yc(iy);
-                            const thsrc = g.yc(iysrc);
-                            const fac = @abs((th - thaxis) / (thsrc - thaxis));
-                            try self.polarOverwriteCell(ix, iy, iz, iysrc, fac);
-                        }
-                    }
-                }
-            }
-        }
-
-        fn polarOverwriteCell(self: *Self, ix: i64, iy: i64, iz: i64, iysrc: i64, fac: f64) Error!void {
-            var pp: [NV]f64 = undefined;
-            var pps: [NV]f64 = undefined;
-            self.p.load(ix, iy, iz, &pp);
-            self.p.load(ix, iysrc, iz, &pps);
-
-            pp[L.index(.rho)] = pps[L.index(.rho)];
-            pp[L.index(.uu)] = pps[L.index(.uu)];
-            pp[L.index(.entr)] = pps[L.index(.entr)];
-            pp[L.index(.vx)] = pps[L.index(.vx)];
-            pp[L.index(.vz)] = pps[L.index(.vz)];
-            pp[L.index(.vy)] = fac * pps[L.index(.vy)];
-            if (comptime L.hasVar(.ee)) {
-                pp[L.index(.ee)] = pps[L.index(.ee)];
-                pp[L.index(.fx)] = pps[L.index(.fx)];
-                pp[L.index(.fz)] = pps[L.index(.fz)];
-                pp[L.index(.fy)] = fac * pps[L.index(.fy)];
-            }
-
-            const geom = self.cache.fillGeometry(ix, iy, iz);
-            const uu = try p2u_mod.p2u(cfg, pp, &geom, self.opt.gam);
-            self.p.store(ix, iy, iz, &pp);
-            self.u.store(ix, iy, iz, &uu);
+            if (polaraxis.band(Self, self) == null) return;
+            self.timers.begin(.correct);
+            defer self.timers.end();
+            return polaraxis.correct(Self, self);
         }
 
         // ---- one full RK2IMEX step (problem.c:141-402) ----------------------------

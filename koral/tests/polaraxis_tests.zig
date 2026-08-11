@@ -17,6 +17,7 @@ const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const grid_mod = @import("../grid.zig");
 const sim_mod = @import("../sim.zig");
+const polaraxis = @import("../sim/polaraxis.zig");
 const p2u_mod = @import("../p2u.zig");
 const hydro = @import("../physics/hydro.zig");
 const radforce = @import("../physics/radforce.zig");
@@ -241,4 +242,40 @@ test "op_implicit skips polar rows; cell_fixup never targets them" {
     var pp_after: [NV]f64 = undefined;
     s.p.load(1, 0, 0, &pp_after);
     for (0..NV) |iv| try std.testing.expectEqual(pp_polar[iv], pp_after[iv]);
+}
+
+test "polaraxis.Band: the claimed rows are exactly the overwritten rows" {
+    // The whole point of routing both halves through one `Band`: the rows the
+    // predicate claims (so u2p inverts B only, cell_fixup and op_implicit skip
+    // them) must be exactly the rows doCorrect then rewrites. A drift between
+    // the two leaves rows that no pass supplies — silently, since the B-only
+    // u2p branch zeroes the fixup flags. Sim.init preconditions (5) and (7)
+    // make the two configs where that could happen unconstructible; this pins
+    // the agreement itself on a config that IS constructible.
+    const a = std.testing.allocator;
+    var s = try SimT.init(a, testGrid(), testOptions());
+    defer s.deinit();
+    try initSmooth(&s);
+
+    const b = polaraxis.band(SimT, &s) orelse return error.TestUnexpectedResult;
+
+    var before = std.ArrayList([NV]f64).empty;
+    defer before.deinit(a);
+    var iy: i64 = 0;
+    while (iy < s.nyi()) : (iy += 1) {
+        var pp: [NV]f64 = undefined;
+        s.p.load(1, iy, 0, &pp);
+        try before.append(a, pp);
+    }
+
+    try s.doCorrect();
+
+    iy = 0;
+    while (iy < s.nyi()) : (iy += 1) {
+        var pp: [NV]f64 = undefined;
+        s.p.load(1, iy, 0, &pp);
+        const untouched = std.mem.eql(f64, &before.items[@intCast(iy)], &pp);
+        // initSmooth varies with iy, so every claimed row genuinely moves
+        try std.testing.expectEqual(b.owns(iy), !untouched);
+    }
 }
