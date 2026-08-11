@@ -114,7 +114,8 @@ one executable importing `koral`, plus `<name>` (build) and `run-<name>` (build 
 steps. A single `test` step (`zig build test`) runs one `addTest` over the whole `koral`
 module; `-Dtest-filter` narrows it and `-Dslow-tests` enables the full-grid keystones.
 A configure-time guard fails the build with `error.UnregisteredTestFile` if any
-`koral/*_tests.zig` is missing from `koral.zig`'s `test {}` block. Other build products:
+`koral/tests/*_tests.zig` or `koral/tests/golden/*_golden_tests.zig` is missing from
+`koral.zig`'s `test {}` block. Other build products:
 `-Dsilo` builds LLNL Silo from the lazy `silo` dependency and enables `.silo` export
 (`koral/io/silo_disabled.zig` is the comptime stub otherwise), `bench-implicit` builds
 the ReleaseFast implicit-solver benchmark (`tools/bench_implicit.zig`), and `res2kdmp`
@@ -744,7 +745,7 @@ switches (`start_with_bisect`, `scale_jacobian`, `allow_rad_ceiling`,
 
 Two later additions: `ImplicitParams.simd_jacobian` (default **on**) batches the four
 perturbed residual evaluations of the FD Jacobian through the `@Vector(4, f64)` twin
-`residualG` — gated bit-for-bit against the scalar path by `koral/simd_tests.zig`, and
+`residualG` — gated bit-for-bit against the scalar path by `koral/tests/simd_tests.zig`, and
 timed by the `bench-implicit` build step. And the whole 6-rung ladder can be wrapped in
 an outer **opacity-damping loop** (`opdamp_maxlevels`/`opdamp_factor`, C
 `OPDAMPINIMPLICIT`): each level retries the ladder with the four-force scaled by
@@ -949,8 +950,9 @@ green on a machine that never ran the oracle. `DevTracker` accumulates the worst
 deviation `dev = |c−z|/max(1, |c|, |z|)` per quantity class and reports the observed max.
 
 Registration of test files in `koral.zig`'s `test {}` block is no longer purely by
-convention: `build.zig` scans `koral/*_tests.zig` at configure time and fails with
-`error.UnregisteredTestFile` if any is missing an `@import`. The suite now spans ~30
+convention: `build.zig` scans `koral/tests/` (theory gates) and `koral/tests/golden/`
+(C-oracle goldens) at configure time and fails with `error.UnregisteredTestFile` if any
+is missing an `@import`. The suite now spans ~30
 files — beyond the ones discussed above it includes `sim_tests.zig` (`Sim.init`
 precondition rejection), `restart_tests.zig` (KDMP round-trip), `simd_tests.zig`
 (scalar↔SIMD bit-identity), `dynamo_tests.zig`/`radvisc_tests.zig` (M12 dynamo-law and

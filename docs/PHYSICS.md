@@ -518,7 +518,7 @@ characteristic-velocity cap `MAXRADVISCVEL` $= 0.1$ (runtime knob
 The shear algebra itself is a pure function `shearFromGradients(du, du2, ucon,
 ucov, gg, kr)`, split out of `calcShearLab` so the invariants
 $\sigma_{\mu\nu} = \sigma_{\nu\mu}$ and $\sigma_{\mu\nu}u^\nu = 0$ can be gated
-on analytic velocity fields (`koral/radvisc_tests.zig`); `calcShearLab` retains
+on analytic velocity fields (`koral/tests/radvisc_tests.zig`); `calcShearLab` retains
 only the finite-difference gather with C's corner-avoidance one-sided-derivative
 rules.
 
@@ -557,7 +557,7 @@ $H_{\rm d\theta} \le 0.9\,\pi/2$ before use. The tunables live in `dynamo.Params
 0.25$, `BETASATURATED` $= 0.1$, `EXPECTEDHR` $= 0.3$ (used only when
 `calchronthego = false`), and the `alphaflipssign` / `dampbeta` / `calchronthego`
 switches (all default on). The per-cell law is the pure function
-`dynamoDeltaA`, gated in isolation by `koral/dynamo_tests.zig`.
+`dynamoDeltaA`, gated in isolation by `koral/tests/dynamo_tests.zig`.
 
 **Equatorial sign flip** (`ALPHAFLIPSSIGN`): the dynamo $\alpha$ is made
 antisymmetric about the midplane, as the physical $\alpha$-effect requires:

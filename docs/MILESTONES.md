@@ -345,3 +345,10 @@ determinant/inverse left `math/dual.zig` for the new `koral/math/linalg.zig` (`d
 generic over `Dual(N)`; `Dual(0)` gives the plain-f64 instantiation), `dual.zig` became the
 generic `Dual(comptime N)`, and `metric/metric.zig` shrank to the assembly logic
 (`MetricParams` now defined in `forms.zig`). Bit-identical; goldens unchanged.
+
+**`tests/` reorganization (2026-08-11):** the test sources left the flat `koral/`
+namespace they shared with the library code — theory gates now live in `koral/tests/`
+and the C-oracle goldens in `koral/tests/golden/` (the recorded `.kgld`/`.kstp`/`.kini.gz`
+data stays in the repo-root `tests/golden/`). `koral.zig`'s `test {}` block imports them
+by path and lists the two families separately; `build.zig`'s registration guard scans both
+folders. Pure file moves + import repointing — same 269 tests, bit-identical results.

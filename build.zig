@@ -179,10 +179,10 @@ pub fn build(b: *std.Build) !void {
     // Configure-time guard: the suite is registered by hand in koral.zig's
     // `test {}` block (there is no auto-registration), so a new, cleanly-
     // compiling `foo_tests.zig` would run *zero* tests unnoticed. Enforce the
-    // contract: every top-level `koral/*_tests.zig` (theory + `*_golden_tests.zig`,
-    // which also ends in `_tests.zig`) must appear as an `@import` in koral.zig,
-    // plus the one off-naming carrier `testing/tubes.zig`. Fail the build loudly
-    // otherwise.
+    // contract: every theory gate (`koral/tests/*_tests.zig`) and every C-oracle
+    // golden (`koral/tests/golden/*_golden_tests.zig`) must appear as an
+    // `@import` in koral.zig, plus the one off-naming carrier
+    // `testing/tubes.zig`. Fail the build loudly otherwise.
     {
         const koral_src = try b.build_root.handle.readFileAlloc(io, "koral/koral.zig", b.allocator, .limited(1 << 20));
         var any_missing = false;
@@ -192,16 +192,19 @@ pub fn build(b: *std.Build) !void {
                 first.* = true;
             }
         };
-        var tdir = try b.build_root.handle.openDir(io, "koral", .{ .iterate = true });
-        defer tdir.close(io);
-        var tit = tdir.iterate();
-        while (try tit.next(io)) |entry| {
-            if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.name, "_tests.zig")) continue;
-            const needle = b.fmt("@import(\"{s}\")", .{entry.name});
-            if (std.mem.indexOf(u8, koral_src, needle) == null) {
-                warn.header(&any_missing);
-                std.debug.print("  - {s}\n", .{entry.name});
+        for ([_][]const u8{ "tests", "tests/golden" }) |sub| {
+            var tdir = try b.build_root.handle.openDir(io, b.fmt("koral/{s}", .{sub}), .{ .iterate = true });
+            defer tdir.close(io);
+            var tit = tdir.iterate();
+            while (try tit.next(io)) |entry| {
+                if (entry.kind != .file) continue;
+                if (!std.mem.endsWith(u8, entry.name, "_tests.zig")) continue;
+                const rel = b.fmt("{s}/{s}", .{ sub, entry.name });
+                const needle = b.fmt("@import(\"{s}\")", .{rel});
+                if (std.mem.indexOf(u8, koral_src, needle) == null) {
+                    warn.header(&any_missing);
+                    std.debug.print("  - {s}\n", .{rel});
+                }
             }
         }
         if (std.mem.indexOf(u8, koral_src, "@import(\"testing/tubes.zig\")") == null) {
@@ -209,7 +212,7 @@ pub fn build(b: *std.Build) !void {
             std.debug.print("  - testing/tubes.zig (off-naming carrier)\n", .{});
         }
         if (any_missing) {
-            std.debug.print("Add `_ = @import(\"<name>\");` to koral.zig's test block.\n", .{});
+            std.debug.print("Add `_ = @import(\"<path>\");` to koral.zig's test block.\n", .{});
             return error.UnregisteredTestFile;
         }
     }

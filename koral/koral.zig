@@ -115,11 +115,10 @@ pub const io = struct {
 pub const render = @import("render/render.zig");
 
 test {
-    // Pull in all module tests. Test files live flat in koral/ next to the
-    // code, in two families with one naming rule each so a subsystem's files
-    // sort adjacently:
-    //   * theory gates (math/analytic identities):  <subsystem>_tests.zig
-    //   * C-oracle goldens (tests/golden/*.kgld):    <subsystem>_golden_tests.zig
+    // Pull in all module tests. Test files live apart from the code they
+    // gate, one folder per family:
+    //   * theory gates (math/analytic identities):  koral/tests/<subsystem>_tests.zig
+    //   * C-oracle goldens (tests/golden/*.kgld):   koral/tests/golden/<subsystem>_golden_tests.zig
     // New test files must be added to the list below (there is no auto-registration).
     _ = config;
     _ = layout;
@@ -158,44 +157,48 @@ test {
     _ = magn.dynamo;
     _ = solve.invert_rad;
     _ = solve.implicit;
-    _ = @import("metric_tests.zig");
-    _ = @import("evolution_tests.zig");
-    _ = @import("mhd_evolution_tests.zig");
-    _ = @import("radiation_tests.zig");
-    _ = @import("opacity_tests.zig");
-    _ = @import("implicit_tests.zig");
-    _ = @import("simd_tests.zig");
-    _ = @import("state_tests.zig");
-    _ = @import("flux_tests.zig");
-    _ = @import("metric_golden_tests.zig");
-    _ = @import("state_golden_tests.zig");
-    _ = @import("flux_golden_tests.zig");
-    _ = @import("rad_golden_tests.zig");
-    _ = @import("opac_golden_tests.zig");
-    _ = @import("implicit_golden_tests.zig");
-    _ = @import("step_golden_tests.zig");
-    _ = @import("testing/tubes.zig");
-    _ = @import("polaraxis_tests.zig");
-    _ = @import("radstep_tests.zig");
-    _ = @import("radtube_tests.zig");
-    _ = @import("math/quad.zig");
-    _ = @import("problems/puffy/puffy.zig");
-    _ = @import("puffy_tests.zig");
-    _ = @import("puffy_golden_tests.zig");
-    _ = @import("visc_golden_tests.zig");
-    _ = @import("dynamo_tests.zig");
-    _ = @import("dynamo_golden_tests.zig");
-    _ = @import("radvisc_tests.zig");
     _ = io.scalars;
     _ = io.dump;
     _ = io.silo;
     _ = render;
     _ = render.image;
-    _ = @import("render_tests.zig");
-    _ = @import("scalars_tests.zig");
-    _ = @import("restart_tests.zig");
-    _ = @import("mpi_abi_tests.zig");
-    _ = @import("threading_tests.zig");
-    _ = @import("puffystep_golden_tests.zig");
-    _ = @import("sim_tests.zig");
+    _ = @import("math/quad.zig");
+    _ = @import("problems/puffy/puffy.zig");
+    _ = @import("testing/tubes.zig");
+
+    // theory gates — koral/tests/
+    _ = @import("tests/dynamo_tests.zig");
+    _ = @import("tests/evolution_tests.zig");
+    _ = @import("tests/flux_tests.zig");
+    _ = @import("tests/implicit_tests.zig");
+    _ = @import("tests/metric_tests.zig");
+    _ = @import("tests/mhd_evolution_tests.zig");
+    _ = @import("tests/mpi_abi_tests.zig");
+    _ = @import("tests/opacity_tests.zig");
+    _ = @import("tests/polaraxis_tests.zig");
+    _ = @import("tests/puffy_tests.zig");
+    _ = @import("tests/radiation_tests.zig");
+    _ = @import("tests/radstep_tests.zig");
+    _ = @import("tests/radtube_tests.zig");
+    _ = @import("tests/radvisc_tests.zig");
+    _ = @import("tests/render_tests.zig");
+    _ = @import("tests/restart_tests.zig");
+    _ = @import("tests/scalars_tests.zig");
+    _ = @import("tests/sim_tests.zig");
+    _ = @import("tests/simd_tests.zig");
+    _ = @import("tests/state_tests.zig");
+    _ = @import("tests/threading_tests.zig");
+
+    // C-oracle goldens — koral/tests/golden/
+    _ = @import("tests/golden/dynamo_golden_tests.zig");
+    _ = @import("tests/golden/flux_golden_tests.zig");
+    _ = @import("tests/golden/implicit_golden_tests.zig");
+    _ = @import("tests/golden/metric_golden_tests.zig");
+    _ = @import("tests/golden/opac_golden_tests.zig");
+    _ = @import("tests/golden/puffy_golden_tests.zig");
+    _ = @import("tests/golden/puffystep_golden_tests.zig");
+    _ = @import("tests/golden/rad_golden_tests.zig");
+    _ = @import("tests/golden/state_golden_tests.zig");
+    _ = @import("tests/golden/step_golden_tests.zig");
+    _ = @import("tests/golden/visc_golden_tests.zig");
 }

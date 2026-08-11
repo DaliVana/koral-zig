@@ -68,8 +68,9 @@ The build graph (`build.zig`) is small and fully automatic:
   `koral/problems/<name>/main.zig`, importing `koral`.
 - It wires a single **`test`** step (`zig build test`) that runs *all* library
   tests as one artifact, and enforces at configure time that every
-  `koral/*_tests.zig` is registered in `koral/koral.zig`'s `test {}` block
-  (missing registration fails the build with `error.UnregisteredTestFile`).
+  `koral/tests/*_tests.zig` and `koral/tests/golden/*_golden_tests.zig` is
+  registered in `koral/koral.zig`'s `test {}` block (missing registration fails
+  the build with `error.UnregisteredTestFile`).
 - It adds two tool steps: **`res2kdmp`** (build + install
   `tools/res2kdmp.zig`, which converts a C KORAL `res####.head/.dat` restart
   into a KDMP checkpoint so a C-initialized run can be continued with
@@ -510,13 +511,15 @@ coverage.
 ### Test-file inventory
 
 Three complementary layers (there are deliberately **no** run-to-completion
-end-to-end tests). Test files live flat in `koral/` next to the code, with one
-naming rule per family so a subsystem's files sort adjacently: theory gates are
-`<subsystem>_tests.zig`, C-oracle goldens are `<subsystem>_golden_tests.zig`.
-New test files must be listed in `koral/koral.zig`'s `test` block — and
-`build.zig` enforces this at configure time: any `koral/*_tests.zig` missing its
-`@import` fails the build with `error.UnregisteredTestFile`, so a forgotten
-registration can't silently drop coverage.
+end-to-end tests). Test files live apart from the code they gate, one folder per
+family, with one naming rule each so a subsystem's files sort adjacently: theory
+gates are `koral/tests/<subsystem>_tests.zig`, C-oracle goldens are
+`koral/tests/golden/<subsystem>_golden_tests.zig` (the `.kgld`/`.kstp`/`.kini.gz`
+data they read stays in the repo-root `tests/golden/`). New test files must be
+listed in `koral/koral.zig`'s `test` block — and `build.zig` enforces this at
+configure time: any test file missing its `@import` fails the build with
+`error.UnregisteredTestFile`, so a forgotten registration can't silently drop
+coverage.
 
 **1. Theory gates** — mathematical identities and documented C quirks, no golden
 data:
