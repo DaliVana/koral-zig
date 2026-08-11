@@ -50,12 +50,12 @@ const radvisc_mod = @import("physics/radvisc.zig");
 const rijvisc_mod = @import("sim/rijvisc.zig");
 const p2u_mod = @import("p2u.zig");
 const laxf_mod = @import("fv/laxf.zig");
-const ct = @import("magn/ct.zig");
-const dynamo_mod = @import("magn/dynamo.zig");
+const ct = @import("sim/ct.zig");
+const dynamo_mod = @import("sim/dynamo.zig");
 const storage = @import("sim/storage.zig");
 const bc = @import("sim/bc.zig");
 const polaraxis = @import("sim/polaraxis.zig");
-const threading = @import("sim/threading.zig");
+const threading = @import("threading.zig");
 const timers_mod = @import("sim/timers.zig");
 const comm_mod = @import("comm/comm.zig");
 
@@ -201,7 +201,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         cache: precompute.MetricCache,
         opt: Options,
         /// P1: the persistent worker team all per-step passes dispatch on
-        /// (sim/threading.zig); null ≡ nthreads<=1 ≡ the serial path.
+        /// (threading.zig); null ≡ nthreads<=1 ≡ the serial path.
         team: ?*threading.Team,
         /// The resolved decomposition (opt.decomp orelse trivial). x/y faces
         /// are always physical; z faces stop being boundaries when ntz > 1
@@ -893,7 +893,7 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         // ---- band-parallel dispatch ----------------------------------------
         // The persistent team + dynamic-tile mechanism (parallelRange +
-        // ChunkResult) lives in sim/threading.zig; the sim-specific worker
+        // ChunkResult) lives in threading.zig; the sim-specific worker
         // bodies stay here. Most passes only ever report an error, so they
         // hand their banded loop body (`xxxRows` / `xxxBand`, or an `xxxFn`
         // closure when it takes a comptime parameter) straight to
@@ -901,7 +901,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         // the passes that *reduce* — wavespeeds (tsd_max/min) and the
         // implicit operator (iteration/solve/failure counters) — consume the
         // merged `ChunkResult` themselves, and the infallible ones (the
-        // stage arithmetic, magn/ct.zig) discard it.
+        // stage arithmetic, sim/ct.zig) discard it.
 
         /// C: calc_u2p (finite.c:546) — per-cell inversion + floors, then
         /// fixup averaging and a boundary refresh.
@@ -1180,26 +1180,6 @@ pub fn Sim(comptime cfg: config.Config) type {
             return self.nDim(dim);
         }
 
-        /// One direction of op_explicit's interpolation sweep
-        /// (finite.c:708-1181): reconstruct cell → face states, floor them,
-        /// compute one-sided fluxes, stash into pb/fl face arrays.
-        /// Face-averaged viscous R^i_j at the face (fx,fy,fz) in dimension
-        /// `dim` (between that cell and its dim−1 neighbour), C:
-        /// f_flux_prime_rad_total's ifacedim>−1 branch (rad.c:3782-3786).
-        fn rijviscFace(self: *const Self, dim: usize, fx: i64, fy: i64, fz: i64) [4][4]f64 {
-            var a: [16]f64 = undefined;
-            var b: [16]f64 = undefined;
-            self.rijvisc.load(fx, fy, fz, &a);
-            var c = [3]i64{ fx, fy, fz };
-            c[dim] -= 1;
-            self.rijvisc.load(c[0], c[1], c[2], &b);
-            var out: [4][4]f64 = undefined;
-            for (0..4) |i| {
-                for (0..4) |j| out[i][j] = 0.5 * (a[i * 4 + j] + b[i * 4 + j]);
-            }
-            return out;
-        }
-
         /// The two cross directions of a sweep/face pass in dimension `dim`.
         /// Band-parallelism runs over cross[0] — the largest transverse axis
         /// in 2D (y for the x-sweep, x for the y-sweep).
@@ -1212,6 +1192,9 @@ pub fn Sim(comptime cfg: config.Config) type {
             };
         }
 
+        /// One direction of op_explicit's interpolation sweep
+        /// (finite.c:708-1181): reconstruct cell → face states, floor them,
+        /// compute one-sided fluxes, stash into pb/fl face arrays.
         fn sweep(self: *Self, comptime dim: usize) Error!void {
             const n = self.nDim(dim);
             if (n <= 1) return;
@@ -1341,7 +1324,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                 ffl = try flux_mod.fFluxPrime(cfg, pl, dim, &geom, self.opt.gam);
                 // radiative viscosity: face i is between cells i−1 and i
                 if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
-                    const rv = self.rijviscFace(dim, cell[0], cell[1], cell[2]);
+                    const rv = rijvisc_mod.faceAvg(Self, self, dim, cell[0], cell[1], cell[2]);
                     try rijvisc_mod.addRadViscFlux(Self, self, &ffl, &pl, &geom, dim, &rv);
                 }
             }
@@ -1353,7 +1336,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                 ffr = try flux_mod.fFluxPrime(cfg, pr, dim, &geom, self.opt.gam);
                 // radiative viscosity: face i+1 is between cells i and i+1
                 if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
-                    const rv = self.rijviscFace(dim, cp[0], cp[1], cp[2]);
+                    const rv = rijvisc_mod.faceAvg(Self, self, dim, cp[0], cp[1], cp[2]);
                     try rijvisc_mod.addRadViscFlux(Self, self, &ffr, &pr, &geom, dim, &rv);
                 }
             }

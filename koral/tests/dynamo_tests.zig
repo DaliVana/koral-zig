@@ -1,4 +1,4 @@
-//! M12 theory gates for the mean-field dynamo (koral/magn/dynamo.zig).
+//! M12 theory gates for the mean-field dynamo (koral/sim/dynamo.zig).
 //!
 //! Physics identities that must hold regardless of the exact numerics (the
 //! C golden in golden_dynamo_test.zig carries the formula-exactness):
@@ -19,8 +19,8 @@ const std = @import("std");
 const config = @import("../config.zig");
 const sim_mod = @import("../sim.zig");
 const puffy = @import("../problems/puffy/puffy.zig");
-const dynamo = @import("../magn/dynamo.zig");
-const ct = @import("../magn/ct.zig");
+const dynamo = @import("../sim/dynamo.zig");
+const ct = @import("../sim/ct.zig");
 const coco = @import("../metric/coco.zig");
 const precompute = @import("../metric/precompute.zig");
 const Geometry = @import("../geometry.zig").Geometry;
@@ -322,7 +322,7 @@ test "P1 dynamo threading: applyDynamo nthreads=4 is bit-identical to nthreads=1
 }
 
 // The dynamo *law* was extracted from the mimic_dynamo grid loop into the pure
-// dynamoDeltaA kernel (magn/dynamo.zig). These gates drive it directly with
+// dynamoDeltaA kernel (sim/dynamo.zig). These gates drive it directly with
 // hand-built cell states — no Sim, no metric cache — so they pin the physics a
 // scientist edits (α sign flip, the height window, the horizon cutoff) without a
 // 384×360 golden. Schwarzschild (a=0) BL radii: horizon 2, ISCO 6. The full-Sim

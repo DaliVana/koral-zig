@@ -24,7 +24,7 @@
 const std = @import("std");
 const relele = @import("../relele.zig");
 const p2u_mod = @import("../p2u.zig");
-const threading = @import("../sim/threading.zig");
+const threading = @import("../threading.zig");
 
 fn flPin(n: i64, i: i64) i64 {
     return if (n == 1) 0 else i;

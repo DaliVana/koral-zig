@@ -13,6 +13,9 @@
 //!                           (C: calc_Rij_visc, rad.c:4670).
 //!   calcRijViscTotal      — the once-per-step threaded domain pass filling
 //!                           sim.rijvisc (C: calc_Rij_visc_total, rad.c:4628).
+//!   faceAvg               — face-averaged R^i_j read from sim.rijvisc
+//!                           (C: f_flux_prime_rad_total's ifacedim>−1 branch,
+//!                           rad.c:3782).
 //!   addRadViscFlux        — p2u of the face state + the pure velocity-damped
 //!                           flux addition (C: the RADVISCMAXVELDAMP block of
 //!                           f_flux_prime_rad_total, rad.c:3799).
@@ -27,7 +30,7 @@ const radvisc = @import("../physics/radvisc.zig");
 const radforce = @import("../physics/radforce.zig");
 const p2u_mod = @import("../p2u.zig");
 const metric = @import("../metric/metric.zig");
-const threading = @import("threading.zig");
+const threading = @import("../threading.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 /// threading.Error's shape (the union parallelRangeErr workers return) — the
@@ -302,6 +305,23 @@ fn rijViscRows(comptime SimT: type, sim: *SimT, global_dt: f64, iy0: i64, iy1: i
             }
         }
     }
+}
+
+/// C: f_flux_prime_rad_total's ifacedim>−1 branch (rad.c:3782-3786) — the
+/// face-averaged viscous R^i_j at the face (fx,fy,fz) in dimension `dim`
+/// (between that cell and its dim−1 neighbour), read from sim.rijvisc.
+pub fn faceAvg(comptime SimT: type, sim: *const SimT, dim: usize, fx: i64, fy: i64, fz: i64) [4][4]f64 {
+    var a: [16]f64 = undefined;
+    var b: [16]f64 = undefined;
+    sim.rijvisc.load(fx, fy, fz, &a);
+    var c = [3]i64{ fx, fy, fz };
+    c[dim] -= 1;
+    sim.rijvisc.load(c[0], c[1], c[2], &b);
+    var out: [4][4]f64 = undefined;
+    for (0..4) |i| {
+        for (0..4) |j| out[i][j] = 0.5 * (a[i * 4 + j] + b[i * 4 + j]);
+    }
+    return out;
 }
 
 /// C: the RADVISCMAXVELDAMP block of f_flux_prime_rad_total (rad.c:3799-3845)

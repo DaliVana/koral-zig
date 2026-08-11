@@ -32,7 +32,7 @@ const hydro = @import("../physics/hydro.zig");
 const radiation = @import("../physics/radiation.zig");
 const frames = @import("../frames.zig");
 const mhd = @import("../physics/bfield.zig");
-const dynamo = @import("../magn/dynamo.zig");
+const dynamo = @import("../sim/dynamo.zig");
 
 const Geometry = geometry.Geometry;
 const pi = std.math.pi;

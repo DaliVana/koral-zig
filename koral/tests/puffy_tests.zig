@@ -25,7 +25,7 @@ const puffy = @import("../problems/puffy/puffy.zig");
 const thermo = @import("../physics/thermo.zig");
 const mhd = @import("../physics/bfield.zig");
 const radiation = @import("../physics/radiation.zig");
-const ct = @import("../magn/ct.zig");
+const ct = @import("../sim/ct.zig");
 
 const Grid = grid_mod.Grid;
 const pi_2: f64 = std.math.pi / 2.0;

@@ -35,7 +35,7 @@ const radforce = @import("../physics/radforce.zig");
 const frames = @import("../frames.zig");
 const bfield = @import("../physics/bfield.zig");
 const thermo = @import("../physics/thermo.zig");
-const ct = @import("../magn/ct.zig");
+const ct = @import("../sim/ct.zig");
 
 const Geometry = geometry.Geometry;
 

@@ -810,7 +810,7 @@ Key API points, all real:
 If your tube needs the vector-potential path (seed **B** from A rather than
 directly), store A_φ in the B slots and call `ct.calcBfromA(SimT, sim, true)` then
 `setBc` before `finishInit`, exactly as PUFFY's `initAll` does (which additionally
-runs β-normalization in `postinit`). See `koral/magn/ct.zig`.
+runs β-normalization in `postinit`). See `koral/sim/ct.zig`.
 
 ### (d) Write `koral/problems/<name>/main.zig` — the driver
 
@@ -1063,7 +1063,7 @@ filling are implemented; the only unimplemented layout is the x-z 2D case
 ### Enable & tune threading
 
 Set `nthreads` in the params file (or directly on `Sim.Options`). `nthreads > 1`
-makes `Sim.init` spawn a **persistent worker team** (`koral/sim/threading.zig`,
+makes `Sim.init` spawn a **persistent worker team** (`koral/threading.zig`,
 P1 of the parallelization plan) that every per-step pass dispatches on —
 inversions (`u2p`, implicit), the sweep/flux/wavespeed face passes, flux-CT,
 the conserved update, radiative viscosity, the dynamo, boundary fills, fixups,
@@ -1148,8 +1148,8 @@ Where the major pieces live (all under `koral/` unless noted):
 | Microphysics (thermo, opacities, four-force) | `physics/thermo.zig`, `physics/opacities.zig`, `physics/mesa.zig` (+ `data/mesa_tables/`), `physics/radforce.zig`, `units.zig` |
 | Implicit rad-gas source | `solve/implicit.zig` |
 | Reconstruction / wavespeeds / flux / Riemann | `fv/recon.zig`, `physics/wavespeeds.zig`, `physics/flux.zig`, `fv/laxf.zig` |
-| Evolution driver | `sim.zig`, `sim/storage.zig`, `sim/bc.zig`, `sim/threading.zig`, `sim/timers.zig` |
-| Constrained transport, dynamo, radiative viscosity | `magn/ct.zig`, `magn/dynamo.zig`, `physics/radvisc.zig` (pure kernels), `sim/rijvisc.zig` (gather + per-step pass) |
+| Evolution driver | `sim.zig`, `sim/storage.zig`, `sim/bc.zig`, `sim/timers.zig`, `threading.zig` |
+| Constrained transport, dynamo, radiative viscosity | `sim/ct.zig`, `sim/dynamo.zig`, `physics/radvisc.zig` (pure kernels), `sim/rijvisc.zig` (gather + per-step pass) |
 | PUFFY problem + quadrature | `problems/puffy/puffy.zig`, `problems/puffy/main.zig`, `problems/puffy/*.toml`, `math/quad.zig` |
 | Diagnostics / I/O | `io/scalars.zig`, `io/dump.zig`, `io/silo.zig` (+ `io/silo_disabled.zig`) |
 | Build / tests / oracle / tools | `build.zig`, `koral.zig` (`test {}`), `tools/gen_golden.sh`, `tools/res2kdmp.zig`, `tools/bench_implicit.zig`, `testing/golden.zig`, `testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/` |

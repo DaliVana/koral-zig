@@ -106,7 +106,7 @@ natural conserved scale.
       exact SR Riemann solver, acoustic dispersion order 2, Bondi/Michel
       stationarity in KS) + sod64 forced-dt step test vs C at 4e-14/10 steps
 - [x] M6 — MHD + constrained transport: Tóth flux-CT + calc_BfromA + corner
-      divB diagnostic (koral/magn/ct.zig); theory gates (B-from-A div-free
+      divB diagnostic (koral/sim/ct.zig); theory gates (B-from-A div-free
       1e-16, OT interior divB 8e-15 over 200 steps, uniform-B static, CP
       Alfvén phase order 2, Balsara-1 with exactly constant Bx); C goldens
       flux_ct 1e-16, calc_BfromA bitwise, ot32/mhdtube64 forced-dt step
@@ -218,7 +218,7 @@ natural conserved scale.
       diffusion cap), R^ij_visc = −2 ν Ê σ^ij filled once per step
       (calc_Rij_visc_total) and added at the faces with the RADVISCMAXVELDAMP
       velocity cap (f_flux_prime_rad_total). **Mean-field dynamo**
-      (koral/magn/dynamo.zig, MIMICDYNAMO): the CALCHRONTHEGO density-weighted
+      (koral/sim/dynamo.zig, MIMICDYNAMO): the CALCHRONTHEGO density-weighted
       scale height, the BL field-pitch angle, the ΔA_φ ∝ α_dyn·(dt/P_K)·B^φ
       prescription with its ALPHAFLIPSSIGN equatorial flip, the DAMPBETA
       azimuthal damping, and calc_BfromA of ΔA_φ superimposed on the poloidal
@@ -312,8 +312,9 @@ the `Scal` wavespeed enum is grouped per-dimension so a flux pass reads one cont
 per-problem build uses a single install artifact; and `-Dmpi` (which has no backend) now `@compileError`s
 instead of silently building serial (the guard lives in `koral/koral.zig`). Dead code removed:
 `state.zig`'s unused `State(cfg)` stub and four
-write-only `Geometry` cell-identity fields (`ix/iy/iz/ifacedim` — `rijviscFace` takes its `dim`
-explicitly). Byte-identical (`-Dslow-tests`: 215/216).
+write-only `Geometry` cell-identity fields (`ix/iy/iz/ifacedim` — the viscous-flux face
+average (now `sim/rijvisc.zig`'s `faceAvg`) takes its `dim` explicitly). Byte-identical
+(`-Dslow-tests`: 215/216).
 
 **PUFFY AGN retargeting (2026-07-09):** `Params` grew a large group of *optional* physics
 overrides (`?T = null` = keep the compiled preset) consumed by the driver's

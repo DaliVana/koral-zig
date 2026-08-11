@@ -19,7 +19,7 @@ const Geometry = @import("../geometry.zig").Geometry;
 const metric = @import("metric.zig");
 const coco = @import("coco.zig");
 const config = @import("../config.zig");
-const threading = @import("../sim/threading.zig");
+const threading = @import("../threading.zig");
 
 pub const Coords = config.Coords;
 pub const MetricParams = metric.MetricParams;
@@ -110,7 +110,7 @@ pub fn geometryAt(coords: Coords, mp: MetricParams, x: [4]f64) Geometry {
 /// OUTCOORDS) with OUTCOORDS == BLCOORDS. Transforms the cell-center MYCOORDS
 /// position to Boyer–Lindquist and evaluates the Kerr-BL metric there. The
 /// single home for this reduction, shared by the diagnostics (io/scalars),
-/// the dynamo (magn/dynamo), and PUFFY init (problems/puffy) — see those
+/// the dynamo (sim/dynamo), and PUFFY init (problems/puffy) — see those
 /// modules' thin wrappers.
 pub fn geometryBLat(g: *const Grid, coords: Coords, mp: MetricParams, ix: i64, iy: i64, iz: i64) Geometry {
     const xx = [4]f64{ 0.0, g.xc(ix), g.yc(iy), g.zc(iz) };

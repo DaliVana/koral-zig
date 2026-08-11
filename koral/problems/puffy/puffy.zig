@@ -38,7 +38,7 @@ const thermo = @import("../../physics/thermo.zig");
 const radiation = @import("../../physics/radiation.zig");
 const invert_rad = @import("../../solve/invert_rad.zig");
 const invert = @import("../../solve/invert.zig");
-const threading = @import("../../sim/threading.zig");
+const threading = @import("../../threading.zig");
 const implicit = @import("../../solve/implicit.zig");
 const opacities = @import("../../physics/opacities.zig");
 const mesa = @import("../../physics/mesa.zig");
@@ -48,7 +48,7 @@ const metric = @import("../../metric/metric.zig");
 const coco = @import("../../metric/coco.zig");
 const precompute = @import("../../metric/precompute.zig");
 const quad = @import("../../math/quad.zig");
-const ct = @import("../../magn/ct.zig");
+const ct = @import("../../sim/ct.zig");
 const sim_mod = @import("../../sim.zig");
 const params_mod = @import("../../params.zig");
 

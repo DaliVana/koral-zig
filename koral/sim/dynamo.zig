@@ -26,7 +26,7 @@
 //!    column's faczH collapses to 0 there anyway.
 //!  * pow(1-zH², 1) == 1-zH² (libm special case) → written as a plain sub.
 //!  * P1: the three per-cell passes (scale-height columns, ΔA_φ ring,
-//!    superpose+p2u) run band-parallel via sim/threading.zig — every band
+//!    superpose+p2u) run band-parallel via threading.zig — every band
 //!    writes only its own cells/columns, so the result is bit-identical to
 //!    serial at any nthreads (pinned by the dynamo threading test).
 
@@ -41,7 +41,7 @@ const metric = @import("../metric/metric.zig");
 const misc = @import("../math/misc.zig");
 const p2u_mod = @import("../p2u.zig");
 const ct = @import("ct.zig");
-const threading = @import("../sim/threading.zig");
+const threading = @import("../threading.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 const pi = std.math.pi;

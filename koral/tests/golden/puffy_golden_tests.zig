@@ -39,7 +39,7 @@ const grid_mod = @import("../../grid.zig");
 const sim_mod = @import("../../sim.zig");
 const golden = @import("../../testing/golden.zig");
 const puffy = @import("../../problems/puffy/puffy.zig");
-const ct = @import("../../magn/ct.zig");
+const ct = @import("../../sim/ct.zig");
 const invert = @import("../../solve/invert.zig");
 const invert_rad = @import("../../solve/invert_rad.zig");
 

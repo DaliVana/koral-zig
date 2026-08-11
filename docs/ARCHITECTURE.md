@@ -140,24 +140,24 @@ does `const koral = @import("koral");` and reaches everything through it.
                   │  imports koral
   ┌───────────────▼─────────────────────────────────────────────────────┐
   │ sim.zig  — Sim(cfg): owns all state buffers, orchestrates the step    │
-  │   (+ sim/storage · sim/bc · sim/polaraxis · sim/threading · sim/timers │
-  │      · sim/rijvisc)                                                   │
-  └── calls ──┬───────────┬───────────┬──────────┬──────────┬────────────┘
-             │           │           │          │          │
-    ┌────────▼──┐  ┌─────▼────┐ ┌────▼─────┐ ┌──▼──────┐ ┌─▼──────────┐
-    │ fv/       │  │ physics/ │ │ solve/   │ │ magn/   │ │ metric/    │
-    │ recon     │  │ hydro    │ │ invert   │ │ ct      │ │ metric     │
-    │ laxf      │  │ bfield   │ │ invert_  │ │ dynamo  │ │ coco       │
-    │           │  │ radiation│ │  rad     │ │         │ │ precompute │
-    │           │  │ wavesp.  │ │ implicit │ │         │ │ (MetricC.) │
-    │           │  │ flux     │ │          │ │         │ │            │
-    │           │  │ thermo   │ │          │ │         │ │            │
-    │           │  │ opacities│ │          │ │         │ │            │
-    │           │  │ radforce │ │          │ │         │ │            │
-    │           │  │ radvisc  │ │          │ │         │ │            │
-    │           │  │ mesa     │ │          │ │         │ │            │
-    └─────┬─────┘  └────┬─────┘ └────┬─────┘ └───┬─────┘ └─────┬──────┘
-          └─────────────┴─── relele / frames / p2u ───┴─────────────┘
+  │   (+ sim/storage · sim/bc · sim/polaraxis · sim/timers · sim/rijvisc  │
+  │      · sim/ct · sim/dynamo)                                           │
+  └── calls ──┬───────────┬───────────┬──────────┬───────────────────────┘
+             │           │           │          │
+    ┌────────▼──┐  ┌─────▼────┐ ┌────▼─────┐ ┌──▼─────────┐
+    │ fv/       │  │ physics/ │ │ solve/   │ │ metric/    │
+    │ recon     │  │ hydro    │ │ invert   │ │ metric     │
+    │ laxf      │  │ bfield   │ │ invert_  │ │ coco       │
+    │           │  │ radiation│ │  rad     │ │ precompute │
+    │           │  │ wavesp.  │ │ implicit │ │ (MetricC.) │
+    │           │  │ flux     │ │          │ │            │
+    │           │  │ thermo   │ │          │ │            │
+    │           │  │ opacities│ │          │ │            │
+    │           │  │ radforce │ │          │ │            │
+    │           │  │ radvisc  │ │          │ │            │
+    │           │  │ mesa     │ │          │ │            │
+    └─────┬─────┘  └────┬─────┘ └────┬─────┘ └─────┬──────┘
+          └─────────────┴── relele / frames / p2u / threading ──┘
                                     │
   ┌─────────────────────────────────▼───────────────────────────────────┐
   │ Foundation (leaf infra, only std + intra-foundation imports):         │
@@ -294,8 +294,9 @@ gg: [4][5]f64,   GG: [4][5]f64,                   // g_μν (covariant), g^μν 
 gdet: f64,  alpha: f64,  gttpert: f64,            // √-g, lapse, perturbed g_tt
 ```
 
-(The former `ix/iy/iz/ifacedim` cell-identity fields were write-only — `rijviscFace`
-takes its `dim` explicitly, not from the geometry — and were dropped in the P5 pass.)
+(The former `ix/iy/iz/ifacedim` cell-identity fields were write-only — the viscous-flux
+face average (`rijvisc.faceAvg`) takes its `dim` explicitly, not from the geometry — and
+were dropped in the P5 pass.)
 
 The **4×5** layout is C's: columns 0..3 are the metric/inverse, column 4 packs extras
 (`gg[i][4]=dlgdet` for i<3, `gg[3][4]=gdet`; `GG[3][4]=gttpert`, other `GG[i][4]=0`).
@@ -473,19 +474,23 @@ per-cell integer `flags`, the face flux/state stores (`flb`, `fl_l`, `fl_r`, `pb
 cfg.has(.mhd)` (mirrors C's `MPI4CORNERS`) makes MHD sweeps reach ±1 ghost row and fill 2D
 corners; `base_order` (0/1/2) comes from `cfg.reconstruction`.
 
-`sim.zig` itself is a facade over five support modules it re-exports: `sim/storage.zig`
+`sim.zig` itself is a facade over four support modules it re-exports: `sim/storage.zig`
 (`FaceStore`, the `Flag`/`Scal` enums and slot tables), `sim/bc.zig` (all boundary-
 condition logic, [§9](#9-boundary-conditions-and-polar-axis-correction)),
-`sim/polaraxis.zig` (the polar-axis band, same section),
-`sim/threading.zig` (the worker team, [§10](#10-the-threading-model)), and
+`sim/polaraxis.zig` (the polar-axis band, same section), and
 `sim/timers.zig` — always-on per-pass wall-clock self-time instrumentation (`Pass`,
 `PassTimers`; a pass stack prevents nested timed calls from double-counting) that
 `step()` feeds via `timers.begin/end` and the driver prints at scalar cadence.
-A sixth module, `sim/rijvisc.zig` — the sim-coupled half of the radiative shear
+The worker team ([§10](#10-the-threading-model)) lives in the root-level
+`threading.zig` — project-wide infrastructure, also used by `metric/precompute.zig`
+and the PUFFY driver. Three more sim/ modules are called internally without being
+re-exported: `sim/ct.zig` (flux-CT + the vector-potential machinery,
+[§8.1](#81-constrained-transport-flux-ct)), `sim/dynamo.zig` (the mimic dynamo,
+[§8.4](#84-the-mimic-dynamo--run-after-each-explicit-sub-step)), and
+`sim/rijvisc.zig` — the sim-coupled half of the radiative shear
 viscosity ([§8.3](#83-radiative-shear-viscosity--filled-oncestep-added-at-faces):
 the FD shear gather, the ν-input gathering, and the once-per-step threaded pass
-filling `sim.rijvisc`) — is called internally without being re-exported; its pure
-per-cell kernels live in `physics/radvisc.zig`.
+filling `sim.rijvisc`); its pure per-cell kernels live in `physics/radvisc.zig`.
 
 `Options` carries the runtime configuration: `coords`, metric params `mp`, `gam`,
 `tsteplim`, `minmod_theta`, `floors` (`FloorParams`), `rad` (`RadParams`), `opac`
@@ -818,8 +823,9 @@ must never share a wavespeed.
 
 ## 8. MHD specifics and the extra physics in the step
 
-`koral/magn/*`, `koral/physics/radvisc.zig` (pure radviscosity kernels), and
-`koral/sim/rijvisc.zig` (the sim-coupled radviscosity gather + per-step pass).
+`koral/sim/ct.zig`, `koral/sim/dynamo.zig`, `koral/physics/radvisc.zig` (pure
+radviscosity kernels), and `koral/sim/rijvisc.zig` (the sim-coupled radviscosity
+gather + per-step pass).
 
 ### 8.1 Constrained transport (flux-CT)
 
@@ -911,7 +917,7 @@ The z faces are `unreachable` (TNZ=1).
 
 ## 10. The threading model
 
-Threading is a persistent **worker team** (`sim/threading.zig::Team`), created once in
+Threading is a persistent **worker team** (root-level `threading.zig::Team`), created once in
 `Sim.init` and owned for the run. `Team.init(allocator, nthreads)` spawns `nthreads−1` helper OS threads that
 park on a hand-rolled futex (atomic wait/wake — Zig 0.16 moved `Mutex`/`Condition` behind the
 `std.Io` event loop, so the team uses the same primitive `std.Io.Threaded` would use internally);
@@ -1052,8 +1058,8 @@ deviations are **expected**, not regressions — a real bug shows far above that
 | **Opacities / thermodynamics / four-force** | `koral/physics/thermo.zig`, `koral/physics/opacities.zig`, `koral/physics/mesa.zig`, `koral/physics/radforce.zig`, `koral/units.zig` |
 | **Implicit radiation-gas source solver** | `koral/solve/implicit.zig` |
 | **Reconstruction + wavespeeds + flux + Riemann** | `koral/fv/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`, `koral/fv/laxf.zig` |
-| **Evolution driver** | `koral/sim.zig`, `koral/sim/storage.zig`, `koral/sim/bc.zig`, `koral/sim/polaraxis.zig`, `koral/sim/threading.zig`, `koral/sim/timers.zig` |
-| **Constrained transport + dynamo + radiative viscosity** | `koral/magn/ct.zig`, `koral/magn/dynamo.zig`, `koral/physics/radvisc.zig` (pure kernels), `koral/sim/rijvisc.zig` (gather + per-step pass) |
+| **Evolution driver** | `koral/sim.zig`, `koral/sim/storage.zig`, `koral/sim/bc.zig`, `koral/sim/polaraxis.zig`, `koral/sim/timers.zig`, `koral/threading.zig` |
+| **Constrained transport + dynamo + radiative viscosity** | `koral/sim/ct.zig`, `koral/sim/dynamo.zig`, `koral/physics/radvisc.zig` (pure kernels), `koral/sim/rijvisc.zig` (gather + per-step pass) |
 | **PUFFY problem (IC, driver, quadrature, presets)** | `koral/problems/puffy/puffy.zig`, `koral/problems/puffy/main.zig`, `koral/problems/puffy/*.toml`, `koral/math/quad.zig` |
 | **Diagnostics + output** | `koral/io/scalars.zig`, `koral/io/dump.zig`, `koral/io/silo.zig` (+ `silo_disabled.zig` stub) |
 | **Build + oracle + goldens + tools** | `build.zig`, `tools/gen_golden.sh`, `tools/res2kdmp.zig`, `tools/bench_implicit.zig`, `koral/testing/golden.zig`, `koral/testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/**` |

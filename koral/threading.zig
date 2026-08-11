@@ -34,7 +34,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const Error = @import("../relele.zig").Error || error{OutOfMemory};
+const Error = @import("relele.zig").Error || error{OutOfMemory};
 
 /// Minimal cross-platform futex on a u32 word (std's own moved behind
 /// std.Io in 0.16). `wait` returns when *ptr != expect, on a wake, or

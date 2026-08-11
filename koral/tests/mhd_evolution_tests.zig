@@ -13,7 +13,7 @@ const std = @import("std");
 const config = @import("../config.zig");
 const grid_mod = @import("../grid.zig");
 const sim_mod = @import("../sim.zig");
-const ct = @import("../magn/ct.zig");
+const ct = @import("../sim/ct.zig");
 const hydro = @import("../physics/hydro.zig");
 
 const Grid = grid_mod.Grid;

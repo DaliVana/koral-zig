@@ -26,11 +26,11 @@
 //! `Sim.isCellCorrectedPolaraxis` — as thin delegates, the same way it fronts
 //! sim/bc.zig with `Sim.setBc`.
 //!
-//! Not yet transcribed, but lands here rather than in magn/ct.zig when it does:
+//! Not yet transcribed, but lands here rather than in sim/ct.zig when it does:
 //! adjust_fluxcttoth_emfs (polar-axis EMF zeroing), which is CORRECT_POLARAXIS
 //! machinery that happens to live in magn.c.
 
-const threading = @import("threading.zig");
+const threading = @import("../threading.zig");
 const p2u_mod = @import("../p2u.zig");
 
 const Error = @import("../relele.zig").Error || error{OutOfMemory};

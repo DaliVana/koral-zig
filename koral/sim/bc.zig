@@ -1,5 +1,5 @@
 //! Boundary conditions for the evolution driver, written SimT-generic (the
-//! house `fn f(comptime SimT: type, sim: *SimT)` pattern, like magn/ct.zig).
+//! house `fn f(comptime SimT: type, sim: *SimT)` pattern, like sim/ct.zig).
 //! This is the region the planned MPI backend grows into (comm/serial.zig:
 //! "the MPI backend implements the same API later") and maps directly onto C
 //! finite.c:2805 (set_bc) / finite.c:3203 (2D corner filling). `sim.zig`
@@ -13,7 +13,7 @@
 //! the just-filled face surfaces (a natural barrier).
 
 const p2u_mod = @import("../p2u.zig");
-const threading = @import("threading.zig");
+const threading = @import("../threading.zig");
 
 const Error = @import("../relele.zig").Error || error{OutOfMemory};
 

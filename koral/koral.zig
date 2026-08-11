@@ -81,8 +81,8 @@ pub const sim = @import("sim.zig");
 pub const Sim = sim.Sim;
 
 pub const magn = struct {
-    pub const ct = @import("magn/ct.zig");
-    pub const dynamo = @import("magn/dynamo.zig");
+    pub const ct = @import("sim/ct.zig");
+    pub const dynamo = @import("sim/dynamo.zig");
 };
 
 pub const problems = struct {

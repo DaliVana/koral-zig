@@ -535,7 +535,7 @@ with C's corner-avoidance one-sided-derivative rules.
 
 PUFFY uses the KORAL "mimic dynamo" — a sub-grid mean-field prescription that
 regenerates poloidal field from toroidal field to sustain magnetization in a 2D
-axisymmetric run ([`koral/magn/dynamo.zig`](../koral/magn/dynamo.zig)). It runs
+axisymmetric run ([`koral/sim/dynamo.zig`](../koral/sim/dynamo.zig)). It runs
 after each explicit RK substep (`applyDynamo`).
 
 ### 7.1 Density-weighted scale height
@@ -628,7 +628,7 @@ with its own wave speeds — the split point is the `ee` row (`fluxesAtFaces`).
 ### 8.4 Constrained transport ($\nabla\!\cdot\!B = 0$)
 
 Magnetic divergence-freeness is maintained by Tóth flux-CT
-([`koral/magn/ct.zig`](../koral/magn/ct.zig), `fluxCt`): corner EMFs are formed by
+([`koral/sim/ct.zig`](../koral/sim/ct.zig), `fluxCt`): corner EMFs are formed by
 averaging the transverse $B$-rows of the face fluxes, e.g.
 $$\mathrm{EMF}_x = c_{\rm emf}\Big[\big(F^y[B^z] + \ldots\big) - \big(F^z[B^y] + \ldots\big)\Big],$$
 and the $B$-face-fluxes are rebuilt as the curl of the averaged edge EMFs,
