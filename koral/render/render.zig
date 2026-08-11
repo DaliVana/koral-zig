@@ -35,7 +35,7 @@
 //! bit-identical to the old traceRay loop), while SLOW LIGHT binds a
 //! time-interpolating sampler over a KDMP series and drives rays through a
 //! streaming time window — see series.zig / sweep.zig, and adaptive.zig for
-//! photon-ring image-plane refinement (docs/SLOWLIGHT_2026-08-11.md).
+//! photon-ring image-plane refinement (docs/RENDER.md).
 
 const std = @import("std");
 const config = @import("../config.zig");
@@ -59,6 +59,7 @@ pub const series = @import("series.zig");
 pub const sweep = @import("sweep.zig");
 pub const adaptive = @import("adaptive.zig");
 pub const fits = @import("fits.zig");
+pub const verify = @import("verify.zig");
 
 pub const Grid = grid_mod.Grid;
 pub const MetricParams = metric.MetricParams;
@@ -485,14 +486,14 @@ fn accel(kris: *const [4][4][4]f64, k: [4]f64) [4]f64 {
     return a;
 }
 
-const StepResult = struct { x: [4]f64, k: [4]f64, ok: bool };
+pub const StepResult = struct { x: [4]f64, k: [4]f64, ok: bool };
 
 /// One RK4 step of the geodesic ODE, REJECTED (ok = false) if any stage
 /// or the endpoint leaves the MKS2 chart x2 ∈ (0,1). No reflection happens
 /// here: mixing stages from both sides of a pole in one RK4 combination is
 /// what produced the meridian artifact — a rejected step falls back to
 /// flatPoleStep, which crosses the axis in a regular chart.
-fn rk4Step(mp: MetricParams, cd1: *const metric.CoordData, x: [4]f64, k: [4]f64, dl: f64) StepResult {
+pub fn rk4Step(mp: MetricParams, cd1: *const metric.CoordData, x: [4]f64, k: [4]f64, dl: f64) StepResult {
     const a1 = accel(&cd1.kris, k);
 
     var x2 = x;
@@ -552,7 +553,7 @@ const pole_floor = 2.0e-5;
 /// integrator: the step controller keeps RK4 valid arbitrarily close to
 /// the pole (Δθ ≪ θ), and only the final tiny chord goes through here.
 /// The south pole maps onto the north-pole code by the x2 → 1−x2 mirror.
-fn flatPoleStep(mp: MetricParams, cd: *const metric.CoordData, x: [4]f64, k: [4]f64, dl: f64) StepResult {
+pub fn flatPoleStep(mp: MetricParams, cd: *const metric.CoordData, x: [4]f64, k: [4]f64, dl: f64) StepResult {
     // The (t, x1) sector stays fully dynamical: its acceleration components
     // are regular on the axis (the cot θ divergence lives only in the φ
     // rows, which the q-propagation replaces), and freezing k⁰/k¹ would
@@ -613,7 +614,7 @@ fn flatPoleStep(mp: MetricParams, cd: *const metric.CoordData, x: [4]f64, k: [4]
 /// pole term keeps Δx2 ≲ 10% of the distance to the pole (down to
 /// pole_floor), so RK4 resolves the Γ ~ cot θ growth instead of stepping
 /// across it — the source of the old meridian artifact.
-fn stepSize(g: *const Grid, x: [4]f64, k: [4]f64, eps: f64) f64 {
+pub fn stepSize(g: *const Grid, x: [4]f64, k: [4]f64, eps: f64) f64 {
     const a1 = @abs(k[1]) / @max(g.dx, 0.02);
     const a2 = @abs(k[2]) / @max(g.dy, 0.005);
     const a3 = @abs(k[3]) / @max(g.dz, 0.02);

@@ -1264,3 +1264,62 @@ test "sweep: batched epochs (t_cam_of) reproduce per-epoch sweeps — a two-poin
     try std.testing.expectEqual(want[0], out[0]);
     try std.testing.expectEqual(want[1], out[1]);
 }
+
+// ---- Gold et al. 2020 EHT GRRT verification --------------------------------
+
+test "verify: Gold et al. 2020 standardized tests reproduce the published EXACT fluxes" {
+    // The five EHT code-comparison scenes (render/verify.zig; ApJ 897, 148
+    // Table 1/2). At this CI resolution (16^2, ss1, eps 0.5) the measured
+    // deviations from the arbitrary-precision EXACT fluxes are +0.9..+1.8%
+    // (ReleaseFast and Debug agree; the paper's production codes sit at
+    // 0..+2.4%). The 2.5% gate holds koral-zig inside the published code
+    // family while catching any real physics error — a wrong redshift
+    // power, fluid transform, or absorptivity scaling shifts these fluxes
+    // by tens of per cent. Full-fidelity comparison: `zig build goldtest`.
+    var img: [16 * 16]f64 = undefined;
+    for (render.verify.tests) |td| {
+        render.verify.renderGold(&td, 16, 1, .{ .eps = 0.5 }, 2, img[0..]);
+        const s = render.verify.totalFluxJy(img[0..], 16);
+        try std.testing.expect(@abs(s - td.s_exact) / td.s_exact < 0.025);
+    }
+}
+
+test "verify: the Gold fluid four-velocity is unit-normalized in MKS2 across the emitting region" {
+    // The scene specifies u_mu in Boyer-Lindquist; medium() carries it to
+    // (M)KS via the dt = 2Mr/Delta, dphi = a/Delta shifts. A wrong sign or
+    // factor there would silently bias every redshift. Check u.u = -1 with
+    // the CODE's own MKS2 metric at a grid of (r, theta) points, for the
+    // rotating (l0=1, a=0.9) and plunging-frame (l0=0) variants alike.
+    for ([_]usize{ 0, 3 }) |ti| {
+        const td = render.verify.tests[ti];
+        const mp = metric.MetricParams{ .a = td.spin, .mksr0 = 0.1, .mksh0 = 0.9 };
+        for ([_]f64{ 1.7, 2.5, 5.0, 12.0, 40.0 }) |r| {
+            for ([_]f64{ 0.15, 0.3, 0.5, 0.62, 0.85 }) |x2| {
+                const x = [4]f64{ 0, @log(r - mp.mksr0), x2, 0.3 };
+                const th = forms.mks2Theta(Dual3.constant(x2), mp.mksh0).v;
+                const sinth = @sin(th);
+                const costh = @cos(th);
+                const a = td.spin;
+                const bigr = r * sinth;
+                const l = td.l0 * bigr * @sqrt(bigr) / (1.0 + bigr);
+                const sig = r * r + a * a * costh * costh;
+                const del = r * r - 2.0 * r + a * a;
+                const aa = (r * r + a * a) * (r * r + a * a) - a * a * del * sinth * sinth;
+                const gtt = -aa / (sig * del);
+                const gtp = -2.0 * a * r / (sig * del);
+                const gpp = (del - a * a * sinth * sinth) / (sig * del * sinth * sinth);
+                const den = gtt - 2.0 * gtp * l + gpp * l * l;
+                try std.testing.expect(den < 0);
+                const ubar = @sqrt(-1.0 / den);
+                // covariant u in MKS2 (verify.zig's transform)
+                const u_cov = [4]f64{ -ubar, ubar * (2.0 * r - a * l) / del * (r - mp.mksr0), 0, ubar * l };
+                const cd = metric.compute(.mks2, mp, x);
+                var norm: f64 = 0;
+                for (0..4) |i| {
+                    for (0..4) |j| norm += cd.gcon[i][j] * u_cov[i] * u_cov[j];
+                }
+                try std.testing.expectApproxEqAbs(@as(f64, -1.0), norm, 1e-12);
+            }
+        }
+    }
+}

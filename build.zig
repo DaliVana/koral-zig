@@ -364,6 +364,24 @@ pub fn build(b: *std.Build) !void {
     b.step("kdmp2lc", "slow-light flux light curve of a KDMP series")
         .dependOn(&run_kdmp2lc.step);
 
+    // goldtest: the Gold et al. 2020 EHT GRRT code-comparison tests —
+    // renders the 5 standardized analytic scenes and reports total fluxes
+    // against the paper's EXACT solution and 7-code table (tools/goldtest.zig).
+    const goldtest = b.addExecutable(.{
+        .name = "goldtest",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/goldtest.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "koral", .module = koral }},
+        }),
+    });
+    b.installArtifact(goldtest);
+    const run_goldtest = b.addRunArtifact(goldtest);
+    if (b.args) |args| run_goldtest.addArgs(args);
+    b.step("goldtest", "run the Gold et al. 2020 EHT GRRT verification tests")
+        .dependOn(&run_goldtest.step);
+
     // mpi-gates: the MPI validation-ladder harness (plan §10 gates 2-6).
     // Build with -Dmpi (ideally -Doptimize=ReleaseSafe) and run under
     // mpiexec at 1..4 ranks; each rank recomputes the serial reference
