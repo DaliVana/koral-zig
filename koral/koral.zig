@@ -169,6 +169,7 @@ test {
     _ = render.series;
     _ = render.sweep;
     _ = render.adaptive;
+    _ = render.fits;
     _ = @import("math/quad.zig");
     _ = @import("problems/puffy/puffy.zig");
     _ = @import("testing/tubes.zig");

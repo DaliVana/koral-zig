@@ -89,6 +89,13 @@ pub const SlowOpts = struct {
     /// radius outside which the flow is sampled from the static reference
     /// frame; inside, from the time-interpolated series
     r_slow: f64 = 40.0,
+    /// per-spec arrival times (parallel to `specs`), overriding t_cam ray
+    /// by ray. This is how ONE sweep serves MANY observation epochs (a
+    /// light curve or movie): specs of all epochs — each epoch aimed at
+    /// its own pixel range — advance through the same sliding window, so
+    /// the series still streams exactly once. x⁰ stays monotone per ray;
+    /// the window logic never assumed a shared arrival time.
+    t_cam_of: ?[]const f64 = null,
 };
 
 pub const Stats = struct {
@@ -139,11 +146,13 @@ const ExitSlow = struct {
 
 const chunk = 64;
 
-/// Render `specs` through the frame series into `out` (width×height,
-/// overwritten). `source` must provide times()/acquire()/release() (see
-/// series.FileSource / SliceSource); times ascend. Scene.data must be the
-/// REFERENCE frame (the static-zone snapshot) and stay acquired by the
-/// caller for the duration. Deterministic at any `nthreads`.
+/// Render `specs` through the frame series into `out` (overwritten; must
+/// cover every spec's pix — one width×height image normally, epochs×that
+/// for a batched light curve/movie via SlowOpts.t_cam_of). `source` must
+/// provide times()/acquire()/release() (see series.FileSource /
+/// SliceSource); times ascend. Scene.data must be the REFERENCE frame
+/// (the static-zone snapshot) and stay acquired by the caller for the
+/// duration. Deterministic at any `nthreads`.
 pub fn renderSlow(
     comptime cfg: config.Config,
     allocator: std.mem.Allocator,
@@ -157,15 +166,16 @@ pub fn renderSlow(
     nthreads: usize,
     progress: bool,
 ) !Stats {
-    std.debug.assert(out.len == cam.width * cam.height);
+    std.debug.assert(out.len >= cam.width * cam.height);
     std.debug.assert(sopts.r_slow > s.r_capture and sopts.r_slow < cam.r);
+    if (sopts.t_cam_of) |tc| std.debug.assert(tc.len == specs.len);
     var stats = Stats{ .rays = specs.len };
 
     const states = try allocator.alloc(render.RayState, specs.len);
     defer allocator.free(states);
-    var x0 = cam.x0;
-    x0[0] = sopts.t_cam;
-    for (states, specs) |*st, sp| {
+    for (states, specs, 0..) |*st, sp, i| {
+        var x0 = cam.x0;
+        x0[0] = if (sopts.t_cam_of) |tc| tc[i] else sopts.t_cam;
         st.* = .{ .x = x0, .k = cam.rayAt(sp.fx, sp.fy) };
     }
 

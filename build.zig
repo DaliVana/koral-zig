@@ -346,6 +346,24 @@ pub fn build(b: *std.Build) !void {
     b.step("kdmp2png", "GRRT-render a KDMP checkpoint to PNG")
         .dependOn(&run_kdmp2png.step);
 
+    // kdmp2lc: slow-light light curve of a KDMP series — S_ν(t) + modulation
+    // index (the EHT variability observable), all epochs batched into ONE
+    // streaming sweep (tools/kdmp2lc.zig). Optional --frames movie PNGs.
+    const kdmp2lc = b.addExecutable(.{
+        .name = "kdmp2lc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/kdmp2lc.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "koral", .module = koral }},
+        }),
+    });
+    b.installArtifact(kdmp2lc);
+    const run_kdmp2lc = b.addRunArtifact(kdmp2lc);
+    if (b.args) |args| run_kdmp2lc.addArgs(args);
+    b.step("kdmp2lc", "slow-light flux light curve of a KDMP series")
+        .dependOn(&run_kdmp2lc.step);
+
     // mpi-gates: the MPI validation-ladder harness (plan §10 gates 2-6).
     // Build with -Dmpi (ideally -Doptimize=ReleaseSafe) and run under
     // mpiexec at 1..4 ranks; each rank recomputes the serial reference

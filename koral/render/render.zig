@@ -58,6 +58,7 @@ pub const shadow = @import("shadow.zig");
 pub const series = @import("series.zig");
 pub const sweep = @import("sweep.zig");
 pub const adaptive = @import("adaptive.zig");
+pub const fits = @import("fits.zig");
 
 pub const Grid = grid_mod.Grid;
 pub const MetricParams = metric.MetricParams;

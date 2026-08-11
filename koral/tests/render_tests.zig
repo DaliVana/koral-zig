@@ -1132,3 +1132,135 @@ test "adaptive: quadtree plan conserves pixel weight, marks the capture boundary
     try std.testing.expectEqual(@as(f64, 0.0), img[(n / 2) * n + n / 2]);
     try std.testing.expectEqual(@as(f64, 1.0), img[0]);
 }
+
+// ---- FITS export -----------------------------------------------------------
+
+test "fits: header cards, geometry keywords, big-endian data, row flip, block padding" {
+    const allocator = std.testing.allocator;
+    const fits = render.fits;
+
+    // 3x2 image, distinct values; row 0 is the TOP row in renderer order
+    const img = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
+    const bytes = try fits.encode(allocator, img[0..], 3, 2, .{
+        .cdelt_deg = 1.25e-10,
+        .ra_deg = 266.4168371,
+        .dec_deg = -29.0078106,
+        .freq_hz = 230.0e9,
+        .mjd = 57850.0,
+    });
+    defer allocator.free(bytes);
+
+    // sizes: one header block + one (padded) data block
+    try std.testing.expectEqual(@as(usize, 2 * fits.block), bytes.len);
+
+    // card 0 is SIMPLE with T at column 30 (index 29)
+    try std.testing.expect(std.mem.startsWith(u8, bytes, "SIMPLE  ="));
+    try std.testing.expectEqual(@as(u8, 'T'), bytes[29]);
+
+    // mandatory + WCS cards present, with FITS-legal uppercase exponents
+    const header = bytes[0..fits.block];
+    for ([_][]const u8{
+        "BITPIX  =                  -64",
+        "NAXIS   =                    2",
+        "NAXIS1  =                    3",
+        "NAXIS2  =                    2",
+        "BUNIT   = 'JY/PIXEL'",
+        "CTYPE1  = 'RA---SIN'",
+"CDELT1  =  -1.250000000000E-10",
+        "CDELT2  =   1.250000000000E-10",
+        "OBSRA   =     2.664168371000E2",
+        "OBSDEC  =    -2.900781060000E1",
+        "FREQ    =    2.300000000000E11",
+        "MJD     =     5.785000000000E4",
+        "END",
+    }) |want| {
+        try std.testing.expect(std.mem.indexOf(u8, header, want) != null);
+    }
+    // every header byte is printable ASCII (blank-filled, no zeros)
+    for (header) |b| try std.testing.expect(b >= 32 and b <= 126);
+
+    // data: big-endian f64, bottom row first — FITS row 0 = renderer row 1
+    const D = struct {
+        fn at(bs: []const u8, i: usize) f64 {
+            return @bitCast(std.mem.readInt(u64, bs[fits.block + 8 * i ..][0..8], .big));
+        }
+    };
+    for ([_]f64{ 4.0, 5.0, 6.0, 1.0, 2.0, 3.0 }, 0..) |want, i| {
+        try std.testing.expectEqual(want, D.at(bytes, i));
+    }
+    // padding after the 48 data bytes is zero
+    for (bytes[fits.block + 48 ..]) |b| try std.testing.expectEqual(@as(u8, 0), b);
+}
+
+test "sweep: batched epochs (t_cam_of) reproduce per-epoch sweeps — a two-point light curve" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+    const consts = testConsts();
+    const nx = 64;
+    const ny = 32;
+
+    // same flare scene as the retarded-time gate: blob at (r=10, th=pi/3)
+    // lit only in the t=20 frame
+    var zero = try zeroDump(allocator, nx, ny, 1);
+    defer allocator.free(zero.body);
+    var blob = try zeroDump(allocator, nx, ny, 1);
+    defer allocator.free(blob.body);
+    const g = puffyGrid(nx, ny, 1, mp, 1.85, 500.0);
+    const uu = thermo.uFromTrho(&consts, 1.0e7, 1.0e-26, 5.0 / 3.0);
+    const ee = consts.lteEfromT(1.0e7);
+    for (0..ny) |iy| {
+        const x2 = g.miny + (@as(f64, @floatFromInt(iy)) + 0.5) * g.dy;
+        const th = forms.mks2Theta(Dual3.constant(x2), mp.mksh0).v;
+        if (@abs(th - pi / 3.0) > 0.12) continue;
+        for (0..nx) |ix| {
+            const x1 = g.minx + (@as(f64, @floatFromInt(ix)) + 0.5) * g.dx;
+            const r = @exp(x1) + mp.mksr0;
+            if (r < 9.0 or r > 11.0) continue;
+            const base = (iy * nx + ix) * L.count;
+            blob.body[base + L.index(.rho)] = 1.0e-26;
+            blob.body[base + L.index(.uu)] = uu;
+            blob.body[base + L.index(.ee)] = ee;
+        }
+    }
+    const ts = [_]f64{ 0, 5, 10, 15, 20, 25, 30, 35, 40 };
+    var frames: [9]*const render.DumpData = @splat(&zero);
+    frames[4] = &blob;
+    var src = render.series.SliceSource{ .ts = ts[0..], .frames = frames[0..] };
+
+    const scene = render.Scene.init(g, mp, consts, opacities.Channels.puffy, 5.0 / 3.0, &zero, 200.0, 500.0);
+    var cam = render.Camera{ .r = 200, .incl_deg = 60, .fov = 2, .width = 1, .height = 1, .ss = 1 };
+    cam.setup(mp);
+    const base = try render.sweep.uniformPlan(allocator, &cam);
+    defer allocator.free(base);
+
+    const dt_travel = (cam.r - 10.0) + 4.0 * @log((cam.r - 2.0) / (10.0 - 2.0));
+    const t_bright = 20.0 + dt_travel;
+    const t_dark = t_bright + 12.0;
+
+    // reference: two independent single-epoch sweeps
+    var want: [2]f64 = undefined;
+    for ([_]f64{ t_bright, t_dark }, 0..) |tc, e| {
+        var o1 = [_]f64{0} ** 1;
+        _ = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, base, o1[0..], .{}, .{ .t_cam = tc, .r_slow = 40.0 }, 1, false);
+        want[e] = o1[0];
+    }
+    try std.testing.expect(want[0] > 0);
+    try std.testing.expectEqual(@as(f64, 0), want[1]);
+
+    // batched: both epochs in ONE sweep, each aimed at its own pixel
+    var specs: [2]render.sweep.RaySpec = undefined;
+    for (base, 0..) |sp, j| {
+        specs[0 + j] = sp;
+        var s2 = sp;
+        s2.pix += 1;
+        specs[1 + j] = s2;
+    }
+    const t_of = [_]f64{ t_bright, t_dark };
+    var out = [_]f64{ -1, -1 };
+    const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, specs[0..], out[0..], .{}, .{ .t_cam = 0, .r_slow = 40.0, .t_cam_of = t_of[0..] }, 1, false);
+    try std.testing.expectEqual(@as(usize, 2), stats.rays);
+
+    // bit-identical to the per-epoch runs
+    try std.testing.expectEqual(want[0], out[0]);
+    try std.testing.expectEqual(want[1], out[1]);
+}

@@ -38,6 +38,16 @@
 //!   --adapt-dt M   corner flight-time disagreement that triggers
 //!                  refinement (default 5 M; a photon half-orbit is ~16 M)
 //!
+//!   --fits PATH    also write the UNPROCESSED image (no blur/stretch) as
+//!                  a FITS file in Jy/pixel with ehtim-compatible headers
+//!                  (render/fits.zig) — the entry point to the EHT
+//!                  synthetic-observation pipeline (eht-imaging, SYMBA).
+//!                  Requires --nu and --dist (physical units).
+//!   --ra DEG       source RA for the FITS header  (default Sgr A*)
+//!   --dec DEG      source Dec for the FITS header (default Sgr A*)
+//!   --mjd D        observation MJD for the FITS header (default 57850,
+//!                  2017 Apr 7 — the EHT Sgr A* campaign)
+//!
 //!   --size N       image width and height in pixels   (default 512)
 //!   --fov M        field of view at the hole, in GM/c² (default 100)
 //!   --incl DEG     inclination from the spin axis      (default 60)
@@ -129,6 +139,10 @@ pub fn main(init: std.process.Init) !void {
     var rslow: f64 = 40.0;
     var adapt: usize = 0;
     var adapt_dt: f64 = 5.0;
+    var fits_path: ?[]const u8 = null;
+    var ra_deg: f64 = 266.4168371; // Sgr A* J2000
+    var dec_deg: f64 = -29.0078106;
+    var mjd: f64 = 57850.0;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--size")) {
@@ -185,6 +199,14 @@ pub fn main(init: std.process.Init) !void {
             adapt = std.fmt.parseInt(usize, v, 10) catch return usageErr();
         } else if (std.mem.eql(u8, arg, "--adapt-dt")) {
             adapt_dt = try parseF(args.next() orelse return usageErr(), "--adapt-dt");
+        } else if (std.mem.eql(u8, arg, "--fits")) {
+            fits_path = args.next() orelse return usageErr();
+        } else if (std.mem.eql(u8, arg, "--ra")) {
+            ra_deg = try parseF(args.next() orelse return usageErr(), "--ra");
+        } else if (std.mem.eql(u8, arg, "--dec")) {
+            dec_deg = try parseF(args.next() orelse return usageErr(), "--dec");
+        } else if (std.mem.eql(u8, arg, "--mjd")) {
+            mjd = try parseF(args.next() orelse return usageErr(), "--mjd");
         } else if (std.mem.startsWith(u8, arg, "--")) {
             std.debug.print("kdmp2png: unknown option '{s}'\n", .{arg});
             return usageErr();
@@ -213,6 +235,11 @@ pub fn main(init: std.process.Init) !void {
     }
     const kpath: ?[]const u8 = kdmp_path;
     if (slow_dir == null and kpath == null) return usageErr();
+
+    if (fits_path != null and (nu_ghz <= 0 or dist_kpc <= 0 or screen)) {
+        std.debug.print("kdmp2png: --fits needs physical units: give --nu and --dist (and not --screen)\n", .{});
+        return error.BadArgs;
+    }
 
     // default output name: <dump-stem>.png next to the dump; the slow-mode
     // default needs the resolved t_obs, so it is derived in the branch below
@@ -405,6 +432,34 @@ pub fn main(init: std.process.Init) !void {
         secs = @as(f64, @floatFromInt(@as(i64, @intCast(dur.nanoseconds)))) / 1e9;
     }
 
+    // ---- FITS export: raw I_nu -> Jy/pixel, before any display processing ----
+    if (fits_path) |fpath| {
+        const masscm = puffy.consts().units.masscm;
+        const d_cm = dist_kpc * 3.086e21;
+        const pix_rad = fov * masscm / d_cm / @as(f64, @floatFromInt(size));
+        const scale = pix_rad * pix_rad * 1.0e23; // I_nu [cgs] -> Jy/pixel
+        const jy = try allocator.alloc(f64, img.len);
+        defer allocator.free(jy);
+        var s_total: f64 = 0;
+        for (jy, img) |*o, v| {
+            o.* = v * scale;
+            s_total += o.*;
+        }
+        const fbytes = try render.fits.encode(allocator, jy, size, size, .{
+            .cdelt_deg = pix_rad * 180.0 / std.math.pi,
+            .ra_deg = ra_deg,
+            .dec_deg = dec_deg,
+            .freq_hz = nu_obs,
+            .mjd = mjd,
+        });
+        defer allocator.free(fbytes);
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = fpath, .data = fbytes }) catch |err| {
+            std.debug.print("kdmp2png: cannot write '{s}': {s}\n", .{ fpath, @errorName(err) });
+            return err;
+        };
+        std.debug.print("kdmp2png: {s} written ({d}x{d}, {d:.3} uas/px, S_nu = {e:.3} Jy)\n", .{ fpath, size, size, pix_rad * 180.0 / std.math.pi * 3.6e9, s_total });
+    }
+
     var max_i: f64 = 0;
     var sum_i: f64 = 0;
     var lit: usize = 0;
@@ -502,7 +557,8 @@ fn usageErr() error{BadArgs} {
             "       [--size N] [--fov M] [--incl DEG] [--phi DEG] [--rcam M]\n" ++
             "       [--ss N] [--sigma-cut S] [--floor-cut F] [--nu GHZ] [--dist KPC] [--screen]\n" ++
             "       [--gamma G] [--wp PCT] [--blur PX] [--eps E] [--tau T] [--max-steps N] [--threads N]\n" ++
-            "       [--slow DIR] [--tobs T] [--stride N] [--rslow R] [--adapt D] [--adapt-dt M]\n",
+            "       [--slow DIR] [--tobs T] [--stride N] [--rslow R] [--adapt D] [--adapt-dt M]\n" ++
+            "       [--fits PATH] [--ra DEG] [--dec DEG] [--mjd D]\n",
         .{},
     );
     return error.BadArgs;

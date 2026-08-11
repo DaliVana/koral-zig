@@ -124,3 +124,36 @@ essentially nothing over fast light at equal data.
 * `Series.scan` adopts the NEWEST frame's shape and skips foreign frames
   (dumps/puffy3d_sgra_spin contains 3 frames of a 256×320×32 restart).
 * stride counts from the newest frame, so the latest frame is always kept.
+
+## 2026-08-11 addendum: FITS export + light curves (EHT tiers 1–2)
+
+* `koral/render/fits.zig` — pure FITS serializer (BITPIX −64, one HDU),
+  AIPS/ehtim keywords: CDELT1/2 [deg] (RA negative), CRVAL + OBSRA/OBSDEC
+  (both spellings), FREQ, MJD, BUNIT='JY/PIXEL'. Rows flipped to FITS
+  bottom-up; +α → −RA (east-left). Values are I_ν·Ω_pix·10²³ = Jy/pixel —
+  `ehtim.image.load_fits` → `im.observe(...)` works directly.
+  `kdmp2png --fits PATH` (requires --nu/--dist; exports the RAW image,
+  before blur/stretch — synthetic-observation pipelines apply their own
+  beam). `--ra/--dec` default to Sgr A* J2000, `--mjd` to 57850
+  (2017 Apr 7). Cross-check: FITS ΣS_pix ≡ the --dist Jy print, verified
+  identical on real data.
+* `tools/kdmp2lc.zig` (`zig build kdmp2lc`) — slow-light flux light curve:
+  all epochs batched into ONE streaming sweep via the new
+  `sweep.SlowOpts.t_cam_of` (per-spec arrival times; each epoch aimed at
+  its own pixel block; the series is still read once). Emits
+  idx/t[M]/t[s]/S_ν[Jy]/I_max rows + mean, σ, modulation index M = σ/μ —
+  the EHT Sgr A* Paper V variability observable. `--frames DIR` writes
+  per-epoch PNGs with a SHARED white point (flicker-free movie frames).
+  Gated: a two-epoch batched sweep is bit-identical to two independent
+  sweeps (flare scene).
+* **r_slow lesson (measured)**: the static zone erases variability
+  originating outside it. sgra_spin's 230 GHz flux is bulk free-free →
+  rslow 40 gave M ~ 1e-6 while fast-light frames 8.5 M apart differ by
+  3.5e-3; rslow 200 recovered M = 2.7e-3 over 52 M (secular brightening),
+  with 98% of rays honestly flagged as needing pre-series lookback.
+  Compact-synchrotron sources are what the default 40 is for.
+* Flux reality check: this preset at 230 GHz gives S_ν ≈ 1.2e-5 Jy vs
+  Sgr A*'s ~2.4 Jy — the puffy preset is not a Sgr A* mm source (thermal
+  T_b ~ 2e5 K, no hot synchrotron electrons; single-temperature T_e = T_gas
+  everywhere). The exporter/light-curve machinery is regime-agnostic; the
+  physics verdict awaits campaign runs + electron-temperature work.
