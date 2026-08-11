@@ -148,6 +148,32 @@ pub const Params = struct {
     /// tabulated opacities, e.g. mesa_table's iron bump). null = keep the
     /// built-in (off — per-iteration recompute, the validated behavior).
     radimp_lag_opac: ?bool = null,
+    /// C: SCALE_JACOBIAN — row/column-scale the implicit Jacobian by the
+    /// iterated energy density. On in the validated build; koral_lite_puffy
+    /// 2026-08-11 turns it OFF. null = keep the built-in.
+    scale_jacobian: ?bool = null,
+    /// C: RADIMPLICITMAXENCHANGEDOWN — max factor the iterated energy may
+    /// DROP per Newton trial step. koral_lite_puffy 2026-08-11: 50.
+    radimp_max_en_change_down: ?f64 = null,
+    /// C: RADIMPLICITMAXENCHANGEUP — max factor the iterated energy may RISE
+    /// per Newton trial step. (koral_lite_puffy's define.h writes 50 to a
+    /// TYPO'd macro name, so its effective value stays the default 10.)
+    radimp_max_en_change_up: ?f64 = null,
+    /// C: MAXRADIMPDAMPING — smallest Newton damping factor before a rung
+    /// gives up. Validated build 1e-3; koral_lite_puffy 2026-08-11 reverts
+    /// to the choices.h default 1e-5.
+    radimp_max_damping: ?f64 = null,
+
+    // radiative viscosity (C: ALPHARADVISC / MAXRADVISCVEL, define.h)
+    /// ν = alpharadvisc·mfp. null = keep the built-in 0.1.
+    alpharadvisc: ?f64 = null,
+    /// Characteristic-velocity damping threshold for the viscous flux.
+    /// Validated build 0.1; koral_lite_puffy PUFFY runs 0.3.
+    maxradviscvel: ?f64 = null,
+
+    // dynamo (C: EXPECTEDHR) — the assumed disk H/R when CALCHRONTHEGO has
+    // no measurement yet. Validated build 0.3; koral_lite_puffy PUFFY 0.7.
+    expectedhr: ?f64 = null,
 
     // gas composition (C: HFRAC/HEFRAC; MFRAC is derived = 1−hfrac−hefrac).
     // When hfrac is set the μ's come from the composition formula (no MU_*

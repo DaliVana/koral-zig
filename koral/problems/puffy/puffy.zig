@@ -163,6 +163,12 @@ pub var mesa_table: ?mesa.MesaTable = null;
 /// Consumed by `simOptions()`, which turns it into floors.horizon_x1 — the
 /// spin (mp.a) is only final there.
 pub var fluid_floor_inside_horizon: bool = false;
+/// Radiative-viscosity coefficients (C: ALPHARADVISC / MAXRADVISCVEL) and the
+/// dynamo's assumed H/R (C: EXPECTEDHR) — defaults are the validated build's;
+/// overridable from the params file (koral_lite_puffy runs 0.3 / 0.7).
+pub var alpharadvisc: f64 = 0.1;
+pub var maxradviscvel: f64 = 0.1;
+pub var expectedhr: f64 = 0.3;
 
 pub const lt = struct {
     pub const xi: f64 = 0.995; // LT_XI
@@ -242,6 +248,14 @@ pub fn applyPhysicsOverrides(p: *const params_mod.Params) void {
     if (p.opdamp_factor) |v| impl_params.opdamp_factor = v;
     // koral_lite_puffy implicit-solver options (2026-08-11)
     if (p.radimp_lag_opac) |b| impl_params.lag_opac = b;
+    if (p.scale_jacobian) |b| impl_params.scale_jacobian = b;
+    if (p.radimp_max_en_change_down) |v| impl_params.max_en_change_down = v;
+    if (p.radimp_max_en_change_up) |v| impl_params.max_en_change_up = v;
+    if (p.radimp_max_damping) |v| impl_params.max_damping = v;
+    // radiative viscosity / dynamo coefficients
+    if (p.alpharadvisc) |v| alpharadvisc = v;
+    if (p.maxradviscvel) |v| maxradviscvel = v;
+    if (p.expectedhr) |v| expectedhr = v;
     // rmhd floors / ceilings
     if (p.rhofloor) |v| floor_params.rhofloor = v;
     if (p.uurhoratiomin) |v| floor_params.uurhoratiomin = v;
@@ -293,7 +307,9 @@ pub fn simOptions(comptime SimT: type, p: *const params_mod.Params) SimT.Options
         .correct_polaraxis = true,
         .nccorrectpolar = 2,
         .radviscosity = true,
+        .radvisc = .{ .alpha = alpharadvisc, .maxvel = maxradviscvel },
         .dynamo = true,
+        .dynamo_params = .{ .expectedhr = expectedhr },
         // C: DORADIMPFIXUPS / REDUCEORDERATBH / DAMPRADWAVESPEEDNEARAXIS — off
         // in the validated build, retargeted by the AGN preset (null = off).
         .do_radimp_fixups = p.doradimpfixups orelse false,

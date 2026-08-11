@@ -301,6 +301,11 @@ retargets the run without a recompile; see `docs/PUFFY_AGN_DIVERGENCES.md`)
 | `reduceorderatbh` | Drop one reconstruction order inside the BH horizon (`REDUCEORDERATBH`). |
 | `reduceorderafterfixup` | Cells whose most recent u2p/implicit pass demanded a fixup reconstruct one order lower next sweep (koral_lite_puffy `REDUCEORDERAFTERFIXUP`; AGN: on). |
 | `radimp_lag_opac` | Freeze opacities at the pre-solve state across the whole implicit Newton solve (koral_lite_puffy `copy_state_opac`; needed for non-monotonic `mesa_table` κ; AGN: on). |
+| `scale_jacobian` | Row/column-scale the implicit Jacobian by the iterated energy (`SCALE_JACOBIAN`; validated: on, koral_lite_puffy 2026-08-11: off). |
+| `radimp_max_en_change_down` / `radimp_max_en_change_up` | Per-trial-step limits on how far the iterated energy may drop/rise (`RADIMPLICITMAXENCHANGEDOWN/UP`). |
+| `radimp_max_damping` | Smallest Newton damping factor before a rung gives up (`MAXRADIMPDAMPING`). |
+| `alpharadvisc`, `maxradviscvel` | Radiative-viscosity ν = α·mfp coefficient and velocity-damping threshold (`ALPHARADVISC`/`MAXRADVISCVEL`; koral_lite_puffy: 0.1/0.3). |
+| `expectedhr` | Dynamo's assumed disk H/R before `CALCHRONTHEGO` has a measurement (`EXPECTEDHR`; koral_lite_puffy: 0.7). |
 | `dampradwavespeednearaxis` | Within N cells of each pole, keep the radiative wavespeed at the undamped 1/3 (`DAMPRADWAVESPEEDNEARAXIS`; AGN: 2). |
 | `bremsstrahlung`, `kleinnishina` | Opacity-channel toggles. |
 | `synchrotron_bridge` | Replace the Terelfactor NR suppression with the Ramesh NR bridge (`USE_SYNCHROTRON_BRIDGE_FUNCTIONS`). |

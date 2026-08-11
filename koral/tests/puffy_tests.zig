@@ -680,3 +680,42 @@ test "puffy seed quality: positive on the initialized torus and linear in B" {
     try std.testing.expectEqual(q1.mass, q2.mass); // mask untouched by B
     try std.testing.expectApproxEqRel(2.0 * qth1, q2.qth_m / q2.mass, 1e-3);
 }
+
+//
+// ---- params presets stay parseable ------------------------------------------
+//
+
+test "every shipped puffy preset parses (unknown keys are hard errors)" {
+    const params_mod = @import("../params.zig");
+    const presets = [_][]const u8{
+        "koral/problems/puffy/puffy.toml",
+        "koral/problems/puffy/puffy3d.toml",
+        "koral/problems/puffy/puffy3d_sgra.toml",
+        "koral/problems/puffy/puffy3d_sgra_spin.toml",
+        "koral/problems/puffy/puffy_agn.toml",
+        "koral/problems/puffy/puffy_debora.toml",
+    };
+    for (presets) |path| {
+        var p = params_mod.Params.load(std.testing.allocator, std.testing.io, path) catch |err| {
+            std.debug.print("preset failed to parse: {s} ({any})\n", .{ path, err });
+            return err;
+        };
+        defer p.deinit(std.testing.allocator);
+    }
+
+    // spot-check the Debora preset's koral_lite_puffy@2026-08-11 values
+    var p = try params_mod.Params.load(std.testing.allocator, std.testing.io, "koral/problems/puffy/puffy_debora.toml");
+    defer p.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(f64, 0.3), p.bhspin);
+    try std.testing.expectEqual(@as(?f64, 25.0), p.b2rhoratiomax);
+    try std.testing.expectEqual(@as(?bool, false), p.b2uufloor);
+    try std.testing.expectEqual(@as(?bool, true), p.isentropic_b2rhofloors);
+    try std.testing.expectEqual(@as(?bool, true), p.fluid_floor_inside_horizon);
+    try std.testing.expectEqual(@as(?f64, 0.3), p.maxradviscvel);
+    try std.testing.expectEqual(@as(?f64, 0.7), p.expectedhr);
+    try std.testing.expectEqual(@as(?f64, 50.0), p.radimp_max_en_change_down);
+    try std.testing.expectEqual(@as(?f64, null), p.radimp_max_en_change_up); // C typo → default
+    try std.testing.expectEqual(@as(?bool, false), p.scale_jacobian);
+    try std.testing.expectEqual(@as(?usize, 70), p.radimpmaxiter);
+    try std.testing.expectEqual(@as(?f64, 1.0), p.hfrac);
+}

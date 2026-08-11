@@ -1,0 +1,121 @@
+# PUFFY — Debora Lančová's configuration, dlancova/koral_lite_puffy @ ed6d2f2
+# (2026-08-11 "big update"), PROBLEMS/PUFFY/define.h + choices.h defaults.
+# Stellar-mass (MASS=10, a=0.3) puffy disk, brems+synchrotron+Klein-Nishina
+# opacities (MESA currently OFF in her define.h), drift-frame isentropic
+# floors, the full 2026-08-11 robustness set (guard ladder is always on).
+#
+# Known divergences that CANNOT be matched from a params file:
+#   * INT_ORDER 1 + FLUXLIMITER 0 (linear/minmod θ=1.5): koral-zig's PUFFY
+#     binary compiles with PPM (config.puffy.reconstruction, comptime).
+#   * REDUCEMINMODTHETA 1 — not implemented.
+#   * RESTORETORUS (the per-step "finger" mass resupply) — not ported.
+#   * BALANCEENTROPYWITHRADIATION, UUEERATIOMAX — not ported.
+#   * RESTART/RESTARTNUM — koral-zig restarts via KDMP checkpoints instead.
+#   * LT_NORM / LT_DIRECTION are dead defines in the fork (unused by its .c).
+
+[physical]
+mass   = 10.0                  # MASS
+bhspin = 0.3                   # BHSPIN
+gam    = 1.6666666666666667    # GAMMA 5/3
+
+[grid]
+nx   = 384                     # TNX
+ny   = 384                     # TNY (validated puffy.toml runs 360)
+nz   = 1                       # TNZ
+rmin = 1.80                    # RMIN (define.h fixes 1.80; spin-derived would be 1.807)
+rmax = 500.0                   # RMAX
+# MINY/MAXY (1e-3, 1-1e-3) and PHIWEDGE π/2 are koral-zig problem constants
+# and already match define.h exactly.
+
+[coords]
+mksr0 = -1.5                   # MKSR0 (validated build: 0.1)
+mksh0 = 0.875                  # MKSH0 (validated build: 0.9)
+
+[run]
+tsteplim  = 0.5                # TSTEPLIM
+tmax      = 1.0e6              # ~ NOUTSTOP 10000 × DTOUT1
+dtout1    = 100.0              # DTOUT1
+dtout2    = 500.0              # DTOUT2
+out_dir   = "dumps/puffy_debora"
+nthreads  = 12
+
+# --- rmhd floors & ceilings (define.h:118-148 + choices.h) ------------------
+[floors]
+rhofloor      = 1.0e-50        # RHOFLOOR — define.h sets none → choices.h default
+uurhoratiomin = 1.0e-10        # UURHORATIOMIN
+uurhoratiomax = 1.0e3          # UURHORATIOMAX ("was 1e2")
+eerhoratiomin = 1.0e-20        # EERHORATIOMIN
+eerhoratiomax = 1.0e20         # EERHORATIOMAX
+eeuuratiomin  = 1.0e-20        # EEUURATIOMIN
+eeuuratiomax  = 1.0e20         # EEUURATIOMAX
+b2rhoratiomax = 25.0           # B2RHORATIOMAX ("was 50")
+b2uuratiomax  = 100.0          # B2UURATIOMAX (moot: b2uufloor=false below)
+gammamaxhd    = 50.0           # GAMMAMAXHD
+gammamaxrad   = 50.0           # GAMMAMAXRAD
+# B2RHOFLOORFRAME DRIFTFRAME + ISENTROPIC_B2RHOFLOORS + b²/u trigger commented
+# out + fluid-frame floors inside the horizon (u2p.c, 2026-08-11):
+zamo_floor_frame = false
+isentropic_b2rhofloors = true
+b2uufloor = false
+fluid_floor_inside_horizon = true
+
+# --- implicit rad–gas solver (define.h:22-58) --------------------------------
+# RADIMPCONV 1e-10, RADIMPCONVREL 1e-8, RADIMPCONVRELERR 1e-4, RADIMPCONVRELENTR
+# 1e-4, RADIMPCONVRELENTRERR 1e-2, RADIMPLICITDAMPINGFACTOR 3,
+# RADIMP_START_WITH_BISECT, ALLOWRADCEILINGINIMPLICIT, ALLOWFORENTRINF4DPRIM
+# already match ImplicitParams.puffy; RADIMPEPS unset → default 1e-6 (matches).
+[implicit]
+radimpmaxiter = 70             # RADIMPMAXITER ("default 50, maybe lower?")
+radimp_max_en_change_down = 50.0   # RADIMPLICITMAXENCHANGEDOWN
+# RADIMPLICIMAXENCHANGEUP 50. in define.h is a TYPO'd macro name — the C code
+# reads RADIMPLICITMAXENCHANGEUP → default 10. Kept faithful: up stays 10.
+radimp_max_damping = 1.0e-5    # MAXRADIMPDAMPING commented out → choices.h default
+scale_jacobian    = false      # SCALE_JACOBIAN commented out (validated build: on)
+opdamp_maxlevels  = 3          # OPDAMPINIMPLICIT 1, OPDAMPMAXLEVELS 3
+opdamp_factor     = 10.0       # OPDAMPFACTOR
+doradimpfixups    = true       # DORADIMPFIXUPS 1
+radimp_lag_opac   = true       # copy_state_opac — unconditional in the fork's rad.c
+
+# --- reconstruction / wavespeed near-boundary tweaks ------------------------
+[recon]
+reduceorderatbh          = true   # REDUCEORDERATBH
+reduceorderafterfixup    = true   # REDUCEORDERAFTERFIXUP (2026-08-11)
+dampradwavespeednearaxis = 3      # DAMPRADWAVESPEEDNEARAXISNCELLS ("was 2")
+
+# --- radiative viscosity & dynamo (define.h:96-102 / 66-74) ------------------
+[viscosity]
+alpharadvisc  = 0.1            # ALPHARADVISC
+maxradviscvel = 0.3            # MAXRADVISCVEL ("DL was 0.1")
+
+[dynamo]
+expectedhr = 0.7               # EXPECTEDHR (validated build: 0.3)
+# ALPHADYNAMO 2·0.314, DAMPBETA, BETASATURATED 0.1, ALPHABETA 2·6.28,
+# THETAANGLE 0.25, ALPHAFLIPSSIGN, CALCHRONTHEGO already match the built-ins.
+
+# --- opacities & composition (define.h:47-50 + choices.h) --------------------
+[opacities]
+bremsstrahlung     = true      # BREMSSTRAHLUNG (on again as of 2026-08-11)
+kleinnishina       = true      # KLEINNISHINA
+synchrotron_bridge = false     # USE_SYNCHROTRON_BRIDGE_FUNCTIONS removed 2026-08-11
+mesa_table         = ""        # MESA_KAPPA OFF in the current define.h (the July
+                               # fork state had it on — set data/mesa_tables/
+                               # a09_z0.02_x0.7.data to bring it back; keep
+                               # radimp_lag_opac=true when you do)
+# scattering: PR_KAPPAES is active in the fork's problem.h → keep the built-in
+# Klein–Nishina hook (default on). COMPTONIZATION on — also the built-in.
+
+[composition]
+hfrac  = 1.0                   # choices.h HFRAC 1. (pure hydrogen; define.h's
+hefrac = 0.0                   # explicit HFRAC block was removed 2026-08-11)
+
+# --- torus / atmosphere (define.h:257-283) -----------------------------------
+[torus]
+lt_kappa        = 60.0         # LT_KAPPA 6e1
+maxbeta         = 0.05         # MAXBETA 1/20
+rhoatmmin       = 1.0e-24      # RHOATMMIN
+atm_tgas        = 1.0e10       # UINTATMMIN = calc_PEQ_ufromTrho(1e10, RHOATMMIN)
+atm_trad_init   = 3.0e6        # ATMTRADINIT
+atm_erad_factor = 0.1          # ERADATMMIN = calc_LTE_EfromT(ATMTRADINIT)/10
+# LT_XI 0.995, LT_R1 20, LT_R2 350, LT_GAMMA 4/3, LT_RIN 35 and QUADLOOPS are
+# koral-zig compile-time constants and already match define.h exactly.
+# RESTORETORUS is not ported (see header).
