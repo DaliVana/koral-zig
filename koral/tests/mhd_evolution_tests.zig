@@ -399,3 +399,66 @@ test "M6: Balsara-1 tube — Bx exactly constant, self-convergent" {
     try expect(d2 < d1);
     try expect(order >= 0.6); // ~1st order at the discontinuities
 }
+
+//
+// ---- koral_lite_puffy REDUCEORDERAFTERFIXUP ---------------------------------
+//
+
+/// One forced-dt step on a smooth periodic MHD state; returns a copy of the
+/// conserveds. `poison` negates one cell's conserved density so the u2p pass
+/// that runs inside step() BEFORE the explicit sweep fails there, flags
+/// hd_fixup and neighbour-averages the cell — after which the sweep sees the
+/// flag (setting a flag by hand is useless: that same u2p pass overwrites
+/// every cell's flag first).
+fn runReduceStep(a: std.mem.Allocator, reduce_after_fixup: bool, poison: bool) ![]f64 {
+    const gam: f64 = 5.0 / 3.0;
+    const g = Grid.init(.{ .nx = 16, .ny = 16, .ng = 3, .minx = 0, .maxx = 1, .miny = 0, .maxy = 1 });
+    var s = try SimM.init(a, g, .{
+        .coords = .mink,
+        .gam = gam,
+        .bc_x = .periodic,
+        .bc_y = .periodic,
+        .reduceorderafterfixup = reduce_after_fixup,
+    });
+    defer s.deinit();
+
+    const tp = 2.0 * std.math.pi;
+    var iy: i64 = 0;
+    while (iy < s.nyi()) : (iy += 1) {
+        var ix: i64 = 0;
+        while (ix < s.nxi()) : (ix += 1) {
+            const x = g.xc(ix);
+            const y = g.yc(iy);
+            const rho = 1.0 + 0.3 * @sin(tp * x) * @cos(tp * y);
+            const uint = 0.5 + 0.1 * @cos(tp * x);
+            try s.initCell(ix, iy, 0, ppMhd(gam, rho, uint, .{ 0.1 * @sin(tp * y), 0.0, 0.0 }, .{ 0.05, 0.02, 0.0 }));
+        }
+    }
+    try s.setBc(0.0, true);
+    if (poison) {
+        var uu: [NV]f64 = undefined;
+        s.u.load(8, 8, 0, &uu);
+        uu[L.index(.rho)] = -uu[L.index(.rho)]; // u2p rejects → hd_fixup flagged
+        s.u.store(8, 8, 0, &uu);
+    }
+    try s.step(1.0e-3);
+    return a.dupe(f64, s.u.data);
+}
+
+test "reduceorderafterfixup: a fixup-flagged cell reconstructs one order lower" {
+    const a = std.testing.allocator;
+    // healthy state: the option must be inert (no flag ever set)
+    const clean_on = try runReduceStep(a, true, false);
+    defer a.free(clean_on);
+    const clean_off = try runReduceStep(a, false, false);
+    defer a.free(clean_off);
+    try expect(std.mem.eql(f64, clean_on, clean_off));
+
+    // poisoned cell: identical u2p failure + fixup in both runs — the only
+    // difference is the reduced reconstruction of the flagged cell
+    const poison_on = try runReduceStep(a, true, true);
+    defer a.free(poison_on);
+    const poison_off = try runReduceStep(a, false, true);
+    defer a.free(poison_off);
+    try expect(!std.mem.eql(f64, poison_on, poison_off));
+}

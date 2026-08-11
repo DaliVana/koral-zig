@@ -578,9 +578,12 @@ test "floors: postconditions and near-idempotence" {
 
             // For γ ≫ GAMMAMAXHD combined with a strong field, the
             // drift-frame reset can yield a superluminal 3-velocity. C
-            // ignores conv_vels' error there and reads an *uninitialized*
-            // ucont (u2p.c:688 + relele.c:199) — undefined behavior we
-            // refuse to mirror; such states are rejected with an error.
+            // baseline ignores conv_vels' error there and reads an
+            // *uninitialized* ucont (u2p.c:688 + relele.c:199); since the
+            // koral_lite_puffy guard ladder these states RECOVER (the
+            // pre-floor velocity is kept and n_guard_recoveries counts the
+            // event) — the catch stays only for the ZAMO path's fallible
+            // conversions.
             _ = invert.checkFloorsMhd(cfg, &pp, &geo, pgamma, fl) catch continue;
 
             // postconditions
@@ -621,6 +624,132 @@ test "floors: postconditions and near-idempotence" {
             }
         }
     }
+}
+
+test "floors: drift guard ladder recovers pathological states (koral_lite_puffy)" {
+    // γ far above GAMMAMAXHD + strong misaligned fields: before the guard
+    // ladder these swept states made the drift-frame velocity composition
+    // superluminal and checkFloorsMhd propagated VelocityConversionFailed
+    // (see the note in "floors: postconditions"). Now every drift-path state
+    // must come back without an error, with finite primitives, and the
+    // recovery counter must have counted at least one diverted state.
+    const cfg = config.Config{ .modules = &.{ .hydro, .mhd } };
+    const L = layout.VarLayout(cfg);
+    const fl = invert.FloorParams.puffy;
+    var prng = std.Random.DefaultPrng.init(0xd21f7);
+    const rng = prng.random();
+
+    const before = invert.n_guard_recoveries.load(.monotonic);
+    for (test_geoms) |tg| {
+        const geo = geometryAt(tg.coords, tg.mp, tg.x);
+        for (0..300) |_| {
+            var pp = randomState(cfg, rng, &geo, 60.0, 1.0e6);
+            // guarantee the magnetic floor fires: crush ρ and u under b²
+            pp[L.index(.rho)] *= 1e-8;
+            pp[L.index(.uu)] = pp[L.index(.rho)] * 1e-4;
+            pp[L.index(.entr)] = hydro.sFromU(pp[L.index(.rho)], pp[L.index(.uu)], pgamma);
+
+            _ = try invert.checkFloorsMhd(cfg, &pp, &geo, pgamma, fl);
+            for (0..L.count) |iv| try std.testing.expect(std.math.isFinite(pp[iv]));
+        }
+    }
+    const fired = invert.n_guard_recoveries.load(.monotonic) - before;
+    std.debug.print("drift guard ladder: {d} recoveries over the sweep\n", .{fired});
+    try std.testing.expect(fired > 0);
+}
+
+test "floors: isentropic drift floors scale u by the same factor as rho" {
+    const cfg = config.Config{ .modules = &.{ .hydro, .mhd } };
+    const L = layout.VarLayout(cfg);
+    const geo = geometryAt(.ks, puffy_mp, .{ 0, 6.0, 1.0, 0.0 });
+
+    var pp0: [L.count]f64 = @splat(0);
+    pp0[L.index(.rho)] = 1.0e-8;
+    pp0[L.index(.uu)] = 1.0e-8;
+    pp0[L.index(.vx)] = 0.1;
+    pp0[L.index(.vz)] = 0.05;
+    pp0[L.index(.b1)] = 1.0e-3;
+    pp0[L.index(.b2)] = 2.0e-4;
+    pp0[L.index(.entr)] = hydro.sFromU(pp0[L.index(.rho)], pp0[L.index(.uu)], pgamma);
+
+    // only the b²/ρ trigger may fire (b²/u pushed out of reach)
+    const base = invert.FloorParams{ .b2rhoratiomax = 50.0, .b2uuratiomax = 1e30 };
+    const u = try relele.uconUcovFromPrims(.{ pp0[L.index(.vx)], pp0[L.index(.vy)], pp0[L.index(.vz)] }, &geo);
+    const b = mhd.bconBcovBsqFrom4vel(.{ pp0[L.index(.b1)], pp0[L.index(.b2)], pp0[L.index(.b3)] }, u.con, u.cov, &geo);
+    try std.testing.expect(b.bsq > base.b2rhoratiomax * pp0[L.index(.rho)]); // floor fires
+    const f = b.bsq / (base.b2rhoratiomax * pp0[L.index(.rho)]);
+
+    var pp_std = pp0;
+    _ = try invert.checkFloorsMhd(cfg, &pp_std, &geo, pgamma, base);
+    try std.testing.expectEqual(pp0[L.index(.rho)] * f, pp_std[L.index(.rho)]);
+    try std.testing.expectEqual(pp0[L.index(.uu)], pp_std[L.index(.uu)]); // fuu == 1
+
+    var iso = base;
+    iso.isentropic_b2rhofloors = true;
+    var pp_iso = pp0;
+    _ = try invert.checkFloorsMhd(cfg, &pp_iso, &geo, pgamma, iso);
+    try std.testing.expectEqual(pp0[L.index(.rho)] * f, pp_iso[L.index(.rho)]);
+    try std.testing.expectEqual(pp0[L.index(.uu)] * f, pp_iso[L.index(.uu)]); // u/ρ preserved
+}
+
+test "floors: b2uufloor=false disables the b²/u trigger entirely" {
+    const cfg = config.Config{ .modules = &.{ .hydro, .mhd } };
+    const L = layout.VarLayout(cfg);
+    const geo = geometryAt(.ks, puffy_mp, .{ 0, 6.0, 1.0, 0.0 });
+
+    // b² > 100·u (trigger) but b² ≪ 100·ρ (no density floor)
+    var pp0: [L.count]f64 = @splat(0);
+    pp0[L.index(.rho)] = 1.0e-4;
+    pp0[L.index(.uu)] = 1.0e-9;
+    pp0[L.index(.vx)] = 0.05;
+    pp0[L.index(.b1)] = 1.0e-3;
+    pp0[L.index(.entr)] = hydro.sFromU(pp0[L.index(.rho)], pp0[L.index(.uu)], pgamma);
+
+    var pp_on = pp0;
+    const ret_on = try invert.checkFloorsMhd(cfg, &pp_on, &geo, pgamma, .{});
+    try std.testing.expectEqual(@as(i32, -1), ret_on);
+    try std.testing.expect(pp_on[L.index(.uu)] > pp0[L.index(.uu)]); // u raised by fuu
+
+    var pp_off = pp0;
+    const ret_off = try invert.checkFloorsMhd(cfg, &pp_off, &geo, pgamma, .{ .b2uufloor = false });
+    try std.testing.expectEqual(@as(i32, 0), ret_off);
+    for (0..L.count) |iv| try std.testing.expectEqual(pp0[iv], pp_off[iv]); // untouched
+}
+
+test "floors: horizon_x1 floors in the fluid frame — velocity untouched" {
+    const cfg = config.Config{ .modules = &.{ .hydro, .mhd } };
+    const L = layout.VarLayout(cfg);
+    const geo = geometryAt(.ks, puffy_mp, .{ 0, 6.0, 1.0, 0.0 }); // xxvec[1] = 6
+
+    var pp0: [L.count]f64 = @splat(0);
+    pp0[L.index(.rho)] = 1.0e-8;
+    pp0[L.index(.uu)] = 1.0e-8;
+    pp0[L.index(.vx)] = 0.1;
+    pp0[L.index(.vy)] = 0.02;
+    pp0[L.index(.vz)] = 0.05;
+    pp0[L.index(.b1)] = 1.0e-3;
+    pp0[L.index(.b2)] = 2.0e-4;
+    pp0[L.index(.entr)] = hydro.sFromU(pp0[L.index(.rho)], pp0[L.index(.uu)], pgamma);
+
+    const guards_before = invert.n_guard_recoveries.load(.monotonic);
+
+    // "inside the horizon" (x1 = 6 < 7): scalars floored, velocity kept as-is
+    var pp_in = pp0;
+    const ret = try invert.checkFloorsMhd(cfg, &pp_in, &geo, pgamma, .{ .horizon_x1 = 7.0 });
+    try std.testing.expectEqual(@as(i32, -1), ret);
+    try std.testing.expect(pp_in[L.index(.rho)] > pp0[L.index(.rho)]);
+    try std.testing.expectEqual(pp0[L.index(.vx)], pp_in[L.index(.vx)]);
+    try std.testing.expectEqual(pp0[L.index(.vy)], pp_in[L.index(.vy)]);
+    try std.testing.expectEqual(pp0[L.index(.vz)], pp_in[L.index(.vz)]);
+    // the fluid-frame branch is policy, not a recovery — no counter bump
+    try std.testing.expectEqual(guards_before, invert.n_guard_recoveries.load(.monotonic));
+
+    // default (−inf): the drift update engages and moves the velocity
+    var pp_out = pp0;
+    _ = try invert.checkFloorsMhd(cfg, &pp_out, &geo, pgamma, .{});
+    try std.testing.expect(pp_out[L.index(.vx)] != pp0[L.index(.vx)] or
+        pp_out[L.index(.vy)] != pp0[L.index(.vy)] or
+        pp_out[L.index(.vz)] != pp0[L.index(.vz)]);
 }
 
 test "u2p cascade: clean state uses the hot branch; garbage requests fixup" {

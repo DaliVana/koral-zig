@@ -75,14 +75,18 @@ eerhoratiomax = 1.0e20    # EERHORATIOMAX  (was 1e4)
 eeuuratiomin  = 1.0e-20   # EEUURATIOMIN
 eeuuratiomax  = 1.0e20    # EEUURATIOMAX
 b2rhoratiomax = 50.0      # B2RHORATIOMAX
-b2uuratiomax  = 1.0e3     # B2UURATIOMAX   (defined but DEAD: the b²/uu floor is
-                          #   commented out in koral_lite_puffy's ZAMO build)
+b2uuratiomax  = 1.0e3     # B2UURATIOMAX   (parsed but moot: b2uufloor=false below)
 gammamaxhd    = 10.0      # GAMMAMAXHD
 gammamaxrad   = 10.0      # GAMMAMAXRAD
-# B2RHOFLOORFRAME ZAMOFRAME + ISENTROPIC_B2RHOFLOORS + B2RHOFLOOR_BACKUP_FFFRAME:
-# inject the b²/ρ floor mass in the normal-observer (ZAMO) frame, isentropically,
-# with a fluid-frame backup on u2p failure (was DRIFTFRAME in the validated build).
-zamo_floor_frame = true
+# koral_lite_puffy floor policy as of the 2026-08-11 fork update (u2p.c):
+# B2RHOFLOORFRAME DRIFTFRAME + ISENTROPIC_B2RHOFLOORS, the b²/u trigger
+# commented out entirely, and fluid-frame floors (velocity untouched) inside
+# the BH horizon. The earlier ZAMO build is still available: zamo_floor_frame
+# = true (it ignores the three switches below).
+zamo_floor_frame = false
+isentropic_b2rhofloors = true       # ISENTROPIC_B2RHOFLOORS (drift path)
+b2uufloor = false                   # b² > B2UURATIOMAX·u trigger disabled (u2p.c:611)
+fluid_floor_inside_horizon = true   # fluid-frame floors below r_horizon
 
 # --- implicit rad–gas solver (define.h RADIMP*) -----------------------------
 # Only the two that differ from ImplicitParams.puffy are set; RADIMPCONV 1e-10,
@@ -96,10 +100,16 @@ opdamp_maxlevels = 3        # OPDAMPINIMPLICIT=1, OPDAMPMAXLEVELS=3
 opdamp_factor    = 10.0     # OPDAMPFACTOR — failed solves retry with the four-force
                             #   scaled by 10⁻ˡᵉᵛᵉˡ (1, 0.1, 0.01, 0.001)
 doradimpfixups   = true     # DORADIMPFIXUPS=1 — neighbour-average failed cells
+# koral_lite_puffy copy_state_opac (2026-08-11): opacities frozen at the
+# pre-solve state across the whole implicit Newton solve — keeps the MESA
+# table's non-monotonic κ(T) (iron bump) out of the Jacobian.
+radimp_lag_opac  = true
 
 # --- reconstruction / wavespeed near-boundary tweaks (define.h) -------------
 [recon]
 reduceorderatbh          = true   # REDUCEORDERATBH — PPM→linear inside the horizon
+reduceorderafterfixup    = true   # REDUCEORDERAFTERFIXUP (2026-08-11) — fixup-flagged
+                                  #   cells reconstruct one order lower next sweep
 dampradwavespeednearaxis = 2      # DAMPRADWAVESPEEDNEARAXIS + …NCELLS 2
 
 # --- opacities & composition (define.h) -------------------------------------

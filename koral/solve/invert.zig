@@ -34,6 +34,15 @@ pub const Etype = enum { hot, entropy };
 /// C: B2RHOFLOORFRAME — the frame the b²/ρ magnetic floor injects new mass in.
 pub const B2FloorFrame = enum { driftframe, zamoframe };
 
+/// Times a drift-frame floor guard diverted from the baseline algebra
+/// (near-zero field bail-out, ucondr⁰ bail-out, xx clamp, vpar damping, or
+/// the VEL3→VELR fallback) — koral_lite_puffy prints a line per event; we
+/// count instead (checkFloorsMhd runs inside parallelRange, and the guards
+/// fire per face state, so a printf would both race and flood). Cumulative
+/// over the process, summed across MPI ranks by the scalars collective;
+/// order-insensitive, so the total is deterministic at any thread count.
+pub var n_guard_recoveries = std.atomic.Value(u64).init(0);
+
 /// Floor thresholds (C: choices.h defaults, overridden by PROBLEMS/*/define.h).
 pub const FloorParams = struct {
     rhofloor: f64 = 1.0e-50,
@@ -46,6 +55,22 @@ pub const FloorParams = struct {
     /// ZAMOFRAME (koral_lite_puffy) injects the new mass in the normal-observer
     /// frame, isentropically, with a fluid-frame backup on u2p failure.
     b2rhofloorframe: B2FloorFrame = .driftframe,
+    /// koral_lite_puffy ISENTROPIC_B2RHOFLOORS, drift path: the injected mass
+    /// carries the pre-floor u/ρ (u scaled by the same factor f as ρ) instead
+    /// of the separate b²/u factor fuu — floored gas blends in thermally
+    /// rather than coming out hot/cold. The ZAMO path is already isentropic.
+    isentropic_b2rhofloors: bool = false,
+    /// The b² > b2uuratiomax·u internal-energy floor (drift frame only, as in
+    /// C). koral_lite_puffy comments the trigger out entirely (u2p.c:611);
+    /// false reproduces that. Default true = the validated baseline.
+    b2uufloor: bool = true,
+    /// koral_lite_puffy (u2p.c, 2026-08-11): below this internal radial
+    /// coordinate the drift branch skips the velocity algebra and floors in
+    /// the fluid frame (velocity untouched) — the betapar/ucondr cancellations
+    /// are at their worst inside the horizon and nothing there reaches the
+    /// flow outside. Set by the problem to x1(r_horizon) (monotone r ⇒ a
+    /// coordinate-local compare); −inf (default) keeps the branch dead.
+    horizon_x1: f64 = -std.math.inf(f64),
 
     /// The bare choices.h defaults (what a define.h without floor overrides
     /// gets) — used by the M5/M6 oracle problems, whose define.h sets only
@@ -506,8 +531,11 @@ pub fn checkFloorsMhd(
             floored = true;
         }
         // koral_lite_puffy's ZAMO build comments out the b²/uu (CASE 2) floor,
-        // so only b²/ρ triggers there; the validated DRIFTFRAME build keeps it.
-        if (floors.b2rhofloorframe == .driftframe and b.bsq > floors.b2uuratiomax * pp[L.index(.uu)]) {
+        // so only b²/ρ triggers there; the validated DRIFTFRAME build keeps it
+        // (b2uufloor=false reproduces the fork's fully-disabled trigger).
+        if (floors.b2rhofloorframe == .driftframe and floors.b2uufloor and
+            b.bsq > floors.b2uuratiomax * pp[L.index(.uu)])
+        {
             fuu = b.bsq / (floors.b2uuratiomax * pp[L.index(.uu)]);
             floored = true;
         }
@@ -518,38 +546,105 @@ pub fn checkFloorsMhd(
                     // new mass/energy in the drift frame (Ressler+2017)
                     const wold = pp[L.index(.rho)] + pp[L.index(.uu)] * pgamma;
                     pp[L.index(.rho)] *= f;
-                    pp[L.index(.uu)] *= fuu;
+                    pp[L.index(.uu)] *= if (floors.isentropic_b2rhofloors) f else fuu;
                     const wnew = pp[L.index(.rho)] + pp[L.index(.uu)] * pgamma;
 
-                    const betapar = -b.bcon[0] / (b.bsq * u.con[0]);
-                    var betasq = betapar * betapar * b.bsq;
-                    const betasqmax = 1.0 - 1.0 / (floors.gammamaxhd * floors.gammamaxhd);
-                    if (betasq > betasqmax) betasq = betasqmax;
-                    const gammapar = 1.0 / @sqrt(1.0 - betasq);
+                    // Inside the horizon (horizon_x1 set): scalars only, in the
+                    // fluid frame — the pre-floor velocity is kept as-is.
+                    // Otherwise: the drift velocity update, hardened by the
+                    // koral_lite_puffy guard ladder (u2p.c, 2026-08-11). Every
+                    // guard is check-then-fallback: on healthy states the
+                    // computed values are bit-identical to the unguarded
+                    // baseline. On a bail-out the pre-floor velocity is kept —
+                    // it came from already-accepted primitives, so it is always
+                    // physical (C instead round-trips ucon through VEL3→VELR,
+                    // the same velocity up to roundoff).
+                    var guarded = false;
+                    if (geom.xxvec[1] >= floors.horizon_x1) driftvel: {
+                        const Bcon = [4]f64{ 0, pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] };
+                        const Bcov = relele.lowerVec(Bcon, geom);
+                        const Bsq = relele.dot(Bcon, Bcov);
+                        const Bmag = @sqrt(Bsq);
 
-                    var ucondr: [4]f64 = undefined;
-                    for (0..4) |iv| ucondr[iv] = gammapar * (u.con[iv] + betapar * b.bcon[iv]);
+                        // no well-defined field direction: bail before the b²/B
+                        // divisions (NaN bsq/Bsq fails these `>` checks too)
+                        if (!(b.bsq > 1.0e-10 * wnew and Bsq > 1.0e-10 * wnew)) {
+                            guarded = true;
+                            break :driftvel;
+                        }
 
-                    const Bcon = [4]f64{ 0, pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] };
-                    const Bcov = relele.lowerVec(Bcon, geom);
-                    const Bmag = @sqrt(relele.dot(Bcon, Bcov));
+                        const betapar = -b.bcon[0] / (b.bsq * u.con[0]);
+                        var betasq = betapar * betapar * b.bsq;
+                        const betasqmax = 1.0 - 1.0 / (floors.gammamaxhd * floors.gammamaxhd);
+                        if (betasq > betasqmax) betasq = betasqmax;
+                        const gammapar = 1.0 / @sqrt(1.0 - betasq);
 
-                    const udotB = relele.dot(u.con, Bcov);
-                    const QdotB = udotB * wold * u.con[0];
+                        var ucondr: [4]f64 = undefined;
+                        for (0..4) |iv| ucondr[iv] = gammapar * (u.con[iv] + betapar * b.bcon[iv]);
 
-                    const xx = 2.0 * QdotB / (Bmag * wnew * ucondr[0]);
-                    const vpar = xx / (ucondr[0] * (1.0 + @sqrt(1.0 + xx * xx)));
+                        // ucondr[0] is a raw divisor twice below and can land at
+                        // ~0 from a cancellation between u.con[0] and the field
+                        // term even when both field guards above pass
+                        if (!std.math.isFinite(ucondr[0]) or @abs(ucondr[0]) < 1.0e-10) {
+                            guarded = true;
+                            break :driftvel;
+                        }
 
-                    var vcon: [4]f64 = undefined;
-                    vcon[0] = 1.0;
-                    for (1..4) |iv| {
-                        vcon[iv] = vpar * Bcon[iv] / Bmag + ucondr[iv] / ucondr[0];
+                        const udotB = relele.dot(u.con, Bcov);
+                        const QdotB = udotB * wold * u.con[0];
+
+                        var xx = 2.0 * QdotB / (Bmag * wnew * ucondr[0]);
+                        // negated comparisons so a NaN xx (a literal 0/0) is
+                        // caught too — every plain comparison with NaN is false.
+                        // vpar → ±1/ucondr[0] as |xx| → ∞; the clamp enforces
+                        // that limit instead of computing through the overflow.
+                        if (!(xx <= 1.0e10)) {
+                            xx = 1.0e10;
+                            guarded = true;
+                        }
+                        if (!(xx >= -1.0e10)) {
+                            xx = -1.0e10;
+                            guarded = true;
+                        }
+                        var vpar = xx / (ucondr[0] * (1.0 + @sqrt(1.0 + xx * xx)));
+
+                        var vcon: [4]f64 = undefined;
+                        vcon[0] = 1.0;
+                        for (1..4) |iv| {
+                            vcon[iv] = vpar * Bcon[iv] / Bmag + ucondr[iv] / ucondr[0];
+                        }
+
+                        // vpar and the drift velocity are each subluminal, but
+                        // their plain 3-vector sum is not a relativistic
+                        // composition and can leave the light cone. Halve vpar
+                        // toward the always-valid pure drift velocity until the
+                        // u^t quadratic denominator is safely timelike (same
+                        // check as fill_utinvel3 / utFromSpatialUcon).
+                        var idamp: usize = 0;
+                        while (idamp < 50) : (idamp += 1) {
+                            var bv: f64 = 0.0;
+                            var cv: f64 = 0.0;
+                            for (1..4) |iv| {
+                                bv += vcon[iv] * gg[0][iv];
+                                for (1..4) |jv| cv += vcon[iv] * vcon[jv] * gg[iv][jv];
+                            }
+                            if (gg[0][0] + 2.0 * bv + cv < -1.0 / (floors.gammamaxhd * floors.gammamaxhd)) break;
+                            guarded = true;
+                            vpar *= 0.5;
+                            for (1..4) |iv| {
+                                vcon[iv] = vpar * Bcon[iv] / Bmag + ucondr[iv] / ucondr[0];
+                            }
+                        }
+
+                        const ucont = relele.convert(vcon, .vel3, .velr, geom, .recompute_ut) catch {
+                            guarded = true;
+                            break :driftvel;
+                        };
+                        pp[L.index(.vx)] = ucont[1];
+                        pp[L.index(.vy)] = ucont[2];
+                        pp[L.index(.vz)] = ucont[3];
                     }
-
-                    const ucont = try relele.convert(vcon, .vel3, .velr, geom, .recompute_ut);
-                    pp[L.index(.vx)] = ucont[1];
-                    pp[L.index(.vy)] = ucont[2];
-                    pp[L.index(.vz)] = ucont[3];
+                    if (guarded) _ = n_guard_recoveries.fetchAdd(1, .monotonic);
                 },
                 .zamoframe => {
                     // C: u2p.c:693-758 (B2RHOFLOORFRAME==ZAMOFRAME). Inject the

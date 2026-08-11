@@ -60,6 +60,8 @@ test "golden: solve_implicit_lab (full rung ladder) vs C" {
     var n_rung_agree: usize = 0;
     var n_both_ok: usize = 0;
     var n_compared: usize = 0;
+    var n_entropy_flip: usize = 0;
+    var n_agree_basis: usize = 0;
     var iter_diff_max: i64 = 0;
     var worst_pp: f64 = 0;
     var worst_rec: usize = 0;
@@ -77,6 +79,22 @@ test "golden: solve_implicit_lab (full rung ladder) vs C" {
 
         const c_ok = r.out[0] == 0.0;
         if (c_ok) n_ok_c += 1;
+
+        // DELIBERATE C DIVERGENCE (implicit.zig header): our ENTROPYEQ solves
+        // the intended Tgas·(Sgas − Sgas0) residual, C's the buggy Tgas-for-S
+        // one — so an outcome flip where the SUCCEEDING side used an entropy
+        // rung is the fix working, not a transcription error. Exclude those
+        // records from the ok-agreement basis (they are counted and printed);
+        // energy-rung outcomes are unaffected (sgas is unread there) and stay
+        // under the original bar.
+        const z_entropy_ok = res.ok and res.whicheq == .entropy;
+        const c_entropy_ok = c_ok and
+            @as(i32, @intFromFloat(r.out[2])) == @intFromEnum(implicit.WhichEq.entropy);
+        if (c_ok != res.ok and (z_entropy_ok or c_entropy_ok)) {
+            n_entropy_flip += 1;
+            continue;
+        }
+        n_agree_basis += 1;
         if (c_ok == res.ok) n_ok_agree += 1;
 
         if (c_ok and res.ok) {
@@ -126,19 +144,24 @@ test "golden: solve_implicit_lab (full rung ladder) vs C" {
     }
 
     std.debug.print(
-        "implicit golden: C ok {d}/{d}; ok-agreement {d}/{d}; rung agreement {d}/{d}; " ++
-            "residual-verified compared {d}; max iter diff {d}; worst pp dev {e:.3} (rec {d})\n",
-        .{ n_ok_c, g.nrec, n_ok_agree, g.nrec, n_rung_agree, n_both_ok, n_compared, iter_diff_max, worst_pp, worst_rec },
+        "implicit golden: C ok {d}/{d}; ok-agreement {d}/{d} (+{d} entropy-rung flips excluded); " ++
+            "rung agreement {d}/{d}; residual-verified compared {d}; max iter diff {d}; " ++
+            "worst pp dev {e:.3} (rec {d})\n",
+        .{ n_ok_c, g.nrec, n_ok_agree, n_agree_basis, n_entropy_flip, n_rung_agree, n_both_ok, n_compared, iter_diff_max, worst_pp, worst_rec },
     );
 
-    // success/failure agreement on ≥ 97% of records (was ≥ 98%: the
+    // success/failure agreement on ≥ 97% of the basis records (was ≥ 98%: the
     // koral_lite entropy-derivative fix, dwmrho0dW = 1/gamma -> 1/gamma^2,
     // shifts the Newton path enough to move ~8/336 records across the
-    // convergence boundary — 328/336 = 97.6% observed); matching rungs on
-    // ≥ 90% of joint successes; a healthy residual-verified sample whose
-    // primitives agree at 1e-6 (both sides stop at 1e-10 residuals; the
-    // residual→root conditioning at τ ≫ 1 justifies the bound)
-    try std.testing.expect(n_ok_agree * 100 >= g.nrec * 97);
+    // convergence boundary — 328/336 = 97.6% observed). Entropy-rung outcome
+    // flips are excluded above (the deliberate Sgas fix; ~21/336 observed) but
+    // bounded here so a regression that floods records onto entropy rungs
+    // still fails. Matching rungs on ≥ 90% of joint successes; a healthy
+    // residual-verified sample whose primitives agree at 1e-6 (both sides
+    // stop at 1e-10 residuals; the residual→root conditioning at τ ≫ 1
+    // justifies the bound)
+    try std.testing.expect(n_ok_agree * 100 >= n_agree_basis * 97);
+    try std.testing.expect(n_entropy_flip <= 30);
     try std.testing.expect(n_rung_agree * 10 >= n_both_ok * 9);
     try std.testing.expect(n_compared >= 40);
     try std.testing.expect(worst_pp <= 1e-6);

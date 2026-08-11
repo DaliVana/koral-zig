@@ -124,6 +124,30 @@ pub const Params = struct {
     // the b²/ρ floor injects new mass in the ZAMO (normal-observer) frame,
     // isentropically (ISENTROPIC_B2RHOFLOORS), with a fluid-frame backup.
     zamo_floor_frame: ?bool = null,
+    /// koral_lite_puffy ISENTROPIC_B2RHOFLOORS on the DRIFT path: the b²/ρ
+    /// floor scales u by the same factor as ρ (injected mass carries the
+    /// pre-floor u/ρ). null = keep the built-in (off — u scales by the
+    /// separate b²/u factor, the validated baseline).
+    isentropic_b2rhofloors: ?bool = null,
+    /// The b² > b2uuratiomax·u internal-energy floor (drift frame). false =
+    /// koral_lite_puffy, which comments the trigger out (u2p.c:611).
+    /// null = keep the built-in (on).
+    b2uufloor: ?bool = null,
+    /// koral_lite_puffy (u2p.c, 2026-08-11): inside the BH horizon the b²/ρ
+    /// floor skips the drift-frame velocity algebra and floors in the fluid
+    /// frame (velocity untouched) — the drift algebra is cancellation-prone
+    /// exactly there. null = keep the built-in (off).
+    fluid_floor_inside_horizon: ?bool = null,
+    /// koral_lite_puffy REDUCEORDERAFTERFIXUP: cells that needed a u2p /
+    /// rad / implicit fixup on the previous step reconstruct one order lower
+    /// this step. null = keep the built-in (off).
+    reduceorderafterfixup: ?bool = null,
+    /// koral_lite_puffy copy_state_opac: freeze opacities at the pre-solve
+    /// state across the whole implicit Newton solve (kappa's T-dependence
+    /// stays out of the iteration/Jacobian — needed for non-monotonic
+    /// tabulated opacities, e.g. mesa_table's iron bump). null = keep the
+    /// built-in (off — per-iteration recompute, the validated behavior).
+    radimp_lag_opac: ?bool = null,
 
     // gas composition (C: HFRAC/HEFRAC; MFRAC is derived = 1−hfrac−hefrac).
     // When hfrac is set the μ's come from the composition formula (no MU_*

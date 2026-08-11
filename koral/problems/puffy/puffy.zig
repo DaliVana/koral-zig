@@ -159,6 +159,10 @@ pub var scattering: bool = true;
 /// MESA Rosseland opacity table (C: MESA_KAPPA). null = off. Owned by the
 /// driver (`main.zig` loads it and points `channels.mesa` at it).
 pub var mesa_table: ?mesa.MesaTable = null;
+/// koral_lite_puffy fluid-frame floors inside the horizon (u2p.c, 2026-08-11).
+/// Consumed by `simOptions()`, which turns it into floors.horizon_x1 — the
+/// spin (mp.a) is only final there.
+pub var fluid_floor_inside_horizon: bool = false;
 
 pub const lt = struct {
     pub const xi: f64 = 0.995; // LT_XI
@@ -227,9 +231,17 @@ pub fn applyPhysicsOverrides(p: *const params_mod.Params) void {
     if (p.scattering) |s| scattering = s;
     // magnetic floor frame (C: B2RHOFLOORFRAME)
     if (p.zamo_floor_frame) |z| floor_params.b2rhofloorframe = if (z) .zamoframe else .driftframe;
+    // koral_lite_puffy drift-floor policy (2026-08-11): isentropic scaling,
+    // b²/u trigger off, fluid-frame floors inside the horizon. The horizon x1
+    // itself is computed in simOptions() — mp.a is only final there.
+    if (p.isentropic_b2rhofloors) |b| floor_params.isentropic_b2rhofloors = b;
+    if (p.b2uufloor) |b| floor_params.b2uufloor = b;
+    if (p.fluid_floor_inside_horizon) |b| fluid_floor_inside_horizon = b;
     // implicit opacity-damping ladder (C: OPDAMPINIMPLICIT / OPDAMPMAXLEVELS / OPDAMPFACTOR)
     if (p.opdamp_maxlevels) |n| impl_params.opdamp_maxlevels = n;
     if (p.opdamp_factor) |v| impl_params.opdamp_factor = v;
+    // koral_lite_puffy implicit-solver options (2026-08-11)
+    if (p.radimp_lag_opac) |b| impl_params.lag_opac = b;
     // rmhd floors / ceilings
     if (p.rhofloor) |v| floor_params.rhofloor = v;
     if (p.uurhoratiomin) |v| floor_params.uurhoratiomin = v;
@@ -263,12 +275,18 @@ pub fn simOptions(comptime SimT: type, p: *const params_mod.Params) SimT.Options
     // preset turns scattering off (scattering=false), zeroing both the
     // scattering opacity and the Compton four-force term (∝ κ_es).
     if (!scattering) opac.kappaes = .none;
+    var floors = floor_params;
+    // koral_lite_puffy horizon fluid-frame floors: precompute the MKS2 x1 of
+    // the BL horizon (x1 = ln(r − r0) is monotone in r), so checkFloorsMhd
+    // compares coordinate-locally. Left at −inf (dead branch) when off.
+    if (fluid_floor_inside_horizon)
+        floors.horizon_x1 = @log(metric.rHorizonBL(mp.a) - mp.mksr0);
     return .{
         .coords = .mks2,
         .mp = mp,
         .gam = gam,
         .tsteplim = p.tsteplim,
-        .floors = floor_params,
+        .floors = floors,
         .rad = rad_params,
         .opac = opac,
         .implicit = impl_params,
@@ -280,6 +298,7 @@ pub fn simOptions(comptime SimT: type, p: *const params_mod.Params) SimT.Options
         // in the validated build, retargeted by the AGN preset (null = off).
         .do_radimp_fixups = p.doradimpfixups orelse false,
         .reduceorderatbh = p.reduceorderatbh orelse false,
+        .reduceorderafterfixup = p.reduceorderafterfixup orelse false,
         .dampradwavespeednearaxis = p.dampradwavespeednearaxis orelse 0,
         .bc_x = .specific,
         .bc_y = .specific,

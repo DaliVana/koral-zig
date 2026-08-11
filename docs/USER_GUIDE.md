@@ -285,6 +285,9 @@ preset, e.g. `FloorParams.puffy`; a set value overrides it)
 | `b2uuratiomax` | `50.0` | `b²/uint` ceiling. |
 | `gammamaxhd` / `gammamaxrad` | `10.0` / `10.0` | Max gas / radiation Lorentz factor. |
 | `zamo_floor_frame` | off | `true` = inject the `b²/ρ` floor mass in the ZAMO frame, isentropically (C `B2RHOFLOORFRAME`; disables the `b²/u` floor). Default drift frame. |
+| `isentropic_b2rhofloors` | off | Drift path scales `uint` by the same factor as `rho` — injected mass carries the pre-floor `u/ρ` (koral_lite_puffy `ISENTROPIC_B2RHOFLOORS`; AGN: on). |
+| `b2uufloor` | on | `false` disables the `b²/uint` ceiling entirely (koral_lite_puffy comments the trigger out; AGN: off). |
+| `fluid_floor_inside_horizon` | off | Below `r_horizon` the drift-frame velocity algebra is skipped and floors act in the fluid frame, velocity untouched (koral_lite_puffy 2026-08-11; AGN: on). |
 
 **Optional physics overrides** (same null-means-keep-preset semantics; consumed
 by the PUFFY driver's `applyPhysicsOverrides` — these are how `puffy_agn.toml`
@@ -296,6 +299,8 @@ retargets the run without a recompile; see `docs/PUFFY_AGN_DIVERGENCES.md`)
 | `opdamp_maxlevels`, `opdamp_factor` | Opacity-damping retry ladder for failed implicit solves (`OPDAMPINIMPLICIT`; AGN: 3 levels ×10). |
 | `doradimpfixups` | Neighbour-average failed-implicit cells (`DORADIMPFIXUPS`; AGN: on). |
 | `reduceorderatbh` | Drop one reconstruction order inside the BH horizon (`REDUCEORDERATBH`). |
+| `reduceorderafterfixup` | Cells whose most recent u2p/implicit pass demanded a fixup reconstruct one order lower next sweep (koral_lite_puffy `REDUCEORDERAFTERFIXUP`; AGN: on). |
+| `radimp_lag_opac` | Freeze opacities at the pre-solve state across the whole implicit Newton solve (koral_lite_puffy `copy_state_opac`; needed for non-monotonic `mesa_table` κ; AGN: on). |
 | `dampradwavespeednearaxis` | Within N cells of each pole, keep the radiative wavespeed at the undamped 1/3 (`DAMPRADWAVESPEEDNEARAXIS`; AGN: 2). |
 | `bremsstrahlung`, `kleinnishina` | Opacity-channel toggles. |
 | `synchrotron_bridge` | Replace the Terelfactor NR suppression with the Ramesh NR bridge (`USE_SYNCHROTRON_BRIDGE_FUNCTIONS`). |
@@ -382,10 +387,10 @@ whitespace-separated text file, one row per output cadence, in **GU/code units**
 The header line is:
 
 ```
-# t dt nstep mass mdot radlum totallum H/R maxPmag/Ptot n_hdfix n_radimpfail n_nan
+# t dt nstep mass mdot radlum totallum H/R maxPmag/Ptot n_hdfix n_radimpfail n_nan n_floorguard
 ```
 
-The 12 columns of a `ScalarRow` (`koral/io/dump.zig`), and where each is computed
+The 13 columns of a `ScalarRow` (`koral/io/dump.zig`), and where each is computed
 (`koral/io/scalars.zig`):
 
 | Column | Meaning | Source |
@@ -402,6 +407,7 @@ The 12 columns of a `ScalarRow` (`koral/io/dump.zig`), and where each is compute
 | `n_hdfix` | Count of cells that needed an HD inversion fixup. | `collectDiag` |
 | `n_radimpfail` | Count of implicit radiative-source failures. | `Sim.n_radimp_failures` |
 | `n_nan` | Count of cells with a non-finite primitive. | `collectDiag` |
+| `n_floorguard` | Cumulative drift-floor guard recoveries (koral_lite_puffy guard ladder; 0 on a healthy run). | `invert.n_guard_recoveries` |
 
 Print precision (from `appendScalarLine`): `t/mass/mdot/radlum/totallum` at
 `{e:.10}`, `dt/H/R/β⁻¹` at `{e:.6}`, counters/`nstep` as integers.

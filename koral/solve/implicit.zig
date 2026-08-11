@@ -13,11 +13,18 @@
 //!               (RADIMP_START_WITH_BISECT, on in PUFFY)
 //!
 //! C-fidelity notes:
-//!  * The 4D ENTROPYEQ residual reads `S = state->Tgas` where Sgas is
-//!    obviously intended (rad.c:1749/1767) — the entropy rungs solve
-//!    Tgas·(Tgas − Sgas0) = dτ·Ĝ⁰. Transcribed as-is; the 1D bisection's
-//!    entropy branch uses Sgas correctly (and is never reached anyway:
-//!    the bisect always runs the energy equation).
+//!  * DELIBERATE C DIVERGENCE: the C 4D ENTROPYEQ residual reads
+//!    `S = state->Tgas` where Sgas is obviously intended (rad.c:1749/1767)
+//!    — the entropy rungs solve Tgas·(Tgas − Sgas0) = dτ·Ĝ⁰. We use Sgas
+//!    (the intended equation; koral_lite_puffy fixed the same bug,
+//!    2026-08-11). Entropy rungs are only reachable when every energy rung
+//!    has failed; energy-rung results are bit-unaffected (sgas is unread
+//!    there). ~21/336 records of the rad_implicit oracle flip
+//!    success/failure on entropy rungs because of this — the implicit
+//!    golden counts and excludes exactly those flips
+//!    (implicit_golden_tests.zig). The 1D bisection's entropy branch always
+//!    used Sgas (and is never reached anyway: the bisect always runs the
+//!    energy equation).
 //!  * The 1D bisection's RAD-branch residual uses pp0[EE]/ratio where
 //!    ·ratio would reproduce Ehat0 (rad.c:1929) — transcribed as-is (it
 //!    only shapes the starting guess).
@@ -98,6 +105,14 @@ pub const ImplicitParams = struct {
     opdamp_maxlevels: usize = 0, // OPDAMPMAXLEVELS (0 when OPDAMPINIMPLICIT off)
     opdamp_factor: f64 = 3.0, // OPDAMPFACTOR
 
+    /// koral_lite_puffy copy_state_opac (rad.c/physics.c, 2026-08-11): freeze
+    /// the opacities at the once-per-solve reference state (state00) for the
+    /// whole 4D Newton solve — initial fill, Jacobian perturbations, and trial
+    /// steps — so κ's own T-dependence doesn't enter the iteration. Tabulated
+    /// non-monotonic opacities (the MESA iron bump) can otherwise defeat
+    /// convergence. Off = the validated per-iteration recompute.
+    lag_opac: bool = false,
+
     /// Zig-only, no C counterpart (parallelization plan §2.3 rank 1):
     /// evaluate the FD Jacobian's 4 perturbed residuals as lanes of one
     /// @Vector(4, f64) batch. Bit-identical to the scalar loop (gated in
@@ -108,10 +123,13 @@ pub const ImplicitParams = struct {
     /// Zig-only (code review 2026-07-06, hot-path finding #4): fill the
     /// per-iteration RadState via the slim path — skip the entropy Sgas and
     /// the number-averaged / gas-Rosseland opacity channels that the residual
-    /// never reads (~8 of ~22 transcendentals per evaluation). The reference
-    /// state00 stays full. Every value the Newton iteration consumes is
-    /// bit-identical to the full fill (gated in simd_tests.zig: on == off over
-    /// the full ladder), so goldens are unaffected; flip off to A/B.
+    /// never reads on the ENERGY rungs (~8 of ~22 transcendentals per
+    /// evaluation). The entropy rungs read st.sgas (see the ENTROPYEQ note in
+    /// the module header), so solve4dPrimCore uses the full fill there
+    /// regardless of this switch. The reference state00 stays full. Every
+    /// value the Newton iteration consumes is bit-identical to the full fill
+    /// (gated in simd_tests.zig: on == off over the full ladder), so goldens
+    /// are unaffected; flip off to A/B.
     slim_state: bool = true,
 
     pub const cdefault = ImplicitParams{};
@@ -389,11 +407,13 @@ pub fn Solver(comptime cfg: config.Config) type {
                         err[0] = @abs(f[0]) / (@abs(pp[i_uu]) + sp(T, @abs(st0.uint)) + @abs(dtau * giff[0]));
                     }
                 } else {
-                    // C BUG transcribed (rad.c:1749/1767): S = state->Tgas,
-                    // S0 = state0->Sgas — the entropy equation compares the
-                    // gas TEMPERATURE against the initial entropy
+                    // DELIBERATE C DIVERGENCE (module header): C reads
+                    // S = state->Tgas here (rad.c:1749/1767) where Sgas is
+                    // intended; we solve the intended Tgas·(S − S0) = dτ·Ĝ⁰
+                    // with S = Sgas. Callers must hand in a FULL state fill
+                    // on entropy rungs — the slim fill zeroes st.sgas.
                     const s0 = sp(T, st0.sgas);
-                    const s = st.tgas;
+                    const s = st.sgas;
                     f[0] = tgas * (s - s0) - dtau * giff[0];
                     err[0] = @abs(f[0]) / (@abs(tgas * s) + @abs(tgas * s0) + @abs(dtau * giff[0]));
                 }
@@ -603,6 +623,22 @@ pub fn Solver(comptime cfg: config.Config) type {
         /// entropy rungs) and `pp0in` (the bisect-adjusted starting guess) are
         /// rung-independent, so solveImplicitLab computes them once and hands
         /// the same two to all six rungs (finding #10).
+        /// koral_lite_puffy copy_state_opac (physics.c, 2026-08-11): overwrite
+        /// the per-iteration state's opacities with the once-per-solve
+        /// reference values — exactly C's field set: κ_es plus the six κ
+        /// channels. Emission is NOT lagged (C's B = σT⁴/π comes from the
+        /// trial state's temperature, and tot_emissivity is output-only).
+        fn lagOpac(comptime T: type, st: *radforce.RadStateOf(T), st00: *const radforce.RadState) void {
+            const sp = simd.splat;
+            st.kappaes = sp(T, st00.kappaes);
+            st.opac.gas_abs = sp(T, st00.opac.gas_abs);
+            st.opac.rad_abs = sp(T, st00.opac.rad_abs);
+            st.opac.gas_num = sp(T, st00.opac.gas_num);
+            st.opac.rad_num = sp(T, st00.opac.rad_num);
+            st.opac.gas_ross = sp(T, st00.opac.gas_ross);
+            st.opac.rad_ross = sp(T, st00.opac.rad_ross);
+        }
+
         pub fn solve4dPrimCore(
             uu00: *const [NV]f64,
             state00: *const radforce.RadState,
@@ -627,13 +663,18 @@ pub fn Solver(comptime cfg: config.Config) type {
 
             var pp = pp0in.*;
             var fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
-            // the per-iteration state feeds only residual(), which reads none
-            // of the slim-dropped fields (Sgas / rad_num / gas_ross); the slim
-            // fill is result-identical (ip.slim_state on == off, simd_tests).
-            var state = (if (ip.slim_state)
+            // On the energy rungs the per-iteration state feeds only
+            // residual(), which reads none of the slim-dropped fields
+            // (Sgas / rad_num / gas_ross) — the slim fill is result-identical
+            // (ip.slim_state on == off, simd_tests). The ENTROPYEQ residual
+            // reads st.sgas (which slim zeroes), so entropy rungs always use
+            // the full fill.
+            const slim = ip.slim_state and whicheq != .entropy;
+            var state = (if (slim)
                 radforce.fillRadStateSlim(cfg, pp, geom, gamma_adiab, opac)
             else
                 radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac)) catch return fail;
+            if (ip.lag_opac) lagOpac(f64, &state, state00);
 
             var f1: [4]f64 = undefined;
             var f2: [4]f64 = undefined;
@@ -712,10 +753,11 @@ pub fn Solver(comptime cfg: config.Config) type {
                         ppv[iv] = .{ lane_pp[0][iv], lane_pp[1][iv], lane_pp[2][iv], lane_pp[3][iv] };
                         uuv[iv] = .{ lane_uu[0][iv], lane_uu[1][iv], lane_uu[2][iv], lane_uu[3][iv] };
                     }
-                    const stv = if (ip.slim_state)
+                    var stv = if (slim)
                         radforce.fillRadStateSlimG(cfg, V4, ppv, ggv, GGv, gamma_adiab, opac)
                     else
                         radforce.fillRadStateG(cfg, V4, ppv, ggv, GGv, gamma_adiab, opac);
+                    if (ip.lag_opac) lagOpac(V4, &stv, state00);
                     var f2v: [4]V4 = undefined;
                     _ = residualG(V4, &uuv, &ppv, &stv, uu00, state00, dt, ggv, GGv, gdetv, opac, whichprim, whicheq, whichframe, &f2v);
                     for (0..4) |i| {
@@ -736,13 +778,14 @@ pub fn Solver(comptime cfg: config.Config) type {
                             pp[j + sh] = ppp[j + sh] + del;
 
                             fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
-                            state = (if (ip.slim_state)
+                            state = (if (slim)
                                 radforce.fillRadStateSlim(cfg, pp, geom, gamma_adiab, opac)
                             else
                                 radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac)) catch blk: {
                                 fret = -2;
                                 break :blk state;
                             };
+                            if (ip.lag_opac) lagOpac(f64, &state, state00);
 
                             if (fret < -1) {
                                 if (sign > 0.0) { // both signs failed
@@ -805,13 +848,14 @@ pub fn Solver(comptime cfg: config.Config) type {
                     for (0..4) |k| pp[k + sh] = xxx[k];
 
                     fret = applyConstraints(&pp, &uu, uu00, geom, gamma_adiab, rad, ip, whichprim);
-                    state = (if (ip.slim_state)
+                    state = (if (slim)
                         radforce.fillRadStateSlim(cfg, pp, geom, gamma_adiab, opac)
                     else
                         radforce.fillRadState(cfg, pp, geom, gamma_adiab, opac)) catch blk: {
                         fret = -2;
                         break :blk state;
                     };
+                    if (ip.lag_opac) lagOpac(f64, &state, state00);
 
                     // per-step change limiters
                     var okcheck = false;

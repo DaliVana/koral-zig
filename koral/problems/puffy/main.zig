@@ -91,10 +91,11 @@ fn scalarRow(s: *SimT, dt: f64) !dump.ScalarRow {
     const ix_h = scalars.radialShellIndex(SimT, s, r_horizon);
     const ix_l = scalars.radialShellIndex(SimT, s, r_lum);
     const diag = collectDiag(s);
-    var counts = [3]f64{
+    var counts = [4]f64{
         @floatFromInt(diag.n_hd_fixup),
         @floatFromInt(s.n_radimp_failures),
         @floatFromInt(diag.n_nan),
+        @floatFromInt(koral.solve.invert.n_guard_recoveries.load(.monotonic)),
     };
     const gs = try scalars.globalScalars(SimT, s, ix_h, ix_l, r_scale, counts[0..]);
     return .{
@@ -111,6 +112,7 @@ fn scalarRow(s: *SimT, dt: f64) !dump.ScalarRow {
         .n_hd_fixup = @intFromFloat(counts[0]),
         .n_radimp_fail = @intFromFloat(counts[1]),
         .n_nan = @intFromFloat(counts[2]),
+        .n_floorguard = @intFromFloat(counts[3]),
     };
 }
 

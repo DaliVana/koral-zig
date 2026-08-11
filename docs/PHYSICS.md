@@ -611,8 +611,12 @@ non-uniform stencil (`ppm`): the interface value (eq 1.6), the monotonized slope
 profile to first order at local extrema. A linear minmod-$\theta$ limiter
 (PUFFY $\theta = 1.5$) and donor-cell are the lower-order options. PPM sets the
 ghost depth to $N_G = 3$. With `reduceorderatbh` set (C `REDUCEORDERATBH`), cells
-whose BL radius is inside the horizon drop one order (PPM → linear → donor); the
-MC/Superbee variants of C's `FLUXLIMITER` are not implemented.
+whose BL radius is inside the horizon drop one order (PPM → linear → donor); with
+`reduceorderafterfixup` set (koral_lite_puffy `REDUCEORDERAFTERFIXUP`, 2026-08-11,
+AGN preset on), a cell whose most recent u2p/implicit pass demanded a fixup also
+drops one order for the following sweep — one diffusive step to let the
+neighbour-averaged cell relax before returning to full order. The MC/Superbee
+variants of C's `FLUXLIMITER` are not implemented.
 
 ### 8.3 Approximate Riemann solvers (LAXF / HLL)
 
@@ -678,6 +682,23 @@ level $\ell$ scales the four-force by $\mathrm{opdamp} = f^{-\ell}$ (§5.2),
 accepting a weaker coupling rather than a fixup when the fully-coupled solve
 fails. Level 0 is bit-identical to the plain single pass.
 
+**Opacity lagging** (koral_lite_puffy `copy_state_opac`, 2026-08-11; params key
+`radimp_lag_opac`, default off / AGN preset on): with the flag set, $\kappa_{es}$
+and the six $\kappa$ channels are frozen at the once-per-solve reference state
+for every Newton iteration, Jacobian perturbation and trial step — κ's own
+T-dependence stays out of the iteration, which non-monotonic tabulated
+opacities (the MESA iron bump, §5.6) can otherwise destabilize. Emission is
+*not* lagged ($B = \sigma T_e^4/\pi$ follows the trial state, as in C).
+
+**Deliberate C divergence — the ENTROPYEQ residual:** C's entropy rungs read
+`S = state->Tgas` where Sgas is intended (rad.c:1749/1767), solving
+$T(T - S_0) = d\tau\,\hat G^0$. koral-zig solves the intended
+$T(S - S_0) = d\tau\,\hat G^0$ with $S = S_{\rm gas}$ (koral_lite_puffy fixed
+the same bug). Entropy rungs run only after every energy rung failed; energy
+results are bit-identical. ~21/336 records of the `rad_implicit` oracle flip
+success/failure because of this — the implicit golden counts and excludes
+exactly those flips.
+
 **CFL timestep** (`saveWavespeeds`):
 $$\frac{1}{dt} = \frac{1}{\mathrm{TSTEPLIM}}\left(\frac{w_x}{\Delta x} + \frac{w_y}{\Delta y} + \frac{w_z}{\Delta z}\right),$$
 with $w_d$ the maximum wave-speed magnitude (radiation uses the *unlimited*
@@ -702,9 +723,22 @@ These bound the coldest/hottest gas so the EOS and entropy stay finite.
 $b^2 > b^2_{u,\max}u$ (both $= 50$ for PUFFY), mass and internal energy are
 *added in the drift frame* so total momentum is preserved, capping the
 force-free-like magnetization. This is the numerical floor that limits how
-force-free the jet funnel can get. The alternative **ZAMO frame**
-(`.zamoframe`, params key `zamo_floor_frame`, used by the AGN preset) triggers on
-the $b^2/\rho$ ceiling only (the $b^2/u$ ceiling is disabled): the injected mass
+force-free the jet funnel can get. The drift-frame velocity update is hardened
+by the koral_lite_puffy **guard ladder** (2026-08-11, always on, bit-transparent
+on healthy states): a near-zero-field bail-out, a $u^t_{\rm dr}$
+finite/magnitude check, a NaN-aware clamp on the parallel-momentum ratio, a
+halving loop that damps $v_\parallel$ until the composed 3-velocity is timelike,
+and a `catch` on the VEL3→VELR conversion — every bail-out keeps the pre-floor
+velocity (always physical) instead of failing the step, and increments the
+`n_floorguard` counter in `scalars.dat`. Three policy switches (all default off;
+AGN preset on, matching the fork's 2026-08-11 configuration):
+`isentropic_b2rhofloors` scales $u$ by the same factor as $\rho$ (injected mass
+carries the pre-floor $u/\rho$); `b2uufloor = false` disables the $b^2/u$
+trigger entirely; `fluid_floor_inside_horizon` skips the drift algebra below
+$r_h$ (`FloorParams.horizon_x1`, precomputed as $x_1(r_h)$) and floors in the
+fluid frame with the velocity untouched. The alternative **ZAMO frame**
+(`.zamoframe`, params key `zamo_floor_frame`, the fork's pre-2026-08 build)
+triggers on the $b^2/\rho$ ceiling only (the $b^2/u$ ceiling is disabled): the injected mass
 $d\rho = \rho(f-1)$ is given the normal-observer 4-velocity
 $\eta^\mu = -\alpha g^{\mu 0}$, converted to a conserved delta by `p2uMhd`,
 added to the pre-floor conserveds, and re-inverted (hot, then entropy). It is

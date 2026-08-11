@@ -147,6 +147,13 @@ pub fn Sim(comptime cfg: config.Config) type {
             /// C: REDUCEORDERATBH — drop the reconstruction order by one for
             /// cells whose center is inside the BL horizon (PPM→linear there).
             reduceorderatbh: bool = false,
+            /// koral_lite_puffy REDUCEORDERAFTERFIXUP (finite.c:26-40,
+            /// 2026-08-11): a cell whose most recent u2p / rad / implicit
+            /// pass demanded a fixup reconstructs one order lower — its
+            /// primitives are synthetic neighbour averages, and a high-order
+            /// stencil over them tends to make the same cell fail again. One
+            /// diffusive sweep lets it relax, then full order resumes.
+            reduceorderafterfixup: bool = false,
             /// C: DAMPRADWAVESPEEDNEARAXIS + …NCELLS — within this many cells of
             /// each pole, force the radiative wavespeed to the undamped 1/3.
             /// 0 = off.
@@ -1306,7 +1313,19 @@ pub fn Sim(comptime cfg: config.Config) type {
             // for cells whose center is inside the BL horizon (reduce_order_check,
             // finite.c:14). cell[0] is the radial index. REDUCEMINMODTHETA is
             // still off.
-            const reduce: u8 = if (cell[0] <= self.reduce_order_ix_max) 1 else 0;
+            var reduce: u8 = if (cell[0] <= self.reduce_order_ix_max) 1 else 0;
+            // koral_lite_puffy REDUCEORDERAFTERFIXUP: the flags hold whatever
+            // the most recent u2p/implicit pass wrote — within a step that is
+            // the calcU2p/opImplicit that ran right before this opExplicit
+            // (C's RK2IMEX stage order is identical). Ghost cells read 0
+            // (flags are ghost-allocated, memset, never set there).
+            if (self.opt.reduceorderafterfixup and reduce == 0 and
+                (self.getFlag(.hd_fixup, cell[0], cell[1], cell[2]) != 0 or
+                    self.getFlag(.rad_fixup, cell[0], cell[1], cell[2]) != 0 or
+                    self.getFlag(.radimp_fixup, cell[0], cell[1], cell[2]) != 0))
+            {
+                reduce = 1;
+            }
             const scheme: recon.Scheme = switch (base_order -| reduce) {
                 0 => .donor,
                 1 => .{ .linear = .{ .theta = self.opt.minmod_theta } },

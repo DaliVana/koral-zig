@@ -217,19 +217,24 @@ pub const ScalarRow = struct {
     n_hd_fixup: u64,
     n_radimp_fail: u64,
     n_nan: u64,
+    /// Cumulative drift-floor guard recoveries (invert.n_guard_recoveries) —
+    /// how often the koral_lite_puffy guard ladder diverted from the baseline
+    /// drift-frame floor algebra. 0 on a healthy run.
+    n_floorguard: u64,
 };
 
 pub const scalar_header =
-    "# t dt nstep mass mdot radlum totallum H/R maxPmag/Ptot n_hdfix n_radimpfail n_nan\n";
+    "# t dt nstep mass mdot radlum totallum H/R maxPmag/Ptot n_hdfix n_radimpfail n_nan n_floorguard\n";
 
 /// Append one whitespace-separated row to a growing byte list (the executable
 /// rewrites scalars.dat from this buffer each output cadence).
 pub fn appendScalarLine(list: *std.ArrayList(u8), allocator: std.mem.Allocator, row: ScalarRow) !void {
     var buf: [512]u8 = undefined;
-    const line = try std.fmt.bufPrint(&buf, "{e:.10} {e:.6} {d} {e:.10} {e:.10} {e:.10} {e:.10} {e:.6} {e:.6} {d} {d} {d}\n", .{
+    const line = try std.fmt.bufPrint(&buf, "{e:.10} {e:.6} {d} {e:.10} {e:.10} {e:.10} {e:.10} {e:.6} {e:.6} {d} {d} {d} {d}\n", .{
         row.t,           row.dt,            row.nstep,   row.mass,
         row.mdot,          row.radlum,        row.totallum, row.scaleheight,
         row.max_pmag_ptot, row.n_hd_fixup,    row.n_radimp_fail, row.n_nan,
+        row.n_floorguard,
     });
     try list.appendSlice(allocator, line);
 }
