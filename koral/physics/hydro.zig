@@ -2,6 +2,17 @@
 //!
 //! `gamma_adiab` is the adiabatic index Γ (C: GAMMA / pgamma; PUFFY: 5/3).
 //! CONSISTENTGAMMA is off for PUFFY, so Γ is a plain parameter here.
+//!
+//! Physics: ideal gas, p = (Γ−1)u. The entropy tracer S = ρ·ln(p^n/ρ^{n+1})
+//! with n = 1/(Γ−1) is the logarithmic specific entropy of an ideal gas,
+//! carried as an extra advected conserved variable — redundant while energy
+//! conservation holds, but the inversion's backup where u is a tiny
+//! difference of large numbers (high magnetization) and the energy-based
+//! u2p fails. The stress tensor
+//!   T^μν = (ρ + u + p + b²) u^μ u^ν + (p + b²/2) g^μν − b^μ b^ν
+//! reads term by term: ρ+u+p is the relativistic gas enthalpy; the field
+//! adds b² to the inertia, b²/2 to the isotropic pressure, and −b^μb^ν is
+//! the tension along field lines. B = 0 recovers the perfect fluid.
 
 const std = @import("std");
 const simd = @import("../math/simd.zig");

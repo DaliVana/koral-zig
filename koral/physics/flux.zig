@@ -1,6 +1,18 @@
 //! Advective fluxes of the conserved variables through a face in direction
 //! `idim` (C: f_flux_prime, physics.c:1167 + f_flux_prime_rad, rad.c:3858).
 //!
+//! Physics: this is F in the finite-volume law ∂_t(√−g U) + ∂_i(√−g F^i) = S;
+//! the √−g factor is what turns the curvilinear divergence into a plain
+//! difference of face fluxes. Mass and entropy advect as ρu^i and S·u^i;
+//! the momentum rows are the mixed stress tensor T^i_j; the energy row is
+//! T^i_t, assembled cancellation-free — in the Newtonian limit
+//! T^t_t ≈ −ρ(1 + small), so the evolved energy is T^t_t + ρu^t and its
+//! flux uses u_t + 1 (calcUtp1) to dodge the rest-mass cancellation. The
+//! induction rows b^i u^j − b^j u^i are the dual Maxwell tensor: field
+//! lines advect with the flow, and the normal component's self-flux
+//! vanishes by antisymmetry. The radiative rows are the M1 stress tensor
+//! R^i_ν (physics/radiation.zig).
+//!
 //! The energy flux uses the same cancellation-free utp1 assembly as p2u.
 //! The radiative rows here are the pure M1 tensor; PUFFY's shear-viscosity
 //! correction (Rijvisc) is added on top at the faces by the sweep

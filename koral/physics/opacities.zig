@@ -4,6 +4,24 @@
 //! KLEINNISHINA correction. Everything here is scalar-in/scalar-out; the
 //! pp/geometry-level wrappers live in physics/radforce.zig.
 //!
+//! Physics: with gas (T_e) and radiation (T_rad) temperatures decoupled, a
+//! single grey opacity is not enough — the code carries a family of means:
+//! gas_abs (Planck at T_e) sets emission j = κ·4πB(T_e); rad_abs (Planck
+//! weighted by the radiation spectrum) sets absorption, the ζ = T_rad/T_e
+//! factors interpolating between the two; gas/rad_ross (Rosseland) govern
+//! diffusion, the wavespeed τ-limiter and the radviscosity mfp; rad_num
+//! (photon-number-weighted) matters only when photon number is evolved.
+//! Bremsstrahlung is the classic ε_ff ∝ n_e n_i √T_e with Gaunt factor 1.2
+//! and a mild relativistic correction, turned into an opacity via
+//! Kirchhoff's law (divide by the blackbody energy density). Thermal
+//! synchrotron absorption is a fitted function of zbr = kT_rad/(hν_crit),
+//! ν_crit ∝ T_e²B — typical photon energy over the synchrotron critical
+//! frequency — suppressed for nonrelativistic electrons by Θ²/(1+Θ²),
+//! Θ = kT_e/m_ec² (thermal synchrotron dies for cold electrons). Electron
+//! scattering is Thomson κ_es = 0.2(1+X) cm²/g with a Klein–Nishina
+//! reduction once T_rad approaches m_ec²/k. τ = χ·dx are the per-cell
+//! optical depths.
+//!
 //! C-fidelity notes:
 //!  * PUFFY does NOT wire PR_KAPPA — PROBLEMS/PUFFY/kappa.c is dead code;
 //!    absorption comes from the default calc_opacities_from_state.

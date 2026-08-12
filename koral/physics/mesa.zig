@@ -8,6 +8,14 @@
 //! log₁₀κ) in cm²/g — transcribed literally from C so the AGN run matches
 //! koral_lite_puffy.
 //!
+//! Physics: at AGN temperatures the analytic free-free opacity misses
+//! bound-free, bound-bound, H⁻ and line contributions, so the Rosseland
+//! mean — the harmonic, dB/dT-weighted frequency average appropriate for
+//! optically-thick diffusive transport — comes from stellar-evolution
+//! tables instead. R ≡ ρ/T₆³ is the standard opacity-table coordinate
+//! because κ varies smoothly along it. Clamping to the grid edge (no
+//! extrapolation) bounds every lookup by the table's κ range.
+//!
 //! In C the file is picked automatically from (Z = MFRAC, X = HFRAC) by an
 //! exact-match table (get_MESA_opacity_filename, opacities.c:1070). koral-zig
 //! takes the path explicitly (params `mesa_table`) — the caller is responsible

@@ -4,6 +4,22 @@
 //! term (rad.c:2907), and the pp-level opacity wrappers calc_kappa /
 //! calc_kappaes / calc_chi (opacities.c).
 //!
+//! Physics: G^μ is the gas–radiation energy-momentum exchange rate,
+//! entering the gas and radiation equations with opposite signs. In the
+//! fluid frame the time component is transparent:
+//!   Ĝ⁰ = −κ_gasAbs·4πB(T_e) + κ_radAbs·Ê
+//! (emission minus absorption, zero in equilibrium). The lab-frame vector
+//!   G^μ = −(κ_radRoss+κ_es) R^μν u_ν
+//!         − [(κ_radRoss+κ_es−κ_radAbs) Ê + κ_gasAbs·4πB] u^μ
+//! uses the flux-weighted (Rosseland + scattering) opacity for the
+//! momentum drag and the Planck-type means for the energy exchange — the
+//! standard mixed-mean grey formulation. Thermal Comptonization adds
+//! ∝ κ_es Ê·4k(T_rad−T_e)/m_ec² (with a relativistic Θ_e correction): net
+//! scattering energy exchange driving T_rad → T_e — Compton heating of the
+//! gas when the radiation is hotter, inverse-Compton cooling when the
+//! electrons are. G^μ is stiff (∝ opacity), which is why the implicit
+//! solver iterates on it — hence the Slim variants below.
+//!
 //! C-fidelity notes:
 //!  * Two kappaes flavors coexist in C: fill_struct_of_state calls
 //!    calc_kappaes_with_temperatures with Trad = TradBB (used by calc_Gi),

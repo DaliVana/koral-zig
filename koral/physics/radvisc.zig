@@ -10,6 +10,21 @@
 //!   addViscFlux         rad.c:3799  — the RADVISCMAXVELDAMP velocity cap
 //!                                     and the face addition to the M1 flux.
 //!
+//! Physics: M1 cannot represent crossing photon streams — near the polar
+//! axis radiation converging from both funnel walls collapses into one
+//! unphysical radial beam. The patch adds a Navier–Stokes-like viscous
+//! stress to the radiation tensor, R^ij_visc = −2 ν Ê σ^ij: the next-order
+//! diffusive correction the closure truncates away. σ_μν is the fluid
+//! shear — covariant velocity gradients symmetrized, projected orthogonal
+//! to u^μ with P_μν = g_μν + u_μu_ν, trace (the expansion θ) removed, time
+//! row fixed by σ_μν u^ν = 0. The coefficient ν = α·mfp (mfp = 1/χ)
+//! carries three physical limiters: the mfp is capped by the local radius
+//! (a photon cannot diffuse farther than the system size) and killed
+//! near/inside the horizon; ν ≤ Δx²/(4Δt) keeps the explicit diffusion
+//! stable so viscosity never sets the timestep; and the face flux is
+//! rescaled so the implied transport velocity stays ≤ MAXRADVISCVEL —
+//! viscous transport must never outrun the physical signal.
+//!
 //! Everything here is values-in/values-out — no grid, no stencil, no
 //! threading, like the rest of physics/. The sim-coupled half (the FD gather
 //! of the velocity gradients, the χ/cell-size/BL-radius inputs of ν, and the

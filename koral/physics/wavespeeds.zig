@@ -5,6 +5,16 @@
 //! the core routine boosts it to the lab frame per direction by solving the
 //! quadratic for the characteristic dx^i/dt (HARM's algorithm).
 //!
+//! Physics: these speeds set the Riemann solver's dissipation and the CFL
+//! step. c_s² = Γp/(ρ+u+p) is the relativistic sound speed and
+//! v_A² = b²/(b²+ρ+u+p) the Alfvén speed; their relativistic combination
+//! bounds the anisotropic fast-magnetosonic cone from above — an
+//! overestimate except along/perpendicular to B, which only adds numerical
+//! diffusion, never instability. The lab-frame quadratic carries the flow
+//! velocity, lapse, shift and frame dragging, so the left/right roots are
+//! asymmetric; the co-going clamps (left ≤ 0 ≤ right) are what HLL
+//! requires of its bounding speeds.
+//!
 //! Radiation wavespeeds (τ-limited) arrive with M7; this module is the gas
 //! part only. `active_dims` marks active directions (C: TNX/TNY/TNZ > 1) — C
 //! leaves the entries of *inactive* directions uninitialized, we return 0.

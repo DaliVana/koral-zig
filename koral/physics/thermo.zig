@@ -2,6 +2,15 @@
 //! relations (C: choices.h:14-51, misc.c initialize_constants,
 //! physics.c calc_PEQ_* / calc_thermal_ne).
 //!
+//! Physics: the dictionary between microphysics and geometrized code units
+//! (G = c = 1, lengths in GM/c²). Mean molecular weights follow the
+//! standard fully-ionized formulas (μ_e = 2/(1+X), …) from the H/He/metal
+//! mass fractions; the ideal gas gives T = μ m_p p/(k_B ρ) and back; LTE
+//! radiation energy is E = 4σT⁴ (aT⁴ with a = 4σ/c at c = 1); the electron
+//! density is n_e = ρ/(μ_e m_p). PUFFY's direct μ = 1/2/2 overrides with
+//! HFRAC = 1 kept in the opacity formulas are an inherited inconsistency
+//! of the original setup, preserved deliberately.
+//!
 //! C-fidelity notes:
 //!  * Every constant is computed with the C global's exact expression shape
 //!    (initialize_constants uses left-to-right chains like

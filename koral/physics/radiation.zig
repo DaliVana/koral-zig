@@ -6,6 +6,19 @@
 //!   rad.c:3164  calc_ff_Rtt   (fluid-frame Ehat = −R^t_t(ff) + gas ucon)
 //!   rad.c:3598  calc_rad_wavespeeds (Sądowski+13a τ-limiter)
 //!
+//! Physics: M1 evolves the radiation energy density and flux and closes the
+//! moment hierarchy by assuming the intensity is isotropic in *some* frame
+//! — the radiation rest frame u_r^μ. Radiation then looks like a Γ = 4/3
+//! fluid (p_rad = Ê/3), which gets both limits right — optically-thick
+//! diffusion and a single free-streaming beam — and fails only for
+//! crossing beams (patched by radvisc.zig). Ê_ff = R^μν u_μ u_ν is the
+//! energy density the gas actually feels for heating/cooling. In the rad
+//! rest frame the signal speed² is 1/3 (photon-gas sound speed c/√3), but
+//! an optically thick cell transports radiation diffusively — using c/√3
+//! in the HLL flux would be catastrophically diffusive, so the limiter
+//! caps speed² at (4/3)²/τ² for the fluxes while the timestep keeps the
+//! unlimited values.
+//!
 //! C-fidelity notes:
 //!  * PUFFY / choices.h default damping branch: rv2τ = (4/3)²/τ² (none of
 //!    SKIPRADWAVESPEEDLIMITER / FULLRADWAVESPEEDS / DAMPRADWAVESPEEDSQRTTAU /
