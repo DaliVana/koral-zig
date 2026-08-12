@@ -214,7 +214,7 @@ test "metric: √−g analytic — KS(a=0) = r² sinθ; MKS2 = KS × e^{x1} dθ/
         try expectClose(sigma * @sin(x[2]), dks.gdet, 1e-13, 1e-300);
     }
     // MKS2 = pushforward: gdet_KS(r,θ) · |J| with |J| = e^{x1} dθ/dx2.
-    // Metric flavor throughout (truncated-π map — see forms.zig).
+    // Metric-flavor θ map throughout (same exact π as coco — see forms.zig).
     for (all_mps) |mp| {
         for (samplePoints(.mks2, mp, &buf)) |x| {
             const d = metric.compute(.mks2, mp, x);
@@ -281,9 +281,10 @@ test "coco: analytic Jacobians match FD of the point transform" {
             for (samplePoints(pair[0], mp, &buf)) |x| {
                 if (physR(pair[0], mp, x) < rh + 0.2) continue;
                 const jac = coco.dxdx(x, pair[0], pair[1], mp);
-                // MKS2 Jacobians carry C's truncated Pi² (metric flavor)
-                // while coco is exact-π ⇒ they disagree at ~5e-10 by design.
-                const rt: f64 = if (pair[0] == .mks2 or pair[1] == .mks2) 5e-9 else 1e-9;
+                // One exact π for metric and coco flavors (the C two-π split
+                // is not preserved), so MKS2 gets no extra slack: the analytic
+                // Jacobian IS the derivative of cocoN, FD noise only.
+                const rt: f64 = 1e-9;
                 for (0..4) |i| {
                     for (0..4) |m| {
                         if (i == 3 and m == 1 and (pair[0] == .bl or pair[1] == .bl)) continue;
@@ -310,10 +311,10 @@ test "coco: J_my2out · J_out2my = identity at 1e-12" {
         const rh = 1.0 + @sqrt(1.0 - mp.a * mp.a);
         const pairs = [_][2]Coords{ .{ .mks2, .ks }, .{ .mks2, .bl }, .{ .bl, .ks } };
         for (pairs) |pair| {
-            // C quirk, mirrored: dxdx_MKS22KS is metric-flavored (truncated
-            // Pi) but its nominal inverse dxdx_KS2MKS2 mixes exact-π values,
-            // so C's own product deviates from identity at ~1e-9.
-            const rt: f64 = if (pair[0] == .mks2) 5e-9 else 1e-12;
+            // With one exact π everywhere (C's two-π split not preserved),
+            // dxdx pairs are true mutual inverses down to rounding — C's own
+            // product deviated at ~1e-9 from its mixed-π flavors.
+            const rt: f64 = 1e-12;
             var buf: [64][4]f64 = undefined;
             for (samplePoints(pair[0], mp, &buf)) |x| {
                 if (physR(pair[0], mp, x) < rh + 0.05) continue;

@@ -179,12 +179,15 @@ $H_0 < 1$ concentrates cells toward the midplane. The reference PUFFY run uses
 negative (the AGN preset uses `MKSR0 = -1.5`, pushing the innermost cells deeper
 toward the horizon rather than away from it).
 
-> **Deliberate C quirk (bit-comparability):** MKS2 uses *two different values of
-> $\pi$*. The metric/Christoffel expressions use the truncated
-> $\pi_c = 3.141592654$ (KORAL's `#define Pi`), while the coordinate point
-> transforms and `gttpert` use the exact `std.math.pi`. The two "theta" flavors
-> therefore disagree at $\sim10^{-9}$. This is intentional and must not be
-> "fixed." See [`ARCHITECTURE.md`](ARCHITECTURE.md) on the oracle strategy.
+> **A C quirk *not* preserved (exact π):** KORAL mixes two values of $\pi$ —
+> the truncated $\pi_c = 3.141592654$ (`ko.h`'s `#define Pi`) inside the
+> Mathematica-exported MKS2 metric expressions, exact `M_PI` in the `coco_*`
+> point transforms — so C's own metric-flavor and coco-flavor θ disagree at
+> $\sim10^{-9}$. The port originally mirrored that split but has used a single
+> exact `std.math.pi` for both since 2026-07-06 (`metric/forms.zig`); the two
+> θ flavors agree exactly here. C's spread survives only in the oracle
+> comparisons: MKS2 *derived* quantities gate at 1e-8 because that scatter is
+> C's own (see `koral/tests/golden/metric_golden_tests.zig`).
 
 ### 2.5 Determinant, log-derivative, Christoffels, lapse
 
@@ -896,7 +899,9 @@ Exact literals from KORAL's `ko.h`, kept verbatim for bit-comparability
 | $m_p$ | $1.67262158\times10^{-24}$ | proton mass (g) |
 | $\sigma_{\rm rad}$ | $5.670367\times10^{-5}$ | Stefan–Boltzmann |
 | $h$ | $6.6260755\times10^{-27}$ | Planck (erg·s) |
-| $\pi_c$ | $3.141592654$ | truncated $\pi$ (MKS2 metric only) |
+
+(KORAL's truncated `#define Pi` = 3.141592654 is *not* kept — the port uses
+exact `std.math.pi` everywhere; see §2.4.)
 
 ### 11.2 Geometrized-unit scaling
 

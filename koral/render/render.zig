@@ -746,7 +746,7 @@ pub fn advanceRay(comptime cfg: config.Config, s: *const Scene, sampler: anytype
                             .ni_cgs = lst.rho * s.consts.one_over_mui_mp * s.consts.numdensgu2cgs,
                             .te = lst.te,
                             .trad = lst.trad,
-                            .b_gauss = @sqrt(s.consts.fourmpi * un.endenGu2Cgs(lst.bsq)),
+                            .b_gauss = @sqrt(s.consts.fourpi * un.endenGu2Cgs(lst.bsq)),
                             .sin_pitch = sin_pitch,
                             .chi_es_cgs = lst.chi_es / un.masscm,
                             .dip = dip,
@@ -756,7 +756,7 @@ pub fn advanceRay(comptime cfg: config.Config, s: *const Scene, sampler: anytype
                         dl *= un.masscm; // path in cm for the CGS opacities
                         nup = nuhat * nuhat * nuhat; // I_ν/ν³ invariant
                     } else {
-                        jl = if (lst.masked) 0.0 else lst.j_therm + lst.chi_es * (lst.ehat / s.consts.fourmpi) * dip;
+                        jl = if (lst.masked) 0.0 else lst.j_therm + lst.chi_es * (lst.ehat / s.consts.fourpi) * dip;
                         chil = lst.chi;
                     }
 

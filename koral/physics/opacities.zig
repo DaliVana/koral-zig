@@ -140,7 +140,7 @@ pub fn calcOpacitiesFromStateG(comptime T: type, c: *const thermo.Consts, ch: Ch
     const nethcgs = s.ne * sp(T, c.numdensgu2cgs);
 
     // C: bsqcgs = fourmpi*endenGU2CGS(bsq) — exact M_PI and the ko.h macro
-    const bsqcgs = sp(T, c.fourmpi) * c.units.endenGu2CgsG(T, s.bsq);
+    const bsqcgs = sp(T, c.fourpi) * c.units.endenGu2CgsG(T, s.bsq);
     const bmagcgs = @sqrt(bsqcgs);
 
     const bbenergy = sp(T, 4.0 * c.sigma_rad_cgs) * te * te * te * te;

@@ -1052,9 +1052,9 @@ For a whole new absorption law, extend `radforce.KappaMode`; for scattering,
 `scattering = false` params toggle). `Channels` also carries the
 `synchrotron_bridge` toggle and a `mesa: ?*const MesaTable` pointer
 (`koral/physics/mesa.zig`) that replaces the free-free Rosseland channels with
-MESA table lookups. Keep the deliberate two-π split (truncated
-`pi_c` for the emission path, exact `M_PI` for synchrotron `bsqcgs`) or you lose
-bit-comparability.
+MESA table lookups. Note on π: C splits it here (truncated `Pi` in the emission
+constants, exact `M_PI` in synchrotron's `bsqcgs`), but the port uses one exact
+π for both — C's `fourpi`/`fourmpi` pair is a single `thermo.Consts.fourpi`.
 
 ### Add or modify a boundary-condition type
 

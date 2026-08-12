@@ -236,7 +236,7 @@ test "render: LTE source function j/chi equals the Planck function B(T)" {
     // source with the dipole factor, which is exactly 1 here (F̂ = 0 for an
     // isotropic field around gas at rest — also assert that).
     for (st.fhat) |f| try std.testing.expectApproxEqAbs(@as(f64, 0), f, 1e-18);
-    const jem = st.j_therm + st.chi_es * (st.ehat / consts.fourmpi);
+    const jem = st.j_therm + st.chi_es * (st.ehat / consts.fourpi);
     const planck = consts.sigma_rad_over_pi * tK * tK * tK * tK;
     try std.testing.expect(st.chi > 0);
     try std.testing.expectApproxEqRel(planck, jem / st.chi, 1e-10);

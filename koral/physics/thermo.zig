@@ -17,9 +17,6 @@
 //!    `1./GGG*CCC*CCC/MASSCM/MASSCM`, while the ko.h *macros* parenthesize
 //!    differently — both shapes exist in the same C build and they differ
 //!    by ulps; opacities use the globals, the PR_KAPPAES hook the macros).
-//!  * fourpi and fourmpi both use the same exact π, so the four-force
-//!    emission term is consistent: kappaGasAbs·fourpi·B with
-//!    B = SIGMA_RAD/Pi·Te⁴.
 //!  * Single-temperature gas (no EVOLVEELECTRONS): Te = Ti = Tgas, floored
 //!    at TEMPEMINIMAL = TEMPIMINIMAL = 1e2 (Tgas itself is NOT floored).
 
@@ -95,9 +92,8 @@ pub const Consts = struct {
     m_electr_cgs: f64,
 
     // misc coefficients
-    fourpi: f64, // 4·Pi (truncated)
-    fourmpi: f64, // 4·M_PI (exact)
-    sigma_rad_over_pi: f64, // SIGMA_RAD/Pi (truncated)
+    fourpi: f64,
+    sigma_rad_over_pi: f64, // C: SIGMA_RAD/Pi — exact π here
     four_sigmarad: f64,
     one_over_four_sigmarad: f64,
     k_over_mecsq: f64,
@@ -134,7 +130,6 @@ pub const Consts = struct {
             .m_proton_cgs = units_mod.M_PROTON_CGS,
             .m_electr_cgs = units_mod.M_ELECTR_CGS,
             .fourpi = 4.0 * pi,
-            .fourmpi = 4.0 * pi,
             .sigma_rad_over_pi = sigma_rad / pi,
             .four_sigmarad = four_sigmarad,
             .one_over_four_sigmarad = 1.0 / four_sigmarad,

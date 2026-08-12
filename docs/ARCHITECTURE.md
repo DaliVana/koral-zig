@@ -449,10 +449,12 @@ like C's `coco_N`. `mink` is never a transform endpoint (unsupported pairs panic
 what `frames.transPallCoco` and the I/O diagnostics use to move states between the
 evolution coordinates (MKS2) and Boyer-Lindquist (for problem setup and diagnostics).
 
-> **The two-π quirk (deliberate).** MKS2 metric-flavour θ uses truncated `pi_c =
-> 3.141592654`; coco point-transform θ uses exact `std.math.pi`. They disagree at ~1e-9.
-> This is inherited from C on purpose so oracle comparisons hold at 1e-12 for coordinate-
-> independent quantities rather than being polluted at 5e-9. Do not "fix" it.
+> **The two-π quirk (not preserved).** C's MKS2 metric-flavour θ uses the truncated
+> `Pi = 3.141592654` while its coco point-transform θ uses exact `M_PI`, so C's two θ
+> flavours disagree at ~1e-9. Since 2026-07-06 the port uses one exact `std.math.pi` for
+> both (`metric/forms.zig`) and the flavours agree exactly. C's internal spread survives
+> only as the 1e-8 gates on MKS2-*derived* golden comparisons
+> (`koral/tests/golden/metric_golden_tests.zig`) — that tolerance is C's, not ours.
 
 ---
 
