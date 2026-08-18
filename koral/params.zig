@@ -58,7 +58,7 @@ pub const Params = struct {
     // the problem's built-in value; a set value overrides it. This is how the
     // `puffy_agn.toml` preset retargets koral-zig to the koral_lite_puffy AGN
     // configuration without disturbing the validated `.puffy` constants the
-    // goldens pin against. Consumed by PROBLEMS/puffy/main.zig; see
+    // goldens pin against. Folded by `puffy.Physics.fromParams`; see
     // docs/PUFFY_AGN_DIVERGENCES.md.
     rhofloor: ?f64 = null,
     uurhoratiomin: ?f64 = null,

@@ -1,6 +1,7 @@
 //! Minimal binary + text output for a run, and the restart/continue path.
 //! Serialization is pure (into a caller-owned buffer) so it is testable without
-//! touching the filesystem — the executable does the actual std.Io reads/writes.
+//! touching the filesystem. `writePrim` / `loadPrim` / `resolveRestartPath`
+//! own the serial and MPI file protocol so drivers do not reimplement it.
 //!
 //!  * KDMP: a self-describing snapshot of the domain primitives (little-endian,
 //!    iv-fastest AoS — the same ordering as the KSTP/KINI goldens and C's
@@ -12,6 +13,8 @@
 //!    KORAL's scalars.dat (fileop.c:113) — the diagnostic time series.
 
 const std = @import("std");
+const scalars = @import("scalars.zig");
+const invert = @import("../solve/invert.zig");
 
 pub const kdmp_magic = "KDMP";
 /// v2 adds nstep + out_idx to the header so a KDMP is a self-contained restart
@@ -136,9 +139,9 @@ pub fn serializePrimBody(comptime SimT: type, sim: *const SimT, out: []u8) usize
 /// Restart/continue: load a KDMP snapshot into `sim`, cell by cell, via
 /// `initCell` (p stored verbatim, u = p2u without re-flooring — exactly C's
 /// fread_restartfile_bin path, which trusts the saved primitives). The caller
-/// must still run `setBc` + the timestep guess (ghosts and dt are recomputed,
-/// never stored) and adopt the returned `t`/`nstep`/`out_idx`. Errors if the
-/// grid or nv disagree with the file — no silent reshaping.
+/// must still run `finishInit` (halo + setBc + dt guess — ghosts and dt are
+/// recomputed, never stored) and adopt the returned `t`/`nstep`/`out_idx`.
+/// Errors if the grid or nv disagree with the file — no silent reshaping.
 pub fn loadPrimDump(comptime SimT: type, sim: *SimT, bytes: []const u8) !DumpHeader {
     const h = try parseDumpHeader(bytes);
     if (h.nx != sim.grid.nx or h.ny != sim.grid.ny or h.nz != sim.grid.nz or h.nv != SimT.nv)
@@ -200,6 +203,210 @@ fn getF64(bytes: []const u8, r: *usize) f64 {
     const v: f64 = @bitCast(std.mem.readInt(u64, bytes[r.*..][0..8], .little));
     r.* += 8;
     return v;
+}
+
+/// Write a numbered checkpoint. Serial (`ntz ≤ 1`) uses std.Io; MPI writes
+/// the body first and the 44-byte header last as a completion marker, so a
+/// killed write fails `parseDumpHeader` instead of looking like a valid
+/// full-length file of zero holes. Final bytes match the serial layout.
+pub fn writePrim(
+    comptime SimT: type,
+    sim: *const SimT,
+    comm: anytype,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    idx: u32,
+) !void {
+    if (sim.decomp.ntz <= 1) {
+        const bytes = try allocator.alloc(u8, primDumpSize(SimT, sim));
+        defer allocator.free(bytes);
+        const n = serializePrimDump(SimT, sim, idx, bytes);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes[0..n] });
+        return;
+    }
+    try writePrimMpi(SimT, sim, comm, allocator, path, idx);
+}
+
+fn writePrimMpi(
+    comptime SimT: type,
+    sim: *const SimT,
+    comm: anytype,
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    idx: u32,
+) !void {
+    const g = sim.decomp.global;
+    const body64 = try allocator.alloc(f64, primBodySize(SimT, sim) / 8);
+    defer allocator.free(body64);
+    const body = std.mem.sliceAsBytes(body64);
+    _ = serializePrimBody(SimT, sim, body);
+
+    var buf: [1024]u8 = undefined;
+    const pathz = try std.fmt.bufPrintZ(&buf, "{s}", .{path});
+    const total = bodyOffset(g.nx, g.ny, SimT.nv, g.nz);
+    var f = try comm.fileCreate(pathz, total);
+    comm.fileWriteAtAll(&f, bodyOffset(g.nx, g.ny, SimT.nv, @intCast(sim.decomp.tok)), body);
+    comm.fileSync(&f);
+    if (comm.rank() == 0) {
+        var hdr: [header_size]u8 = undefined;
+        _ = writeDumpHeader(&hdr, .{
+            .nx = @intCast(g.nx),
+            .ny = @intCast(g.ny),
+            .nz = @intCast(g.nz),
+            .nv = @intCast(SimT.nv),
+            .t = sim.t,
+            .nstep = sim.nstep,
+            .out_idx = idx,
+        });
+        comm.fileWriteAt(&f, 0, hdr[0..]);
+    }
+    comm.fileClose(&f);
+}
+
+/// Load a checkpoint into `sim`. Serial reads the whole file; MPI reads the
+/// header then this rank's φ-slab. Under MPI the header is folded so every
+/// rank restarted from the same file (max == min) or the load fails together.
+/// Caller adopts `t`/`nstep`/`out_idx` and runs `finishInit`.
+pub fn loadPrim(
+    comptime SimT: type,
+    sim: *SimT,
+    comm: anytype,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) !DumpHeader {
+    const h = if (sim.decomp.ntz <= 1) blk: {
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 << 30));
+        defer allocator.free(bytes);
+        break :blk try loadPrimDump(SimT, sim, bytes);
+    } else try loadPrimMpi(SimT, sim, comm, allocator, path);
+
+    if (sim.decomp.ntz > 1) {
+        const hv = [3]f64{ h.t, @floatFromInt(h.nstep), @floatFromInt(h.out_idx) };
+        var hi = hv;
+        var lo = hv;
+        comm.allreduceMax(hi[0..]);
+        comm.allreduceMin(lo[0..]);
+        if (!std.mem.eql(f64, hi[0..], lo[0..])) return error.RestartRankDisagreement;
+    }
+    return h;
+}
+
+fn loadPrimMpi(
+    comptime SimT: type,
+    sim: *SimT,
+    comm: anytype,
+    allocator: std.mem.Allocator,
+    path: []const u8,
+) !DumpHeader {
+    var pbuf: [1024]u8 = undefined;
+    const pathz = try std.fmt.bufPrintZ(&pbuf, "{s}", .{path});
+    const body64 = try allocator.alloc(f64, primBodySize(SimT, sim) / 8);
+    defer allocator.free(body64);
+    const body = std.mem.sliceAsBytes(body64);
+
+    var f = try comm.fileOpenRead(pathz);
+    defer comm.fileClose(&f);
+
+    const fsize = comm.fileSize(&f);
+    if (fsize < header_size) return error.Truncated;
+
+    var hdr: [header_size]u8 = undefined;
+    comm.fileReadAtAll(&f, 0, hdr[0..]);
+    const h = try parseDumpHeader(hdr[0..]);
+    const g = sim.decomp.global;
+    if (h.nx != g.nx or h.ny != g.ny or h.nz != g.nz or h.nv != SimT.nv)
+        return error.DimMismatch;
+    if (fsize < bodyOffset(g.nx, g.ny, SimT.nv, g.nz)) return error.Truncated;
+
+    comm.fileReadAtAll(&f, bodyOffset(g.nx, g.ny, SimT.nv, @intCast(sim.decomp.tok)), body);
+    try loadPrimBody(SimT, sim, body);
+    return h;
+}
+
+/// Resolve `--restart FILE|DIR` to a concrete KDMP path (caller frees).
+/// A directory selects its lexical-max `*.kdmp` (zero-padded names sort by index).
+pub fn resolveRestartPath(io: std.Io, allocator: std.mem.Allocator, arg: []const u8) ![]u8 {
+    var d = std.Io.Dir.cwd().openDir(io, arg, .{ .iterate = true }) catch |err| switch (err) {
+        error.NotDir => return allocator.dupe(u8, arg),
+        else => return err,
+    };
+    defer d.close(io);
+
+    var best: ?[]u8 = null;
+    errdefer if (best) |b| allocator.free(b);
+    var it = d.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".kdmp")) continue;
+        if (best == null or std.mem.order(u8, entry.name, best.?) == .gt) {
+            if (best) |b| allocator.free(b);
+            best = try allocator.dupe(u8, entry.name);
+        }
+    }
+    const name = best orelse return error.NoRestartFile;
+    defer allocator.free(name);
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ arg, name });
+}
+
+pub const Diag = struct {
+    n_nan: u64 = 0,
+    n_hd_fixup: u64 = 0,
+};
+
+pub fn collectDiag(comptime SimT: type, s: *const SimT) Diag {
+    var d = Diag{};
+    var iz: i64 = 0;
+    while (iz < s.nzi()) : (iz += 1) {
+        var iy: i64 = 0;
+        while (iy < s.nyi()) : (iy += 1) {
+            var ix: i64 = 0;
+            while (ix < s.nxi()) : (ix += 1) {
+                var pp: [SimT.nv]f64 = undefined;
+                s.p.load(ix, iy, iz, &pp);
+                for (pp) |v| {
+                    if (!std.math.isFinite(v)) {
+                        d.n_nan += 1;
+                        break;
+                    }
+                }
+                if (s.getFlag(.hd_fixup, ix, iy, iz) != 0) d.n_hd_fixup += 1;
+            }
+        }
+    }
+    return d;
+}
+
+/// Globally-folded scalar row. Every rank must call this — it is collective.
+/// `r_lum` / `r_scale` are the problem's diagnostic radii (PUFFY: 5000, 15).
+pub fn scalarRow(comptime SimT: type, s: *SimT, dt: f64, r_lum: f64, r_scale: f64) !ScalarRow {
+    const r_horizon = @import("../metric/metric.zig").rHorizonBL(s.opt.mp.a);
+    const ix_h = scalars.radialShellIndex(SimT, s, r_horizon);
+    const ix_l = scalars.radialShellIndex(SimT, s, r_lum);
+    const diag = collectDiag(SimT, s);
+    var counts = [4]f64{
+        @floatFromInt(diag.n_hd_fixup),
+        @floatFromInt(s.n_radimp_failures),
+        @floatFromInt(diag.n_nan),
+        @floatFromInt(invert.n_guard_recoveries.load(.monotonic)),
+    };
+    const gs = try scalars.globalScalars(SimT, s, ix_h, ix_l, r_scale, counts[0..]);
+    return .{
+        .t = s.t,
+        .dt = dt,
+        .nstep = s.nstep,
+        .mass = gs.mass,
+        .mdot = -gs.mdot,
+        .radlum = gs.radlum,
+        .totallum = gs.totallum,
+        .scaleheight = gs.scaleheight,
+        .max_pmag_ptot = gs.max_pmag_ptot,
+        .n_hd_fixup = @intFromFloat(counts[0]),
+        .n_radimp_fail = @intFromFloat(counts[1]),
+        .n_nan = @intFromFloat(counts[2]),
+        .n_floorguard = @intFromFloat(counts[3]),
+    };
 }
 
 /// One row of scalars.dat — the diagnostic time series (all in code/GU units;

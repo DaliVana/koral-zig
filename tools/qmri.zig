@@ -31,7 +31,7 @@ const L = koral.VarLayout(cfg);
 const q_theta_min = 10.0;
 const q_phi_min = 20.0;
 
-fn analyze(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !void {
+fn analyze(allocator: std.mem.Allocator, io: std.Io, path: []const u8, phys: *const puffy.Physics) !void {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 << 32));
     defer allocator.free(bytes);
     var data = try render.DumpData.fromBytes(allocator, bytes);
@@ -39,9 +39,9 @@ fn analyze(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !void {
     const h = data.header;
     if (h.nv != L.count) return error.DimMismatch;
 
-    const g = puffy.makeGridNz(h.nx, h.ny, h.nz);
-    const mp = puffy.mp;
-    const gam = puffy.gam;
+    const g = phys.makeGridNz(h.nx, h.ny, h.nz);
+    const mp = phys.mp;
+    const gam = phys.gam;
 
     var mass: f64 = 0; // Σ ρ·√-g over the disk mask
     var m_qr: f64 = 0;
@@ -77,7 +77,7 @@ fn analyze(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !void {
 
                 // disk mask: real material, not funnel, inflow-relevant radii
                 if (r > 100.0) continue;
-                const floor_rho = puffy.rhoatmmin * std.math.pow(f64, r / 2.0, -1.5);
+                const floor_rho = phys.rhoatmmin * std.math.pow(f64, r / 2.0, -1.5);
                 if (rho < 1.0e3 * floor_rho) continue;
 
                 const u = relele.uconUcovFromPrims(
@@ -160,16 +160,16 @@ pub fn main(init: std.process.Init) !void {
         return err;
     };
     defer p.deinit(allocator);
-    puffy.mass = p.mass;
-    puffy.mp.a = p.bhspin;
-    puffy.applyPhysicsOverrides(&p);
-    puffy.rmin = if (p.rmin > 0.0) p.rmin else puffy.rminForSpin(p.bhspin);
-    if (p.rmax > 0.0) puffy.rmax = p.rmax;
+    var loaded = puffy.load(allocator, io, &p) catch |err| {
+        std.debug.print("qmri: cannot load physics from '{s}': {s}\n", .{ params_path, @errorName(err) });
+        return err;
+    };
+    defer loaded.deinit(allocator);
 
     var any = false;
     while (args.next()) |kpath| {
         any = true;
-        analyze(allocator, io, kpath) catch |err| {
+        analyze(allocator, io, kpath, &loaded.physics) catch |err| {
             std.debug.print("qmri: {s}: {s}\n", .{ kpath, @errorName(err) });
         };
     }

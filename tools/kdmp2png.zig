@@ -257,24 +257,12 @@ pub fn main(init: std.process.Init) !void {
     };
     defer p.deinit(allocator);
 
-    // The driver's exact setup order (main.zig / kdmp2silo.zig): scales
-    // first, then physics overrides (they can move mksr0, which rmin and
-    // the grid read), then the domain and opacity table.
-    puffy.mass = p.mass;
-    puffy.mp.a = p.bhspin;
-    puffy.applyPhysicsOverrides(&p);
-    puffy.rmin = if (p.rmin > 0.0) p.rmin else puffy.rminForSpin(p.bhspin);
-    if (p.rmax > 0.0) puffy.rmax = p.rmax;
-
-    var mtab: ?koral.physics.mesa.MesaTable = null;
-    defer if (mtab) |*t| t.deinit();
-    if (p.mesa_table.len > 0) {
-        mtab = koral.physics.mesa.MesaTable.load(allocator, io, p.mesa_table) catch |err| {
-            std.debug.print("kdmp2png: cannot load MESA table '{s}': {s}\n", .{ p.mesa_table, @errorName(err) });
-            return err;
-        };
-        puffy.channels.mesa = &mtab.?;
-    }
+    var loaded = puffy.load(allocator, io, &p) catch |err| {
+        std.debug.print("kdmp2png: cannot load physics from '{s}': {s}\n", .{ ppath, @errorName(err) });
+        return err;
+    };
+    defer loaded.deinit(allocator);
+    const phys = &loaded.physics;
 
     const Load = struct {
         fn kdmp(alloc: std.mem.Allocator, io_: std.Io, path: []const u8) !render.DumpData {
@@ -299,7 +287,7 @@ pub fn main(init: std.process.Init) !void {
         .height = size,
         .ss = @max(ss, 1),
     };
-    cam.setup(puffy.mp);
+    cam.setup(phys.mp);
 
     const img = try allocator.alloc(f64, size * size);
     defer allocator.free(img);
@@ -326,7 +314,7 @@ pub fn main(init: std.process.Init) !void {
             opath = try std.fmt.bufPrint(&opath_buf, "{s}/slow_t{d:.0}.png", .{ sdir, tobs });
         }
 
-        const grid = puffy.makeGridNz(ser.shape.nx, ser.shape.ny, ser.shape.nz);
+        const grid = phys.makeGridNz(ser.shape.nx, ser.shape.ny, ser.shape.nz);
         var src = try render.series.FileSource.init(allocator, io, &ser);
         defer src.deinit();
 
@@ -351,16 +339,16 @@ pub fn main(init: std.process.Init) !void {
         };
         defer if (ref_acquired) src.release(ref_idx);
 
-        var scene = render.Scene.init(grid, puffy.mp, puffy.consts(), puffy.channels, puffy.gam, ref, rcam, puffy.rmax);
-        scene.scattering = puffy.scattering;
+        var scene = render.Scene.init(grid, phys.mp, phys.consts(), phys.channels, phys.gam, ref, rcam, phys.rmax);
+        scene.scattering = phys.scattering;
         scene.sigma_cut = sigma_cut;
         if (floor_cut > 0) {
-            scene.floor = .{ .rho0 = puffy.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
+            scene.floor = .{ .rho0 = phys.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
         }
 
         std.debug.print(
             "kdmp2png: SLOW LIGHT {s}: {d} frames ({d}x{d}x{d}), t=[{d:.2}, {d:.2}] M, stride {d} | t_obs={d:.2} (arrival t={d:.2}) r_slow={d} | a={d:.4} M={e:.3} Msun | cam r={d} incl={d} fov={d}M {d}px ss{d} {d} threads\n",
-            .{ sdir, ser.ts.len, ser.shape.nx, ser.shape.ny, ser.shape.nz, t_first, t_last, stride, tobs, tobs + rcam, rslow, puffy.mp.a, puffy.mass, rcam, incl, fov, size, ss, nthreads },
+            .{ sdir, ser.ts.len, ser.shape.nx, ser.shape.ny, ser.shape.nz, t_first, t_last, stride, tobs, tobs + rcam, rslow, phys.mp.a, phys.mass, rcam, incl, fov, size, ss, nthreads },
         );
 
         var plan_specs: []render.sweep.RaySpec = &.{};
@@ -394,27 +382,27 @@ pub fn main(init: std.process.Init) !void {
             return error.DimMismatch;
         }
 
-        const grid = puffy.makeGridNz(h.nx, h.ny, h.nz);
+        const grid = phys.makeGridNz(h.nx, h.ny, h.nz);
         var scene = render.Scene.init(
             grid,
-            puffy.mp,
-            puffy.consts(),
-            puffy.channels,
-            puffy.gam,
+            phys.mp,
+            phys.consts(),
+            phys.channels,
+            phys.gam,
             &data,
             rcam,
-            puffy.rmax,
+            phys.rmax,
         );
-        scene.scattering = puffy.scattering;
+        scene.scattering = phys.scattering;
         scene.sigma_cut = sigma_cut;
         if (floor_cut > 0) {
             // PUFFY's floor atmosphere (setHdAtmosphere): ρ = RHOATMMIN·(r/2)^-1.5
-            scene.floor = .{ .rho0 = puffy.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
+            scene.floor = .{ .rho0 = phys.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
         }
 
         std.debug.print(
             "kdmp2png: {s} ({d}x{d}x{d}, t={e:.4}) | a={d:.4} M={e:.3} Msun | cam r={d} incl={d} fov={d}M | {d}px ss{d} sigma-cut={d} floor-cut={e:.0} {d} threads\n",
-            .{ kpath.?, h.nx, h.ny, h.nz, h.t, puffy.mp.a, puffy.mass, rcam, incl, fov, size, ss, sigma_cut, floor_cut, nthreads },
+            .{ kpath.?, h.nx, h.ny, h.nz, h.t, phys.mp.a, phys.mass, rcam, incl, fov, size, ss, sigma_cut, floor_cut, nthreads },
         );
 
         const t0 = std.Io.Timestamp.now(io, .awake);
@@ -434,7 +422,7 @@ pub fn main(init: std.process.Init) !void {
 
     // ---- FITS export: raw I_nu -> Jy/pixel, before any display processing ----
     if (fits_path) |fpath| {
-        const masscm = puffy.consts().units.masscm;
+        const masscm = phys.consts().units.masscm;
         const d_cm = dist_kpc * 3.086e21;
         const pix_rad = fov * masscm / d_cm / @as(f64, @floatFromInt(size));
         const scale = pix_rad * pix_rad * 1.0e23; // I_nu [cgs] -> Jy/pixel
@@ -478,7 +466,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("kdmp2png: nu={d} GHz  I_max={e:.3} erg/s/cm2/sr/Hz  T_b,max={e:.3} K\n", .{ nu_ghz, max_i, tb_max });
         if (dist_kpc > 0) {
             const d_cm = dist_kpc * 3.086e21;
-            const pix_rad = fov * puffy.consts().units.masscm / d_cm / @as(f64, @floatFromInt(size));
+            const pix_rad = fov * phys.consts().units.masscm / d_cm / @as(f64, @floatFromInt(size));
             const s_jy = sum_i * pix_rad * pix_rad * 1.0e23;
             std.debug.print("kdmp2png: S_nu({d} GHz) = {e:.3} Jy at {d} kpc\n", .{ nu_ghz, s_jy, dist_kpc });
         }
@@ -499,7 +487,7 @@ pub fn main(init: std.process.Init) !void {
     // finite-distance error is far sub-pixel for rcam ≳ 1000).
     if (screen) {
         const sh = koral.render.shadow;
-        const a = puffy.mp.a;
+        const a = phys.mp.a;
         const incl_rad = std.math.clamp(incl * std.math.pi / 180.0, 0.05, std.math.pi - 0.05);
         const mark = struct {
             fn dot(rgbv: []u8, n: usize, alpha_m: f64, beta_m: f64, fov_m: f64) void {

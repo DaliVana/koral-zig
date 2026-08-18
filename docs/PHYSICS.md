@@ -781,8 +781,9 @@ use this instead of a recompile.
 
 ## 10. The PUFFY problem
 
-The PUFFY initial condition and driver live in
-[`koral/problems/puffy/puffy.zig`](../koral/problems/puffy/puffy.zig) and
+The PUFFY initial condition and problem physics live in
+[`koral/problems/puffy/puffy.zig`](../koral/problems/puffy/puffy.zig)
+(`Physics`, `setup`, `initAllWith`, `Bc`); the thin driver is
 [`koral/problems/puffy/main.zig`](../koral/problems/puffy/main.zig); the
 arbitrary-precision enthalpy integral uses
 [`koral/math/quad.zig`](../koral/math/quad.zig). It is a Penna-style

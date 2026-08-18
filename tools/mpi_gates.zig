@@ -636,60 +636,27 @@ fn gate5(allocator: std.mem.Allocator, comm: *Comm) !bool {
 
 const scratch_dir = ".zig-cache/mpi-gates-scratch";
 
-/// The driver's writePrimDumpMpi sequence (main.zig), generic over SimT:
-/// rank 0 writes the global header, everyone write_at_all's its slab.
-fn writeKdmpCollective(comptime SimT: type, allocator: std.mem.Allocator, comm: *Comm, s: *const SimT, path: [*:0]const u8, idx: u32) !void {
-    const g = s.decomp.global;
-    const body64 = try allocator.alloc(f64, koral.io.dump.primBodySize(SimT, s) / 8);
-    defer allocator.free(body64);
-    const body = std.mem.sliceAsBytes(body64);
-    _ = koral.io.dump.serializePrimBody(SimT, s, body);
-
-    var f = try comm.fileCreate(path, koral.io.dump.bodyOffset(g.nx, g.ny, SimT.nv, g.nz));
-    if (comm.rank() == 0) {
-        var hdr: [koral.io.dump.header_size]u8 = undefined;
-        _ = koral.io.dump.writeDumpHeader(&hdr, .{
-            .nx = @intCast(g.nx),
-            .ny = @intCast(g.ny),
-            .nz = @intCast(g.nz),
-            .nv = @intCast(SimT.nv),
-            .t = s.t,
-            .nstep = s.nstep,
-            .out_idx = idx,
-        });
-        comm.fileWriteAt(&f, 0, hdr[0..]);
-    }
-    comm.fileWriteAtAll(&f, koral.io.dump.bodyOffset(g.nx, g.ny, SimT.nv, @intCast(s.decomp.tok)), body);
-    comm.fileClose(&f);
+fn writeKdmpCollective(
+    comptime SimT: type,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    comm: *Comm,
+    s: *const SimT,
+    path: [*:0]const u8,
+    idx: u32,
+) !void {
+    try koral.io.dump.writePrim(SimT, s, comm, allocator, io, std.mem.span(path), idx);
 }
 
-/// The driver's loadPrimDumpMpi sequence: collective header + slab read.
-fn readKdmpCollective(comptime SimT: type, allocator: std.mem.Allocator, comm: *Comm, s: *SimT, path: [*:0]const u8) !koral.io.dump.DumpHeader {
-    // Rank-local allocation BEFORE the collective open, as the driver does:
-    // a failure between open and close would run the deferred collective
-    // fileClose while the peers block in read_at_all.
-    const body64 = try allocator.alloc(f64, koral.io.dump.primBodySize(SimT, s) / 8);
-    defer allocator.free(body64);
-    const body = std.mem.sliceAsBytes(body64);
-
-    var f = try comm.fileOpenRead(path);
-    defer comm.fileClose(&f);
-    // Length guard, exactly as the driver does it (a collective read is
-    // sized by the buffer, not the file, and reports the shortfall only in
-    // the status we pass IGNORE for — so a truncated checkpoint would
-    // otherwise load uninitialized heap as primitives).
-    const fsize = comm.fileSize(&f);
-    if (fsize < koral.io.dump.header_size) return error.Truncated;
-    var hdr: [koral.io.dump.header_size]u8 = undefined;
-    comm.fileReadAtAll(&f, 0, hdr[0..]);
-    const h = try koral.io.dump.parseDumpHeader(hdr[0..]);
-    const g = s.decomp.global;
-    if (h.nx != g.nx or h.ny != g.ny or h.nz != g.nz or h.nv != SimT.nv)
-        return error.DimMismatch;
-    if (fsize < koral.io.dump.bodyOffset(g.nx, g.ny, SimT.nv, g.nz)) return error.Truncated;
-    comm.fileReadAtAll(&f, koral.io.dump.bodyOffset(g.nx, g.ny, SimT.nv, @intCast(s.decomp.tok)), body);
-    try koral.io.dump.loadPrimBody(SimT, s, body);
-    return h;
+fn readKdmpCollective(
+    comptime SimT: type,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    comm: *Comm,
+    s: *SimT,
+    path: [*:0]const u8,
+) !koral.io.dump.DumpHeader {
+    return koral.io.dump.loadPrim(SimT, s, comm, allocator, io, std.mem.span(path));
 }
 
 fn gate6(allocator: std.mem.Allocator, io: std.Io, comm: *Comm, dc: koral.comm.Decomp) !bool {
@@ -719,7 +686,7 @@ fn gate6(allocator: std.mem.Allocator, io: std.Io, comm: *Comm, dc: koral.comm.D
         var s = try SimM.init(allocator, dc.local, minkOpts(comm, dc));
         defer s.deinit();
         try initMinkBox(&s);
-        try writeKdmpCollective(SimM, allocator, comm, &s, path_a, 7);
+        try writeKdmpCollective(SimM, allocator, io, comm, &s, path_a, 7);
     }
     comm.barrier(); // close is collective, but order the plain reads anyway
     {
@@ -742,14 +709,11 @@ fn gate6(allocator: std.mem.Allocator, io: std.Io, comm: *Comm, dc: koral.comm.D
     comm.barrier();
     var s2 = try SimM.init(allocator, dc.local, minkOpts(comm, dc));
     defer s2.deinit();
-    const h = try readKdmpCollective(SimM, allocator, comm, &s2, path_b);
+    const h = try readKdmpCollective(SimM, allocator, io, comm, &s2, path_b);
     g.expect(h.out_idx == 7 and h.nstep == 0 and h.t == 0.0, "header round-trip: idx {d} nstep {d} t {e}", .{ h.out_idx, h.nstep, h.t });
     s2.t = h.t;
     s2.nstep = h.nstep;
-    // The driver's restart rebuild: exchanged z-ghosts, physical BCs, dt guess.
-    s2.exchangeHalos();
-    try s2.setBc(s2.t, true);
-    s2.initTimestepGuess();
+    try s2.finishInit();
     // Loaded state ≡ the freshly-initialized state, bitwise (p verbatim,
     // u = p2u(p) both ways) — over the whole local domain, p and u.
     {
@@ -804,7 +768,7 @@ fn gate6(allocator: std.mem.Allocator, io: std.Io, comm: *Comm, dc: koral.comm.D
     // and this is the last check in the gate — nothing reads s2 afterwards.
     // Collective: every rank compares the same two numbers, so the ring
     // rejects as one and no rank is left behind in a later collective.
-    if (readKdmpCollective(SimM, allocator, comm, &s2, path_t)) |_| {
+    if (readKdmpCollective(SimM, allocator, io, comm, &s2, path_t)) |_| {
         g.expect(false, "truncated checkpoint was accepted", .{});
     } else |err| {
         g.expect(err == error.Truncated, "truncated checkpoint gave {s}, want Truncated", .{@errorName(err)});
@@ -825,7 +789,7 @@ fn gate6(allocator: std.mem.Allocator, io: std.Io, comm: *Comm, dc: koral.comm.D
         comm.fileClose(&pf);
     }
     comm.barrier();
-    if (readKdmpCollective(SimM, allocator, comm, &s2, path_p)) |_| {
+    if (readKdmpCollective(SimM, allocator, io, comm, &s2, path_p)) |_| {
         g.expect(false, "interrupted (full-length, header-less) checkpoint was accepted", .{});
     } else |err| {
         // Length alone cannot reject it, so this MUST fail on the marker.

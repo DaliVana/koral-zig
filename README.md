@@ -21,8 +21,8 @@ memory-safe, dependency-light GR-RMHD core that is easy to read, test, and exten
   a black-hole spacetime in modified Kerr–Schild (MKS2) coordinates.
 - **How it runs.** Single binary per problem, one TOML config, no runtime
   dependencies beyond the Zig standard library. Serial by default with **opt-in
-  shared-memory threading**; runs on a laptop or a single workstation node. (MPI
-  is not yet implemented — see [Status](#status).)
+  shared-memory threading**; opt-in **φ-only MPI** (`-Dmpi`) splits a 3D wedge
+  across ranks. Runs on a laptop, a workstation node, or a multi-node φ-ring.
 - **How it's checked.** Validated against the original C code — the 2D and 3D
   PUFFY problems reproduce it bit-for-bit — through a large battery of analytic
   "theory" tests and C-generated golden files. See [Testing](#testing).
@@ -234,8 +234,8 @@ implicit radiation–gas solver, the full RK2-IMEX pipeline, the PUFFY problem
 viscosity + Comptonization, scalar diagnostics, restart checkpoints, and opt-in
 threading.
 
-**Not yet implemented:** distributed-memory **MPI** (runs are currently single-node;
-the production 384×360×32 science grid is a future cluster job). HDF5 output is
+**MPI** is opt-in (`-Dmpi`): a φ-only ring (`comm/mpi/`, one rank per node,
+`nthreads` = cores on the node). 2D (`nz = 1`) never decomposes. HDF5 output is
 deferred in favor of the KDMP + optional Silo paths.
 
 See the [validation log](docs/MILESTONES.md) for the per-milestone detail and

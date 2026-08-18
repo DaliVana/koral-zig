@@ -331,6 +331,17 @@ MKSR0 = −1.5, scattering off) — every deliberate divergence from the C refer
 catalogued in `docs/PUFFY_AGN_DIVERGENCES.md`. The validated 10 M☉ constants and goldens are
 untouched (unset keys keep `.puffy` presets).
 
+**Problem/driver contracts (2026-08-17):** the PUFFY `pub var` forest and
+`applyPhysicsOverrides` are gone. Runtime physics is a value, `puffy.Physics`
+(`fromParams` folds the optional TOML overrides onto `defaults`; tests never
+call it). `puffy.setup` / `puffy.load` are the single construction path for the
+driver and the replay tools (`kdmp2silo`, `kdmp2png`, `kdmp2lc`, `qmri`).
+`Sim.finishInit` is the generic init tail (`exchangeHalos` + `setBc(self.t)` +
+`initTimestepGuess`). Checkpoints go through `dump.writePrim` / `loadPrim` /
+`resolveRestartPath` (serial and MPI share the body-then-header protocol).
+`main.zig` is the thin driver the architecture described. Goldens and the
+validated `defaults` are unchanged.
+
 **Test hardening + golden reorganization (2026-07-15):** new isolated invariant gates for the
 M12 physics — `dynamo_tests.zig` (the per-cell dynamo law `dynamoDeltaA` extracted as a pure
 function) and `radvisc_tests.zig` (`shearFromGradients` extracted from `calcShearLab`;

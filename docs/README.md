@@ -35,8 +35,10 @@ pipeline, the PUFFY problem (limotorus init, GK21 quadrature, β-normalization,
 2D and 3D), the dynamo + radiative viscosity + Comptonization, and the full driver
 with scalar diagnostics, restart checkpoints, and opt-in threading. Work since
 then (2026-07/08) added MESA Rosseland opacity tables, the runtime
-optional-physics-override mechanism behind the AGN/Sgr A* presets, a SIMD
-implicit-solver Jacobian, and the `koral/fv/` finite-volume reorganization. See
+optional-physics-override mechanism behind the AGN/Sgr A* presets (now a
+`puffy.Physics` value via `fromParams` / `setup`, not process-wide mutation),
+opt-in φ-only MPI (`-Dmpi`), a SIMD implicit-solver Jacobian, and the
+`koral/fv/` finite-volume reorganization. See
 [`MILESTONES.md`](MILESTONES.md) for the milestone checklist and each milestone's
 validation summary, or the top-level [`README.md`](../README.md) for the project
 overview and quickstart.

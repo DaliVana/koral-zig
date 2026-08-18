@@ -38,8 +38,10 @@ around a black hole in modified Kerr-Schild (MKS2) coordinates, evolving ideal M
 coupled to M1-closure radiation with thermal Comptonization, radiative shear viscosity,
 and a mean-field "mimic" dynamo. The reference configuration is the 2D axisymmetric
 10 M☉ Schwarzschild torus (`puffy.toml`), but the problem is runtime-retargetable:
-`puffy.zig` exposes `pub var mass` / `pub var rmin` and `rminForSpin(a)` (RMIN tracks
-the Kerr horizon), and presets exist for 3D (`puffy3d.toml`), Sgr A*
+`puffy.Physics` holds mass, spin, RMIN/RMAX, floors, opacities, and the rest of
+the C `define.h` knobs as a **value** (`Physics.fromParams` applies a TOML preset;
+`rminForSpin(a)` keeps RMIN inside the Kerr horizon). Tests and goldens use
+`puffy.defaults` and never go through `fromParams`. Presets exist for 3D (`puffy3d.toml`), Sgr A*
 (`puffy3d_sgra.toml`, mass = 4.297e6), a spinning Sgr A* (`puffy3d_sgra_spin.toml`,
 bhspin = 0.9375), and a 10⁹ M☉ AGN with MESA opacities (`puffy_agn.toml`).
 
@@ -71,7 +73,7 @@ index-for-index and to a few ulps, against a C dump. Concretely:
 
   These are documented at each site in the code and in [§11](#11-testing-and-the-oracle).
 
-### Serial-first, opt-in threading, no MPI yet
+### Serial-first, opt-in threading, opt-in φ-only MPI
 
 - The **serial path is the golden path**: `nthreads = 1` produces bit-identical results
   to the recorded C oracle. That is the configuration all golden tests run in.
@@ -79,13 +81,13 @@ index-for-index and to a few ulps, against a C dump. Concretely:
   per-cell inversion and implicit passes over rows of the θ-index; because the rows are
   disjoint and each cell is computed locally, and only integer counters are summed after
   the join, the numeric result is identical to serial (see [§10](#10-the-threading-model)).
-- **MPI is not implemented.** The communication layer is `comm/serial.zig`, a single-rank
-  no-op (`exchangeHalos` does nothing, `allreduce` is the identity, `barrier` is a no-op).
-  A `-Dmpi` build flag exists but has no backend, so building with it now hard-errors at
-  compile time (`koral.zig` reads `build_options.mpi` and `@compileError`s) rather than
-  silently producing a serial binary.
-  Numerics only ever talk to the `Serial` interface, so an MPI backend can be dropped in
-  later without touching kernels.
+- **MPI is opt-in and φ-only.** `koral/comm/comm.zig` comptime-selects `Serial` or
+  `comm/mpi/mpi.zig` from `-Dmpi`. The serial backend is a single-rank no-op
+  (`exchangeHalos` does nothing, `allreduce` is the identity). The MPI backend is a
+  Cart φ-ring with persistent zero-copy halo exchange, in-place collectives, and
+  MPI-IO checkpoints (`dump.writePrim` / `loadPrim`). `nx/ny/nz` in the params file
+  are global; each rank owns a z-slab. 2D (`nz = 1`) never decomposes. Numerics talk
+  only to the `comm.Backend` interface.
 
 ### Comptime configuration generates the code
 
@@ -105,9 +107,10 @@ There are two kinds of top-level artifact:
 - **The `koral` library** (`koral/…`) — all the physics and numerics, rooted at
   `koral/koral.zig`.
 - **Problem executables** (`koral/problems/<name>/main.zig`) — thin drivers that pick a
-  comptime `Config`, load runtime `Params`, build a `Sim`, run the time loop, and write
-  output. Currently the only problem is `koral/problems/puffy/` (with its `.toml`
-  presets alongside).
+  comptime `Config`, load runtime `Params`, call the problem's `setup` (Physics +
+  grid + `Sim.Options`), build a `Sim`, run the time loop, and write output through
+  `koral/io/dump.zig`. Currently the only problem is `koral/problems/puffy/` (with
+  its `.toml` presets alongside).
 
 `build.zig` discovers every subdirectory of `koral/problems/` and, per directory, builds
 one executable importing `koral`, plus `<name>` (build) and `run-<name>` (build & run)
@@ -135,7 +138,8 @@ does `const koral = @import("koral");` and reaches everything through it.
 
 ```
   ┌─────────────────────────────────────────────────────────────────────┐
-  │ koral/problems/puffy/main.zig (driver: Config + Params → Sim → loop)  │
+  │ koral/problems/puffy/main.zig (driver: Config + setup → Sim → loop)    │
+  │   puffy.Physics / puffy.setup / puffy.initAllWith                      │
   └───────────────┬─────────────────────────────────────────────────────┘
                   │  imports koral
   ┌───────────────▼─────────────────────────────────────────────────────┐
@@ -162,7 +166,7 @@ does `const koral = @import("koral");` and reaches everything through it.
   ┌─────────────────────────────────▼───────────────────────────────────┐
   │ Foundation (leaf infra, only std + intra-foundation imports):         │
   │  config · layout · grid · field · units · params · geometry           │
-  │  math/dual · math/linalg · math/misc · math/simd · comm/serial        │
+  │  math/dual · math/linalg · math/misc · math/simd · comm/{serial,mpi}   │
   │  testing/*                                                            │
   └───────────────────────────────────────────────────────────────────────┘
 ```
@@ -365,8 +369,11 @@ tolerances (`radimpeps`, `radimpmaxiter`), opacity damping (`opdamp_maxlevels`,
 `synchrotron_bridge`, `scattering`, `mesa_table`), floor knobs (`zamo_floor_frame`,
 `eerhoratiomin/max`, `eeuuratiomin/max`, `gammamaxrad`, `rhoatmmin`), composition
 (`hfrac`, `hefrac`), and torus/atmosphere constants (`lt_kappa`, `maxbeta`, `atm_tgas`,
-`atm_trad_init`, `atm_erad_factor`). The problem driver applies non-null values onto the
-compiled defaults at startup.
+`atm_trad_init`, `atm_erad_factor`). `puffy.Physics.fromParams` folds non-null values
+onto `puffy.defaults` and returns a new `Physics` value — nothing mutates process
+state. `puffy.setup` / `puffy.load` also attach an optional heap MESA table and
+build `Sim.Options` (`Physics.toOptions`). The driver and the replay tools
+(`kdmp2silo`, `kdmp2png`, `kdmp2lc`, `qmri`) share that path.
 
 ### 3.7 Per-cell derived state — `radforce.RadState`
 
@@ -1050,7 +1057,7 @@ deviations are **expected**, not regressions — a real bug shows far above that
 
 | Subsystem | Primary files |
 | --- | --- |
-| **Foundation** (config, layout, storage, units, params, geometry, comm) | `koral/config.zig`, `koral/layout.zig`, `koral/grid.zig`, `koral/field.zig`, `koral/units.zig`, `koral/params.zig`, `koral/geometry.zig`, `koral/koral.zig`, `koral/comm/serial.zig` |
+| **Foundation** (config, layout, storage, units, params, geometry, comm) | `koral/config.zig`, `koral/layout.zig`, `koral/grid.zig`, `koral/field.zig`, `koral/units.zig`, `koral/params.zig`, `koral/geometry.zig`, `koral/koral.zig`, `koral/comm/comm.zig` (Serial vs MPI), `koral/comm/serial.zig`, `koral/comm/mpi/` |
 | **Math utilities** | `koral/math/dual.zig`, `koral/math/linalg.zig`, `koral/math/simd.zig`, `koral/math/misc.zig`, `koral/math/quad.zig` |
 | **Metric / coordinates** | `koral/metric/forms.zig`, `koral/metric/metric.zig`, `koral/metric/coco.zig`, `koral/metric/precompute.zig` |
 | **Velocity / index / boost algebra** | `koral/relele.zig`, `koral/frames.zig` |
@@ -1062,7 +1069,7 @@ deviations are **expected**, not regressions — a real bug shows far above that
 | **Reconstruction + wavespeeds + flux + Riemann** | `koral/fv/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`, `koral/fv/laxf.zig` |
 | **Evolution driver** | `koral/sim.zig`, `koral/sim/storage.zig`, `koral/sim/bc.zig`, `koral/sim/polaraxis.zig`, `koral/sim/timers.zig`, `koral/threading.zig` |
 | **Constrained transport + dynamo + radiative viscosity** | `koral/sim/ct.zig`, `koral/sim/dynamo.zig`, `koral/physics/radvisc.zig` (pure kernels), `koral/sim/rijvisc.zig` (gather + per-step pass) |
-| **PUFFY problem (IC, driver, quadrature, presets)** | `koral/problems/puffy/puffy.zig`, `koral/problems/puffy/main.zig`, `koral/problems/puffy/*.toml`, `koral/math/quad.zig` |
+| **PUFFY problem (Physics, IC, driver, quadrature, presets)** | `koral/problems/puffy/puffy.zig` (`Physics`, `setup`, `initAllWith`, `Bc`), `koral/problems/puffy/main.zig`, `koral/problems/puffy/*.toml`, `koral/math/quad.zig` |
 | **Diagnostics + output** | `koral/io/scalars.zig`, `koral/io/dump.zig`, `koral/io/silo.zig` (+ `silo_disabled.zig` stub) |
 | **Build + oracle + goldens + tools** | `build.zig`, `tools/gen_golden.sh`, `tools/res2kdmp.zig`, `tools/bench_implicit.zig`, `koral/testing/golden.zig`, `koral/testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/**` |
 | **Self-goldens (Zig-generated baseline)** | `koral/testing/selfgolden.zig`, `koral/testing/selfscenarios.zig`, `koral/tests/selfgolden_tests.zig`, `tools/gen_self_golden.zig`, `tests/selfgolden/**` |
@@ -1073,15 +1080,17 @@ deviations are **expected**, not regressions — a real bug shows far above that
 - **Add a physics module** → append a `Module` in canonical order, add its `moduleTags`
   slice and `VarTag`s in `layout.zig`; NV and all indices regenerate at comptime.
 - **Add a runtime tunable** → add a field with a default to `Params` (parser already
-  handles f64/usize/bool/string).
+  handles f64/usize/bool/string). For a PUFFY/AGN knob, also fold it in
+  `Physics.fromParams`.
 - **Add a reconstruction / flux / integrator / coordinate system** → extend the relevant
   `Config` enum; kernels dispatch on it at comptime.
 - **Change floors or implicit tolerances** → the `FloorParams` / `RadParams` /
   `ImplicitParams` presets in `solve/invert*.zig` and `solve/implicit.zig`; most are also
-  runtime-overridable from the params file (the optional-override group in §3.6).
-- **Instantiate a new problem** → create `koral/problems/<name>/main.zig` picking a
-  `Config`, loading `Params`, and supplying init/boundary hooks; `build.zig`
-  auto-discovers it.
+  runtime-overridable from the params file via `Physics.fromParams` (the optional-override
+  group in §3.6).
+- **Instantiate a new problem** → create `koral/problems/<name>/` with a value-typed
+  physics bundle (see `puffy.Physics`), init/BC hooks, and a thin `main.zig` that
+  calls `setup` → `Sim.init` → `step` → `dump.writePrim`; `build.zig` auto-discovers it.
 - **Regenerate goldens after a koral_lite change** → run `tools/gen_golden.sh` and commit
   `tests/golden/**` + `manifest.json` ([§11](#11-testing-and-the-oracle)).
 - **Deliberately change the numerics** → review what the self-golden reports moved, then

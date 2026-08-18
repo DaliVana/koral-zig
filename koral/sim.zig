@@ -677,11 +677,15 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.u.store(ix, iy, iz, &uu);
         }
 
-        /// ko.c init tail + problem.c:59-82: ghost fill and the initial
-        /// timestep guess. Call after initCell over the domain (and after
-        /// ct.calcBfromA for vector-potential problems).
+        /// ko.c init tail + problem.c:59-82: halo exchange, ghost fill, and
+        /// the initial timestep guess. Call after initCell over the domain
+        /// (and after ct.calcBfromA for vector-potential problems). Uses
+        /// `self.t` so a restart that has already adopted the checkpoint
+        /// clock fills ghosts at the resumed time. `exchangeHalos` is a
+        /// no-op serially / at 1 rank.
         pub fn finishInit(self: *Self) Error!void {
-            try self.setBc(0.0, true);
+            self.exchangeHalos();
+            try self.setBc(self.t, true);
             self.initTimestepGuess();
         }
 

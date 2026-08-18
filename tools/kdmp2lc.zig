@@ -173,22 +173,12 @@ pub fn main(init: std.process.Init) !void {
     };
     defer p.deinit(allocator);
 
-    // the driver's exact setup order (see kdmp2png)
-    puffy.mass = p.mass;
-    puffy.mp.a = p.bhspin;
-    puffy.applyPhysicsOverrides(&p);
-    puffy.rmin = if (p.rmin > 0.0) p.rmin else puffy.rminForSpin(p.bhspin);
-    if (p.rmax > 0.0) puffy.rmax = p.rmax;
-
-    var mtab: ?koral.physics.mesa.MesaTable = null;
-    defer if (mtab) |*t| t.deinit();
-    if (p.mesa_table.len > 0) {
-        mtab = koral.physics.mesa.MesaTable.load(allocator, io, p.mesa_table) catch |err| {
-            std.debug.print("kdmp2lc: cannot load MESA table '{s}': {s}\n", .{ p.mesa_table, @errorName(err) });
-            return err;
-        };
-        puffy.channels.mesa = &mtab.?;
-    }
+    var loaded = puffy.load(allocator, io, &p) catch |err| {
+        std.debug.print("kdmp2lc: cannot load physics from '{s}': {s}\n", .{ ppath, @errorName(err) });
+        return err;
+    };
+    defer loaded.deinit(allocator);
+    const phys = &loaded.physics;
 
     var ser = render.series.Series.scan(allocator, io, sdir, stride) catch |err| {
         std.debug.print("kdmp2lc: cannot scan series '{s}': {s}\n", .{ sdir, @errorName(err) });
@@ -208,7 +198,7 @@ pub fn main(init: std.process.Init) !void {
         return error.BadArgs;
     }
 
-    const grid = puffy.makeGridNz(ser.shape.nx, ser.shape.ny, ser.shape.nz);
+    const grid = phys.makeGridNz(ser.shape.nx, ser.shape.ny, ser.shape.nz);
     var src = try render.series.FileSource.init(allocator, io, &ser);
     defer src.deinit();
 
@@ -217,11 +207,11 @@ pub fn main(init: std.process.Init) !void {
     const ref = try src.acquire(ref_idx);
     defer src.release(ref_idx);
 
-    var scene = render.Scene.init(grid, puffy.mp, puffy.consts(), puffy.channels, puffy.gam, ref, rcam, puffy.rmax);
-    scene.scattering = puffy.scattering;
+    var scene = render.Scene.init(grid, phys.mp, phys.consts(), phys.channels, phys.gam, ref, rcam, phys.rmax);
+    scene.scattering = phys.scattering;
     scene.sigma_cut = sigma_cut;
     if (floor_cut > 0) {
-        scene.floor = .{ .rho0 = puffy.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
+        scene.floor = .{ .rho0 = phys.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
     }
 
     var cam = render.Camera{
@@ -233,7 +223,7 @@ pub fn main(init: std.process.Init) !void {
         .height = size,
         .ss = @max(ss, 1),
     };
-    cam.setup(puffy.mp);
+    cam.setup(phys.mp);
 
     // one spec set per epoch, each epoch aimed at its own pixel block
     const base = try render.sweep.uniformPlan(allocator, &cam);
@@ -254,7 +244,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    const un = puffy.consts().units;
+    const un = phys.consts().units;
     const gmc3 = un.gmc3();
     const wedge = 2.0 * std.math.pi / (grid.maxz - grid.minz);
     std.debug.print(

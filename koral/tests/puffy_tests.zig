@@ -22,6 +22,7 @@ const relele = @import("../relele.zig");
 const frames = @import("../frames.zig");
 const quad = @import("../math/quad.zig");
 const puffy = @import("../problems/puffy/puffy.zig");
+const params_mod = @import("../params.zig");
 const thermo = @import("../physics/thermo.zig");
 const mhd = @import("../physics/bfield.zig");
 const radiation = @import("../physics/radiation.zig");
@@ -594,6 +595,25 @@ test "puffy hydro limotorus: stationary, drift converges with resolution" {
 // ---------------------------------------------------------------------------
 // init perturbation + seed MRI-quality report (campaign notes 2026-08-08)
 
+test "Physics.fromParams does not mutate defaults" {
+    var p = try params_mod.Params.parse(std.testing.allocator,
+        \\mass = 4.297e6
+        \\bhspin = 0.9375
+        \\perturb = 0.02
+        \\rmin = 1.2
+    );
+    defer p.deinit(std.testing.allocator);
+    const phys = puffy.Physics.fromParams(&p);
+    try std.testing.expectEqual(@as(f64, 10.0), puffy.defaults.mass);
+    try std.testing.expectEqual(@as(f64, 0.0), puffy.defaults.mp.a);
+    try std.testing.expectEqual(@as(f64, 0.0), puffy.defaults.perturb);
+    try std.testing.expectEqual(@as(f64, 1.85), puffy.defaults.rmin);
+    try std.testing.expectEqual(@as(f64, 4.297e6), phys.mass);
+    try std.testing.expectEqual(@as(f64, 0.9375), phys.mp.a);
+    try std.testing.expectEqual(@as(f64, 0.02), phys.perturb);
+    try std.testing.expectEqual(@as(f64, 1.2), phys.rmin);
+}
+
 test "perturbXi: pure, bounded, varies across cells" {
     const x = [4]f64{ 0, 1.234, 0.456, -0.789 };
     const a1 = puffy.perturbXi(x);
@@ -613,14 +633,14 @@ test "puffy init perturbation: deterministic, bounded, off-by-default identical"
     defer s0.deinit();
     _ = try puffy.initAll(SimP, &s0);
 
-    puffy.perturb = 0.05;
-    defer puffy.perturb = 0.0;
+    var phys = puffy.defaults;
+    phys.perturb = 0.05;
     var s1 = try SimP.init(a, puffy.makeGrid(24, 20), puffyOptions());
     defer s1.deinit();
-    _ = try puffy.initAll(SimP, &s1);
+    _ = try puffy.initAllWith(SimP, &s1, &phys);
     var s2 = try SimP.init(a, puffy.makeGrid(24, 20), puffyOptions());
     defer s2.deinit();
-    _ = try puffy.initAll(SimP, &s2);
+    _ = try puffy.initAllWith(SimP, &s2, &phys);
 
     var n_diff: usize = 0;
     var iy: i64 = 0;
@@ -686,7 +706,6 @@ test "puffy seed quality: positive on the initialized torus and linear in B" {
 //
 
 test "every shipped puffy preset parses (unknown keys are hard errors)" {
-    const params_mod = @import("../params.zig");
     const presets = [_][]const u8{
         "koral/problems/puffy/puffy.toml",
         "koral/problems/puffy/puffy3d.toml",

@@ -37,10 +37,9 @@ architecture see `ARCHITECTURE.md`; for the physics derivations see `PHYSICS.md`
   signature. Older Zig releases will not compile it.
 - Nothing else. The library depends only on `std`; the serial communication
   backend (`koral/comm/serial.zig`) is a no-op single-rank implementation, so no
-  MPI is required for a normal run. (The `build.zig` `-Dmpi` flag exists but has
-  no backend — setting it is a hard `@compileError` in `koral/koral.zig`, not a
-  silent serial build.) With `-Dsilo` the build additionally fetches the lazy
-  sibling `silo-zig` dependency (§2, §4).
+  MPI is required for a normal run. `-Dmpi` swaps in `koral/comm/mpi/` (φ-only
+  ring; see "Running under MPI" below). With `-Dsilo` the build additionally
+  fetches the lazy sibling `silo-zig` dependency (§2, §4).
 
 ### Additionally, to regenerate the C-comparison golden data
 
@@ -125,7 +124,7 @@ using it).
 
 ### Running under MPI (P4a+P4b — 3D wedges, node-to-node only)
 
-The MPI layer (docs/MPI_PLAN_2026-08-07.md) decomposes **φ only**: `nx/ny/nz`
+The MPI layer decomposes **φ only**: `nx/ny/nz`
 in the params file stay the GLOBAL dims, each rank evolves one contiguous
 z-slab of `nz / <ranks>` φ-cells, and 2D runs (`nz = 1`) never decompose.
 `nz` must divide by the rank count with `nz/ranks ≥ 3` (the ghost depth).
@@ -149,8 +148,9 @@ I/O under MPI (P4b, plan §8):
   per output row: one SUM carrying the diagnostic counters, one MAX); rank 0
   writes the file. Serially the folds are identity and the rows are bitwise
   what they always were.
-* **KDMP checkpoints** — written collectively (`MPI_File_write_at_all`; each
-  rank's φ-slab is one contiguous byte range of the file). The file is
+* **KDMP checkpoints** — `dump.writePrim` / `dump.loadPrim` (`koral/io/dump.zig`).
+  Written collectively under MPI (`MPI_File_write_at_all`; each rank's φ-slab
+  is one contiguous byte range of the file). The file is
   **byte-identical** to a serial run's checkpoint (gate 6 pins this), so
   `--restart` works at ANY rank count in both directions: a serial/1-rank
   checkpoint restarts at N ranks and vice versa, and the plain serial binary
@@ -162,8 +162,8 @@ I/O under MPI (P4b, plan §8):
   exactly the one a kill leaves partial.
 * **silo** — still serial-only at write time; convert MPI-run checkpoints
   with `zig build kdmp2silo -Dsilo -Doptimize=ReleaseFast -- <params.toml>
-  <prims#####.kdmp | dumps-dir> [out-dir]` (same params file as the run, so
-  the mesh and derived fields are reconstructed identically). Native PMPIO
+  <prims#####.kdmp | dumps-dir> [out-dir]` (`puffy.setup` from the same params
+  file as the run, so the mesh and derived fields are reconstructed identically). Native PMPIO
   dumps land in P4c.
 
 The rank-0 heartbeat gains an `mpi=…%` field (share of stepping wall-clock in
@@ -226,10 +226,12 @@ the generated code (module set, reconstruction, coordinates) is a **comptime**
 
 Many fields are **optional** (`?f64`/`?bool`/`?usize`/string, default null/empty):
 an absent key means "keep the compiled preset", a present key always overrides it.
-The PUFFY driver's `applyPhysicsOverrides` copies every set override onto the
-problem's floor/rad/implicit/opacity/torus settings at startup, *before* the `Sim`
-is built — so params-file values genuinely take effect; they are not just a run
-record.
+`puffy.Physics.fromParams` copies every set override onto a **new** `Physics`
+value (starting from `puffy.defaults`) at startup, *before* the `Sim` is built —
+so params-file values genuinely take effect; they are not just a run record.
+Tests and goldens never call `fromParams`, so they stay pinned to the validated
+literals. `puffy.setup` / `puffy.load` wrap that plus the optional MESA table
+and `Sim.Options` construction; the driver and the replay tools share them.
 
 ### Every `Params` field
 
@@ -290,8 +292,8 @@ preset, e.g. `FloorParams.puffy`; a set value overrides it)
 | `fluid_floor_inside_horizon` | off | Below `r_horizon` the drift-frame velocity algebra is skipped and floors act in the fluid frame, velocity untouched (koral_lite_puffy 2026-08-11; AGN: on). |
 
 **Optional physics overrides** (same null-means-keep-preset semantics; consumed
-by the PUFFY driver's `applyPhysicsOverrides` — these are how `puffy_agn.toml`
-retargets the run without a recompile; see `docs/PUFFY_AGN_DIVERGENCES.md`)
+by `puffy.Physics.fromParams` — these are how `puffy_agn.toml` retargets the
+run without a recompile; see `docs/PUFFY_AGN_DIVERGENCES.md`)
 
 | Field | Meaning (C name) |
 |---|---|
@@ -427,11 +429,15 @@ a = 0), `r_lum = 5000.0` (> RMAX ⇒ the outermost shell), `r_scale = 15.0`.
 
 ### `prims#####.kdmp` — binary primitive snapshot / restart checkpoint
 
-Serialized by `koral/io/dump.zig` (`serializePrimDump`/`loadPrimDump`; the
-driver-side writer helper `writePrimDump` lives in
-`koral/problems/puffy/main.zig`). Written on **every output frame** (the
-`dtout1`/`nout_step` cadence — `dtout2` does not gate it), and doubles as the
-`--restart` checkpoint. Little-endian throughout. Layout (44-byte header):
+Serialized by `koral/io/dump.zig`. `serializePrimDump` / `loadPrimDump` are the
+pure in-memory path; `writePrim` / `loadPrim` / `resolveRestartPath` own the
+file protocol for both serial and MPI (body first, 44-byte header last as a
+completion marker so a killed write fails `parseDumpHeader` instead of looking
+like a valid full-length file of zeros). The driver and `tools/mpi_gates.zig`
+call those functions — they do not reimplement the write. Written on **every
+output frame** (the `dtout1`/`nout_step` cadence — `dtout2` does not gate it),
+and doubles as the `--restart` checkpoint. Little-endian throughout. Layout
+(44-byte header):
 
 ```
 "KDMP"              4 bytes magic
@@ -646,10 +652,13 @@ generator and the checker; edit them there and regenerate, never one side alone.
 ## 7. Recipe: creating a new problem
 
 A **problem** is: a comptime `Config`, a runtime `Params` file, an
-initial-condition + boundary-condition module, and a small driver executable. The
-library (`koral`) provides everything else. This section walks through a complete
-minimal example — a **relativistic MHD shock tube in flat (Minkowski) space** — and
-then notes the extra pieces PUFFY needs.
+initial-condition + boundary-condition module, and a small driver executable.
+PUFFY keeps its C `define.h` knobs in a value type (`puffy.Physics`) so a
+preset is `fromParams`, not process-wide mutation; a simple tube can skip that
+and build `Sim.Options` directly. The library (`koral`) provides everything
+else. This section walks through a complete minimal example — a **relativistic
+MHD shock tube in flat (Minkowski) space** — and then notes the extra pieces
+PUFFY needs.
 
 Directory layout for a new problem `mytube` (everything problem-specific lives
 in one directory, like `koral/problems/puffy/`):
@@ -776,7 +785,7 @@ pub fn initAll(comptime SimT: type, sim: *SimT) !void {
         const s = if (x < 0.0) left else right;
         try sim.initCell(ix, 0, 0, primsFor(s, sim.opt.gam)); // pp → p2u → store p,u
     }
-    try sim.finishInit();                    // set_bc + initial dt guess
+    try sim.finishInit();                    // halo + set_bc(t) + initial dt guess
 }
 
 // --- boundary conditions (outflow / zero-gradient copy) -------------------
@@ -806,9 +815,11 @@ Key API points, all real:
 
 - `sim.initCell(ix, iy, iz, pp)` stores the primitives and derives the conserveds
   via `p2u` (`koral/sim.zig`).
-- `sim.finishInit()` runs `setBc(0, true)` then `initTimestepGuess()` — seed the CFL
+- `sim.finishInit()` runs `exchangeHalos()`, `setBc(self.t, true)`, then
+  `initTimestepGuess()` — the serial/1-rank halo is a no-op. Seed the CFL
   denominator this way (or `s.step` will assert `tstepdenmax > 0` on the first step,
-  turning a forgotten guess into a NaN run).
+  turning a forgotten guess into a NaN run). A restart that has already adopted
+  the checkpoint clock therefore fills ghosts at the resumed time.
 - `sim.cflDt()` returns the CFL timestep `1/tstepdenmax` from the last wavespeeds —
   the one place the driver and `step()` share the dt expression.
 - `sim.grid.xc(ix)` is the cell-center internal coordinate (the two-face average,
@@ -820,8 +831,8 @@ Key API points, all real:
 
 If your tube needs the vector-potential path (seed **B** from A rather than
 directly), store A_φ in the B slots and call `ct.calcBfromA(SimT, sim, true)` then
-`setBc` before `finishInit`, exactly as PUFFY's `initAll` does (which additionally
-runs β-normalization in `postinit`). See `koral/sim/ct.zig`.
+`setBc` before `finishInit`, exactly as PUFFY's `initAll` / `initAllWith` does
+(which additionally runs β-normalization in `postinit`). See `koral/sim/ct.zig`.
 
 ### (d) Write `koral/problems/<name>/main.zig` — the driver
 
@@ -1114,8 +1125,9 @@ In `koral/io/scalars.zig` and `koral/io/dump.zig`:
 3. Extend the `appendScalarLine` format string **and** its arg tuple (they must
    stay in sync — the `bufPrint` format has exactly 12 specifiers today), and add
    the column name to `scalar_header`.
-4. Populate it in the driver's per-cadence `ScalarRow` construction
-   (`scalarRow` in `koral/problems/<name>/main.zig`).
+4. Populate it in `dump.scalarRow` (or the problem's wrapper around it). The
+   PUFFY driver calls `dump.scalarRow(SimT, &s, dt, r_lum, r_scale)` — the two
+   diagnostic radii stay problem-side.
 
 Keep reductions in **GU** — unit conversion is the driver's job at print time.
 
@@ -1149,7 +1161,7 @@ Where the major pieces live (all under `koral/` unless noted):
 
 | Area | Files |
 |---|---|
-| Comptime config / layout / units / grid / storage | `config.zig`, `layout.zig`, `units.zig`, `grid.zig`, `field.zig`, `params.zig`, `geometry.zig`, `koral.zig` (namespace root), `comm/serial.zig` |
+| Comptime config / layout / units / grid / storage | `config.zig`, `layout.zig`, `units.zig`, `grid.zig`, `field.zig`, `params.zig`, `geometry.zig`, `koral.zig` (namespace root), `comm/comm.zig`, `comm/serial.zig`, `comm/mpi/` |
 | Math utilities | `math/dual.zig`, `math/linalg.zig`, `math/simd.zig`, `math/misc.zig`, `math/quad.zig` |
 | Metric (dual-AD, cache, coordinate transforms) | `metric/forms.zig`, `metric/metric.zig`, `metric/coco.zig`, `metric/precompute.zig` |
 | Velocities / boosts / index gymnastics | `relele.zig`, `frames.zig` |
@@ -1161,7 +1173,7 @@ Where the major pieces live (all under `koral/` unless noted):
 | Reconstruction / wavespeeds / flux / Riemann | `fv/recon.zig`, `physics/wavespeeds.zig`, `physics/flux.zig`, `fv/laxf.zig` |
 | Evolution driver | `sim.zig`, `sim/storage.zig`, `sim/bc.zig`, `sim/timers.zig`, `threading.zig` |
 | Constrained transport, dynamo, radiative viscosity | `sim/ct.zig`, `sim/dynamo.zig`, `physics/radvisc.zig` (pure kernels), `sim/rijvisc.zig` (gather + per-step pass) |
-| PUFFY problem + quadrature | `problems/puffy/puffy.zig`, `problems/puffy/main.zig`, `problems/puffy/*.toml`, `math/quad.zig` |
+| PUFFY problem + quadrature | `problems/puffy/puffy.zig` (`Physics`, `setup`, `initAllWith`), `problems/puffy/main.zig`, `problems/puffy/*.toml`, `math/quad.zig` |
 | Diagnostics / I/O | `io/scalars.zig`, `io/dump.zig`, `io/silo.zig` (+ `io/silo_disabled.zig`) |
 | Build / tests / oracle / tools | `build.zig`, `koral.zig` (`test {}`), `tools/gen_golden.sh`, `tools/res2kdmp.zig`, `tools/bench_implicit.zig`, `testing/golden.zig`, `testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/` |
 

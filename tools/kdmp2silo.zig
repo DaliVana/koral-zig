@@ -5,9 +5,9 @@
 //! output with zero MPI-Silo machinery (native PMPIO dumps land in P4c).
 //!
 //! The sim configuration is rebuilt from the SAME params file and the SAME
-//! code path as the puffy driver (puffy.applyPhysicsOverrides/simOptions),
-//! so the mesh coordinates and every derived field (temperatures, opacities)
-//! match what the run itself would have written.
+//! `puffy.setup` path as the driver, so the mesh coordinates and every
+//! derived field (temperatures, opacities) match what the run itself would
+//! have written.
 //!
 //! usage: kdmp2silo <params.toml> <file.kdmp | dumps-dir> [out-dir]
 //!   file — convert one checkpoint to <out-dir>/<name>.silo
@@ -46,7 +46,7 @@ fn convertOne(
     s.nstep = h.nstep;
     // Ghosts are not stored in a KDMP; the divB stencil silo writes reads
     // one ring of them (same recompute as the driver's restart path).
-    try s.setBc(s.t, true);
+    try s.finishInit();
 
     const base = std.fs.path.basename(kdmp_path);
     const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
@@ -88,27 +88,13 @@ pub fn main(init: std.process.Init) !void {
     };
     defer p.deinit(allocator);
 
-    // The driver's exact setup order (main.zig): scales first, then the
-    // physics overrides (they can move mksr0, which rmin/makeGridNz read),
-    // then the domain, the MESA table, and finally the options.
-    puffy.mass = p.mass;
-    puffy.mp.a = p.bhspin;
-    puffy.applyPhysicsOverrides(&p);
-    puffy.rmin = if (p.rmin > 0.0) p.rmin else puffy.rminForSpin(p.bhspin);
-    if (p.rmax > 0.0) puffy.rmax = p.rmax;
+    var st = puffy.setup(SimT, allocator, io, &p) catch |err| {
+        std.debug.print("kdmp2silo: cannot set up from '{s}': {s}\n", .{ params_path, @errorName(err) });
+        return err;
+    };
+    defer st.deinit(allocator);
 
-    var mtab: ?koral.physics.mesa.MesaTable = null;
-    defer if (mtab) |*t| t.deinit();
-    if (p.mesa_table.len > 0) {
-        mtab = koral.physics.mesa.MesaTable.load(allocator, io, p.mesa_table) catch |err| {
-            std.debug.print("kdmp2silo: cannot load MESA table '{s}': {s}\n", .{ p.mesa_table, @errorName(err) });
-            return err;
-        };
-        puffy.channels.mesa = &mtab.?;
-    }
-
-    const grid = puffy.makeGridNz(p.nx, p.ny, p.nz);
-    var s = try SimT.init(allocator, grid, puffy.simOptions(SimT, &p));
+    var s = try SimT.init(allocator, st.grid_global, st.options);
     defer s.deinit();
 
     // A directory converts every checkpoint in lexical order (the zero-

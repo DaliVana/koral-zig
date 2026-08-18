@@ -58,35 +58,12 @@ const Geometry = geometry.Geometry;
 // ---------------------------------------------------------------------------
 // problem constants (PROBLEMS/PUFFY/define.h)
 
-/// MASS (define.h) in solar masses. A module global like C's `#define MASS`,
-/// but settable once at startup so a preset (e.g. Sagittarius A*, ~4.3e6) can
-/// retarget the torus thermo/opacity/radiation-floor unit scale. Tests and
-/// every golden leave this at 10 — only `PROBLEMS/puffy/main.zig` writes it,
-/// from the params file, before `initAll`. It feeds `consts()` and
-/// `atmConsts()` (init); the stepping opacity mass is set in parallel via
-/// `radforce.Params.puffyMass`. The torus geometry (`torusConsts`) is
-/// dimensionless in GM units and does not depend on mass.
-pub var mass: f64 = 10.0; // MASS
-pub const gam: f64 = 5.0 / 3.0; // GAMMA
-/// Metric parameters (BHSPIN, MKSR0, MKSH0). Like `mass`, a module global set
-/// once at startup: `PROBLEMS/puffy/main.zig` may overwrite `mp.a` from the
-/// params file's `bhspin` for a spinning preset. Tests and every golden leave
-/// `a = 0` (Schwarzschild, matching C PUFFY's BHSPIN = 0), so they are
-/// bit-identical. The full torus/dynamo/metric chain is already general in `a`
-/// (limotorus `computeGd`/`lK`, `rHorizonBL`/`rIscoBL`, MKS2 Kerr–Schild).
-/// MKSR0/MKSH0 do not depend on spin, but RMIN does: it is recomputed from `a`
-/// (see `rminForSpin`) so the inner boundary stays inside the shrinking Kerr
-/// horizon and the plain-copy XBCLO excision remains causally clean.
-pub var mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
-/// RMIN — the active inner radial boundary read by `makeGridNz`. A module
-/// global (like `mass`/`mp`): the driver overwrites it once at startup from the
-/// spin via `rminForSpin` (or an explicit params override) so the excision
-/// tracks the Kerr horizon. Tests/goldens leave it at the fiducial 1.85.
-pub var rmin: f64 = 1.85; // RMIN
-
 /// The fiducial (Schwarzschild) RMIN — PUFFY's define.h value, immutable. Used
 /// as the reference depth for `rminForSpin`; also the value tests/goldens use.
 pub const rmin_ref: f64 = 1.85;
+
+/// UINTATMMIN / ERADATMMIN (define.h:221/225), computed once.
+pub const Atm = struct { uintatmmin: f64, eradatmmin: f64 };
 
 /// Inner boundary placed the same fraction inside the (Kerr) horizon as the
 /// fiducial a = 0 setup: RMIN(a) = rmin_ref · r_h(a)/r_h(0), i.e. 0.925·r_h(a)
@@ -99,76 +76,247 @@ pub fn rminForSpin(a: f64) f64 {
     return rmin_ref * metric.rHorizonBL(a) / metric.rHorizonBL(0.0);
 }
 
-/// RMAX — the outer radial boundary read by `makeGridNz`. A module global (like
-/// `rmin`): the driver may overwrite it from a params `rmax > 0` override, e.g.
-/// to extend the domain for a long outflow/wind run. Default 500 M snugly
-/// contains the initial torus (midplane edge ≈ 499 M at a = 0; the torus
-/// shrinks inward with spin), which is the C-validated PUFFY value. Unlike
-/// `rmin` it is NOT derived from mass/spin — the torus extent is dimensionless
-/// in GM units and only weakly (inward) spin-dependent, so 500 always contains
-/// it; enlarging RMAX is a modeling choice, not an auto-tracked scale.
-pub var rmax: f64 = 500.0; // RMAX
+/// Runtime physics for one PUFFY run. Defaults are the validated koral_lite
+/// PROBLEM 147 constants (tests and goldens use `defaults` and never go
+/// through `fromParams`). `fromParams` is how a TOML preset — Sgr A*, AGN —
+/// retargets the run without process-wide mutation. See
+/// docs/PUFFY_AGN_DIVERGENCES.md for what a preset can and cannot match.
+pub const Physics = struct {
+    mass: f64 = 10.0,
+    gam: f64 = 5.0 / 3.0,
+    mp: metric.MetricParams = .{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 },
+    rmin: f64 = 1.85,
+    rmax: f64 = 500.0,
 
-// ---------------------------------------------------------------------------
-// AGN-preset-overridable physics state.
-//
-// These module globals default to the VALIDATED koral_lite PUFFY values
-// (10 M☉ torus, PROBLEM 147) so tests and every golden — which never write
-// them — are bit-for-bit unchanged. `PROBLEMS/puffy/main.zig` overwrites them
-// once at startup from the params file (like `mass`/`mp`/`rmin`/`rmax` above),
-// which is how the `puffy_agn.toml` preset retargets the run to the
-// koral_lite_puffy AGN configuration without disturbing the const `.puffy`
-// defaults the tests pin against. See docs/PUFFY_AGN_DIVERGENCES.md for what
-// this can and cannot match.
-pub var rhoatmmin: f64 = 1.0e-24; // RHOATMMIN
-pub var maxbeta: f64 = 1.0 / 20.0; // MAXBETA (after #undef, BETANORMFULL)
-/// Fractional init perturbation of the torus internal energy (see
-/// params.perturb). 0 = off — the validated init, bit-identical for every
-/// golden. Set from the params file via applyPhysicsOverrides.
-pub var perturb: f64 = 0.0;
-pub var lt_kappa: f64 = 6.0e1; // LT_KAPPA
+    rhoatmmin: f64 = 1.0e-24,
+    maxbeta: f64 = 1.0 / 20.0,
+    perturb: f64 = 0.0,
+    lt_kappa: f64 = 6.0e1,
+    atm_tgas: f64 = 1.0e10,
+    atm_trad_init: f64 = 3.0e5,
+    atm_erad_factor: ?f64 = null,
 
-/// TGASATMMIN — gas temperature the atmosphere floor UINTATMMIN is built at.
-pub var atm_tgas: f64 = 1.0e10;
-/// ATMTRADINIT — radiation temperature the atmosphere floor ERADATMMIN uses.
-pub var atm_trad_init: f64 = 3.0e5;
-/// ERADATMMIN form selector. `null` = the validated Brandon collapsing-sim
-/// form `LTE(atm_trad_init)/10·6.62/MASS`; when set (AGN preset), the
-/// koral_lite_puffy form `atm_erad_factor·LTE(atm_trad_init)`.
-pub var atm_erad_factor: ?f64 = null;
+    floor_params: invert.FloorParams = invert.FloorParams.puffy,
+    rad_params: invert_rad.RadParams = invert_rad.RadParams.puffy,
+    impl_params: implicit.ImplicitParams = implicit.ImplicitParams.puffy,
+    composition: thermo.Composition = thermo.Composition.puffy,
+    channels: opacities.Channels = opacities.Channels.puffy,
+    scattering: bool = true,
+    fluid_floor_inside_horizon: bool = false,
+    alpharadvisc: f64 = 0.1,
+    maxradviscvel: f64 = 0.1,
+    expectedhr: f64 = 0.3,
 
-/// Floor/ceiling set (C: choices.h + PROBLEMS/PUFFY/define.h). Default is the
-/// validated `.puffy`; the AGN preset widens it via main.zig.
-pub var floor_params: invert.FloorParams = invert.FloorParams.puffy;
-/// Radiation caps/floors (C: define.h EE*/GAMMAMAXRAD). Used by both the init
-/// `pradFf2Lab` and the stepping u2p_rad, so it lives here (one source).
-pub var rad_params: invert_rad.RadParams = invert_rad.RadParams.puffy;
-/// Implicit rad–gas solver knobs (C: define.h RADIMP*).
-pub var impl_params: implicit.ImplicitParams = implicit.ImplicitParams.puffy;
-/// Gas composition (C: MU_* or HFRAC/HEFRAC/MFRAC). Feeds `consts()` and the
-/// stepping opacity params — one source keeps them consistent.
-pub var composition: thermo.Composition = thermo.Composition.puffy;
-/// Opacity channels (C: BREMSSTRAHLUNG/SYNCHROTRON/KLEINNISHINA/COMPTONIZATION
-/// + USE_SYNCHROTRON_BRIDGE_FUNCTIONS + the MESA table pointer).
-pub var channels: opacities.Channels = opacities.Channels.puffy;
-/// Electron-scattering opacity on/off. Default on = the validated PUFFY
-/// Klein–Nishina hook; the AGN preset turns it OFF (koral_lite_puffy leaves
-/// PR_KAPPAES undefined, so calc_kappaes ≡ 0 — no scattering, and the Compton
-/// four-force term, which is ∝ κ_es, also vanishes). Consumed by `options()`.
-pub var scattering: bool = true;
-/// MESA Rosseland opacity table (C: MESA_KAPPA). null = off. Owned by the
-/// driver (`main.zig` loads it and points `channels.mesa` at it).
-pub var mesa_table: ?mesa.MesaTable = null;
-/// koral_lite_puffy fluid-frame floors inside the horizon (u2p.c, 2026-08-11).
-/// Consumed by `simOptions()`, which turns it into floors.horizon_x1 — the
-/// spin (mp.a) is only final there.
-pub var fluid_floor_inside_horizon: bool = false;
-/// Radiative-viscosity coefficients (C: ALPHARADVISC / MAXRADVISCVEL) and the
-/// dynamo's assumed H/R (C: EXPECTEDHR) — defaults are the validated build's;
-/// overridable from the params file (koral_lite_puffy runs 0.3 / 0.7).
-pub var alpharadvisc: f64 = 0.1;
-pub var maxradviscvel: f64 = 0.1;
-pub var expectedhr: f64 = 0.3;
+    tsteplim: f64 = 0.5,
+    nthreads: usize = 1,
+    pin_threads: bool = false,
+    do_radimp_fixups: bool = false,
+    reduceorderatbh: bool = false,
+    reduceorderafterfixup: bool = false,
+    dampradwavespeednearaxis: usize = 0,
+
+    pub fn fromParams(p: *const params_mod.Params) Physics {
+        var s = Physics{};
+        s.mass = p.mass;
+        s.mp.a = p.bhspin;
+        if (p.mksr0) |v| s.mp.mksr0 = v;
+        if (p.mksh0) |v| s.mp.mksh0 = v;
+        s.rmin = if (p.rmin > 0.0) p.rmin else rminForSpin(s.mp.a);
+        if (p.rmax > 0.0) s.rmax = p.rmax;
+        if (p.lt_kappa) |v| s.lt_kappa = v;
+        if (p.maxbeta) |v| s.maxbeta = v;
+        if (p.perturb) |v| s.perturb = v;
+        if (p.rhoatmmin) |v| s.rhoatmmin = v;
+        if (p.atm_tgas) |v| s.atm_tgas = v;
+        if (p.atm_trad_init) |v| s.atm_trad_init = v;
+        if (p.atm_erad_factor) |v| s.atm_erad_factor = v;
+        if (p.hfrac) |h| s.composition = .{ .hfrac = h, .hefrac = p.hefrac orelse 0.0 };
+        if (p.bremsstrahlung) |b| s.channels.bremsstrahlung = b;
+        if (p.kleinnishina) |b| s.channels.kleinnishina = b;
+        if (p.synchrotron_bridge) |b| s.channels.synchrotron_bridge = b;
+        if (p.scattering) |v| s.scattering = v;
+        if (p.zamo_floor_frame) |z| s.floor_params.b2rhofloorframe = if (z) .zamoframe else .driftframe;
+        if (p.isentropic_b2rhofloors) |b| s.floor_params.isentropic_b2rhofloors = b;
+        if (p.b2uufloor) |b| s.floor_params.b2uufloor = b;
+        if (p.fluid_floor_inside_horizon) |b| s.fluid_floor_inside_horizon = b;
+        if (p.opdamp_maxlevels) |n| s.impl_params.opdamp_maxlevels = n;
+        if (p.opdamp_factor) |v| s.impl_params.opdamp_factor = v;
+        if (p.radimp_lag_opac) |b| s.impl_params.lag_opac = b;
+        if (p.scale_jacobian) |b| s.impl_params.scale_jacobian = b;
+        if (p.radimp_max_en_change_down) |v| s.impl_params.max_en_change_down = v;
+        if (p.radimp_max_en_change_up) |v| s.impl_params.max_en_change_up = v;
+        if (p.radimp_max_damping) |v| s.impl_params.max_damping = v;
+        if (p.alpharadvisc) |v| s.alpharadvisc = v;
+        if (p.maxradviscvel) |v| s.maxradviscvel = v;
+        if (p.expectedhr) |v| s.expectedhr = v;
+        if (p.rhofloor) |v| s.floor_params.rhofloor = v;
+        if (p.uurhoratiomin) |v| s.floor_params.uurhoratiomin = v;
+        if (p.uurhoratiomax) |v| s.floor_params.uurhoratiomax = v;
+        if (p.b2rhoratiomax) |v| s.floor_params.b2rhoratiomax = v;
+        if (p.b2uuratiomax) |v| s.floor_params.b2uuratiomax = v;
+        if (p.gammamaxhd) |v| s.floor_params.gammamaxhd = v;
+        if (p.gammamaxrad) |v| s.rad_params.gammamaxrad = v;
+        if (p.eerhoratiomin) |v| s.rad_params.eerhoratiomin = v;
+        if (p.eerhoratiomax) |v| s.rad_params.eerhoratiomax = v;
+        if (p.eeuuratiomin) |v| s.rad_params.eeuuratiomin = v;
+        if (p.eeuuratiomax) |v| s.rad_params.eeuuratiomax = v;
+        if (p.radimpeps) |v| s.impl_params.eps = v;
+        if (p.radimpmaxiter) |v| s.impl_params.maxiter = v;
+        s.tsteplim = p.tsteplim;
+        s.nthreads = p.nthreads;
+        s.pin_threads = p.pin_threads;
+        s.do_radimp_fixups = p.doradimpfixups orelse false;
+        s.reduceorderatbh = p.reduceorderatbh orelse false;
+        s.reduceorderafterfixup = p.reduceorderafterfixup orelse false;
+        s.dampradwavespeednearaxis = p.dampradwavespeednearaxis orelse 0;
+        return s;
+    }
+
+    pub fn makeGrid(self: *const Physics, nx: usize, ny: usize) Grid {
+        return self.makeGridNz(nx, ny, 1);
+    }
+
+    pub fn makeGridNz(self: *const Physics, nx: usize, ny: usize, nz: usize) Grid {
+        return Grid.init(.{
+            .nx = nx,
+            .ny = ny,
+            .nz = nz,
+            .ng = 3,
+            .minx = @log(self.rmin - self.mp.mksr0),
+            .maxx = @log(self.rmax - self.mp.mksr0),
+            .miny = 0.001,
+            .maxy = 1.0 - 0.001,
+            .minz = -std.math.pi / 4.0,
+            .maxz = std.math.pi / 4.0,
+        });
+    }
+
+    pub fn consts(self: *const Physics) thermo.Consts {
+        return thermo.Consts.init(units_mod.Units.init(self.mass), self.composition);
+    }
+
+    pub fn atmConsts(self: *const Physics, con: *const thermo.Consts) Atm {
+        return .{
+            .uintatmmin = thermo.uFromTrho(con, self.atm_tgas, self.rhoatmmin, self.gam),
+            .eradatmmin = if (self.atm_erad_factor) |f|
+                f * con.lteEfromT(self.atm_trad_init)
+            else
+                con.lteEfromT(self.atm_trad_init) / 10.0 * 6.62 / self.mass,
+        };
+    }
+
+    /// Sim.Options for this physics. `comm` / `decomp` stay the caller's to fill.
+    /// `Bc.calc` reads `sim.opt.mp`, so no `bc_ctx` is required.
+    pub fn toOptions(self: *const Physics, comptime SimT: type) SimT.Options {
+        var opac = radforce.Params.puffyMassChan(self.mass, self.composition, self.channels);
+        if (!self.scattering) opac.kappaes = .none;
+        var floors = self.floor_params;
+        if (self.fluid_floor_inside_horizon)
+            floors.horizon_x1 = @log(metric.rHorizonBL(self.mp.a) - self.mp.mksr0);
+        return .{
+            .coords = .mks2,
+            .mp = self.mp,
+            .gam = self.gam,
+            .tsteplim = self.tsteplim,
+            .floors = floors,
+            .rad = self.rad_params,
+            .opac = opac,
+            .implicit = self.impl_params,
+            .correct_polaraxis = true,
+            .nccorrectpolar = 2,
+            .radviscosity = true,
+            .radvisc = .{ .alpha = self.alpharadvisc, .maxvel = self.maxradviscvel },
+            .dynamo = true,
+            .dynamo_params = .{ .expectedhr = self.expectedhr },
+            .do_radimp_fixups = self.do_radimp_fixups,
+            .reduceorderatbh = self.reduceorderatbh,
+            .reduceorderafterfixup = self.reduceorderafterfixup,
+            .dampradwavespeednearaxis = self.dampradwavespeednearaxis,
+            .bc_x = .specific,
+            .bc_y = .specific,
+            .bc_z = .periodic,
+            .specific_bc = &Bc(SimT).calc,
+            .nthreads = self.nthreads,
+            .pin_threads = self.pin_threads,
+        };
+    }
+};
+
+/// Validated PROBLEM 147 constants. Tests and goldens that never load a
+/// params file read these; production builds a value via `fromParams`.
+pub const defaults: Physics = .{};
+
+pub const gam = defaults.gam;
+pub const mass = defaults.mass;
+pub const mp = defaults.mp;
+pub const rmin = defaults.rmin;
+pub const rmax = defaults.rmax;
+pub const maxbeta = defaults.maxbeta;
+pub const rhoatmmin = defaults.rhoatmmin;
+
+/// Physics + optional heap MESA table. `setup` and the replay tools share this
+/// so a params file produces one value, not a 15-line mutation ritual.
+pub const Loaded = struct {
+    physics: Physics,
+    mesa: ?*mesa.MesaTable,
+
+    pub fn deinit(self: *Loaded, allocator: std.mem.Allocator) void {
+        if (self.mesa) |t| {
+            t.deinit();
+            allocator.destroy(t);
+        }
+        self.* = undefined;
+    }
+};
+
+pub fn load(allocator: std.mem.Allocator, io: std.Io, p: *const params_mod.Params) !Loaded {
+    var phys = Physics.fromParams(p);
+    var mesa_ptr: ?*mesa.MesaTable = null;
+    errdefer if (mesa_ptr) |t| {
+        t.deinit();
+        allocator.destroy(t);
+    };
+    if (p.mesa_table.len > 0) {
+        const t = try allocator.create(mesa.MesaTable);
+        t.* = mesa.MesaTable.load(allocator, io, p.mesa_table) catch |err| {
+            allocator.destroy(t);
+            return err;
+        };
+        mesa_ptr = t;
+        phys.channels.mesa = t;
+    }
+    if (phys.rmax <= phys.rmin) return error.InvalidDomain;
+    return .{ .physics = phys, .mesa = mesa_ptr };
+}
+
+pub fn Setup(comptime SimT: type) type {
+    return struct {
+        physics: Physics,
+        grid_global: Grid,
+        options: SimT.Options,
+        mesa: ?*mesa.MesaTable,
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.mesa) |t| {
+                t.deinit();
+                allocator.destroy(t);
+            }
+            self.* = undefined;
+        }
+    };
+}
+
+/// One call for the driver and for tools that rebuild a Sim from a params file.
+/// `options.comm` / `options.decomp` stay unset.
+pub fn setup(comptime SimT: type, allocator: std.mem.Allocator, io: std.Io, p: *const params_mod.Params) !Setup(SimT) {
+    const loaded = try load(allocator, io, p);
+    return .{
+        .physics = loaded.physics,
+        .grid_global = loaded.physics.makeGridNz(p.nx, p.ny, p.nz),
+        .options = loaded.physics.toOptions(SimT),
+        .mesa = loaded.mesa,
+    };
+}
 
 pub const lt = struct {
     pub const xi: f64 = 0.995; // LT_XI
@@ -180,172 +328,32 @@ pub const lt = struct {
 
 /// The production grid (define.h: TNX=384, TNY=360, TNZ=1, NG=3); nx/ny can
 /// be reduced for cheaper tests — the coordinate extents stay PUFFY's. The
-/// 2D axisymmetric slice (nz=1).
+/// 2D axisymmetric slice (nz=1). Uses `defaults` (validated extents).
 pub fn makeGrid(nx: usize, ny: usize) Grid {
-    return makeGridNz(nx, ny, 1);
+    return defaults.makeGrid(nx, ny);
 }
 
 /// Grid with an explicit azimuthal resolution (define.h TNZ). nz=1 is the 2D
 /// axisymmetric slice and reproduces `makeGrid` byte-for-byte; nz>1 subdivides
 /// the fixed PHIWEDGE=π/2 wedge with periodic z (φ) boundaries. Only the
-/// resolution is tunable — the extents (RMIN/RMAX, MINY/MAXY, ±PHIWEDGE/2)
-/// stay PUFFY's problem constants, exactly as nx/ny do.
+/// resolution is tunable — the extents stay `defaults`. Production uses
+/// `Physics.makeGridNz` so a params override of RMIN/RMAX is honored.
 pub fn makeGridNz(nx: usize, ny: usize, nz: usize) Grid {
-    return Grid.init(.{
-        .nx = nx,
-        .ny = ny,
-        .nz = nz,
-        .ng = 3,
-        .minx = @log(rmin - mp.mksr0), // MINX = log(RMIN-MKSR0)
-        .maxx = @log(rmax - mp.mksr0),
-        .miny = 0.001, // MINY
-        .maxy = 1.0 - 0.001, // MAXY
-        .minz = -std.math.pi / 4.0, // MINZ = -PHIWEDGE/2, PHIWEDGE = π/2
-        .maxz = std.math.pi / 4.0,
-    });
+    return defaults.makeGridNz(nx, ny, nz);
 }
 
-/// Apply the optional params-file physics overrides onto this module's
-/// overridable state. Every override is `null` (→ keep the validated `.puffy`
-/// value) unless the file sets it, so a plain `puffy.toml` run is unchanged and
-/// the `puffy_agn.toml` preset retargets to the koral_lite_puffy configuration.
-/// Call once at startup BEFORE `simOptions()`/`makeGridNz`/`initAll` so the
-/// whole chain (grid extents, torus, opacities, floors, solver) agrees. Lives
-/// here (not in the driver) so tools that replay checkpoints — kdmp2silo —
-/// reconstruct the identical configuration from the same params file. Note:
-/// several koral_lite_puffy settings are NOT ports and cannot be matched here —
-/// see docs/PUFFY_AGN_DIVERGENCES.md.
-pub fn applyPhysicsOverrides(p: *const params_mod.Params) void {
-    // MKS2 coordinate shape
-    if (p.mksr0) |v| mp.mksr0 = v;
-    if (p.mksh0) |v| mp.mksh0 = v;
-    // torus entropy constant / β-norm target / atmosphere floors
-    if (p.lt_kappa) |v| lt_kappa = v;
-    if (p.maxbeta) |v| maxbeta = v;
-    if (p.perturb) |v| perturb = v;
-    if (p.rhoatmmin) |v| rhoatmmin = v;
-    if (p.atm_tgas) |v| atm_tgas = v;
-    if (p.atm_trad_init) |v| atm_trad_init = v;
-    if (p.atm_erad_factor) |v| atm_erad_factor = v;
-    // gas composition: giving hfrac switches to the formula-based μ's (no MU_*
-    // override), matching koral_lite_puffy's HFRAC/HEFRAC/MFRAC path.
-    if (p.hfrac) |h| composition = .{ .hfrac = h, .hefrac = p.hefrac orelse 0.0 };
-    // opacity channels
-    if (p.bremsstrahlung) |b| channels.bremsstrahlung = b;
-    if (p.kleinnishina) |b| channels.kleinnishina = b;
-    if (p.synchrotron_bridge) |b| channels.synchrotron_bridge = b;
-    if (p.scattering) |s| scattering = s;
-    // magnetic floor frame (C: B2RHOFLOORFRAME)
-    if (p.zamo_floor_frame) |z| floor_params.b2rhofloorframe = if (z) .zamoframe else .driftframe;
-    // koral_lite_puffy drift-floor policy (2026-08-11): isentropic scaling,
-    // b²/u trigger off, fluid-frame floors inside the horizon. The horizon x1
-    // itself is computed in simOptions() — mp.a is only final there.
-    if (p.isentropic_b2rhofloors) |b| floor_params.isentropic_b2rhofloors = b;
-    if (p.b2uufloor) |b| floor_params.b2uufloor = b;
-    if (p.fluid_floor_inside_horizon) |b| fluid_floor_inside_horizon = b;
-    // implicit opacity-damping ladder (C: OPDAMPINIMPLICIT / OPDAMPMAXLEVELS / OPDAMPFACTOR)
-    if (p.opdamp_maxlevels) |n| impl_params.opdamp_maxlevels = n;
-    if (p.opdamp_factor) |v| impl_params.opdamp_factor = v;
-    // koral_lite_puffy implicit-solver options (2026-08-11)
-    if (p.radimp_lag_opac) |b| impl_params.lag_opac = b;
-    if (p.scale_jacobian) |b| impl_params.scale_jacobian = b;
-    if (p.radimp_max_en_change_down) |v| impl_params.max_en_change_down = v;
-    if (p.radimp_max_en_change_up) |v| impl_params.max_en_change_up = v;
-    if (p.radimp_max_damping) |v| impl_params.max_damping = v;
-    // radiative viscosity / dynamo coefficients
-    if (p.alpharadvisc) |v| alpharadvisc = v;
-    if (p.maxradviscvel) |v| maxradviscvel = v;
-    if (p.expectedhr) |v| expectedhr = v;
-    // rmhd floors / ceilings
-    if (p.rhofloor) |v| floor_params.rhofloor = v;
-    if (p.uurhoratiomin) |v| floor_params.uurhoratiomin = v;
-    if (p.uurhoratiomax) |v| floor_params.uurhoratiomax = v;
-    if (p.b2rhoratiomax) |v| floor_params.b2rhoratiomax = v;
-    if (p.b2uuratiomax) |v| floor_params.b2uuratiomax = v;
-    if (p.gammamaxhd) |v| floor_params.gammamaxhd = v;
-    // radiation caps / floors
-    if (p.gammamaxrad) |v| rad_params.gammamaxrad = v;
-    if (p.eerhoratiomin) |v| rad_params.eerhoratiomin = v;
-    if (p.eerhoratiomax) |v| rad_params.eerhoratiomax = v;
-    if (p.eeuuratiomin) |v| rad_params.eeuuratiomin = v;
-    if (p.eeuuratiomax) |v| rad_params.eeuuratiomax = v;
-    // implicit rad–gas solver
-    if (p.radimpeps) |v| impl_params.eps = v;
-    if (p.radimpmaxiter) |v| impl_params.maxiter = v;
-}
-
-/// The Sim.Options for a PUFFY run of `SimT` under runtime params `p`
-/// (PROBLEMS/PUFFY/define.h choices; the comm/decomp fields are the
-/// caller's to fill). Shared by the driver and kdmp2silo so a replayed
-/// checkpoint sees the exact configuration the run had.
+/// Sim.Options from a params file. Production prefers `setup` / `toOptions`;
+/// this remains for callers that already have a `Params` and no MESA table.
 pub fn simOptions(comptime SimT: type, p: *const params_mod.Params) SimT.Options {
-    // The physics param sets come from this module's overridable state
-    // (defaults = the validated `.puffy` constants; `applyPhysicsOverrides`
-    // may retarget them from the params file — the puffy_agn.toml preset).
-    // `channels` already carries the synchrotron-bridge flag and the MESA
-    // table pointer (set by applyPhysicsOverrides / the driver).
-    var opac = radforce.Params.puffyMassChan(p.mass, composition, channels);
-    // koral_lite_puffy leaves PR_KAPPAES undefined ⇒ calc_kappaes ≡ 0. The AGN
-    // preset turns scattering off (scattering=false), zeroing both the
-    // scattering opacity and the Compton four-force term (∝ κ_es).
-    if (!scattering) opac.kappaes = .none;
-    var floors = floor_params;
-    // koral_lite_puffy horizon fluid-frame floors: precompute the MKS2 x1 of
-    // the BL horizon (x1 = ln(r − r0) is monotone in r), so checkFloorsMhd
-    // compares coordinate-locally. Left at −inf (dead branch) when off.
-    if (fluid_floor_inside_horizon)
-        floors.horizon_x1 = @log(metric.rHorizonBL(mp.a) - mp.mksr0);
-    return .{
-        .coords = .mks2,
-        .mp = mp,
-        .gam = gam,
-        .tsteplim = p.tsteplim,
-        .floors = floors,
-        .rad = rad_params,
-        .opac = opac,
-        .implicit = impl_params,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .radviscosity = true,
-        .radvisc = .{ .alpha = alpharadvisc, .maxvel = maxradviscvel },
-        .dynamo = true,
-        .dynamo_params = .{ .expectedhr = expectedhr },
-        // C: DORADIMPFIXUPS / REDUCEORDERATBH / DAMPRADWAVESPEEDNEARAXIS — off
-        // in the validated build, retargeted by the AGN preset (null = off).
-        .do_radimp_fixups = p.doradimpfixups orelse false,
-        .reduceorderatbh = p.reduceorderatbh orelse false,
-        .reduceorderafterfixup = p.reduceorderafterfixup orelse false,
-        .dampradwavespeednearaxis = p.dampradwavespeednearaxis orelse 0,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        // C: PERIODIC_ZBC (PUFFY define.h:188). Irrelevant in 2D (nz==1 has
-        // no z-ghosts); for 3D wedges this was previously left at the .copy
-        // default — a latent pre-MPI bug (MPI plan §11.1-3), fixed in P4a.
-        .bc_z = .periodic,
-        .specific_bc = &Bc(SimT).calc,
-        .nthreads = p.nthreads,
-        .pin_threads = p.pin_threads,
-    };
+    return Physics.fromParams(p).toOptions(SimT);
 }
 
 pub fn consts() thermo.Consts {
-    return thermo.Consts.init(units_mod.Units.init(mass), composition);
+    return defaults.consts();
 }
 
-/// UINTATMMIN / ERADATMMIN (define.h:221/225), computed once.
-pub const Atm = struct { uintatmmin: f64, eradatmmin: f64 };
-
 pub fn atmConsts(con: *const thermo.Consts) Atm {
-    return .{
-        .uintatmmin = thermo.uFromTrho(con, atm_tgas, rhoatmmin, gam),
-        // Default (validated): calc_LTE_EfromT(3.e5)/10*6.62/MASS — Brandon's
-        // collapsing-sim value. With `atm_erad_factor` set (AGN preset), the
-        // koral_lite_puffy form  ERADATMMIN = factor·calc_LTE_EfromT(ATMTRADINIT).
-        .eradatmmin = if (atm_erad_factor) |f|
-            f * con.lteEfromT(atm_trad_init)
-        else
-            con.lteEfromT(atm_trad_init) / 10.0 * 6.62 / mass,
-    };
+    return defaults.atmConsts(con);
 }
 
 // ---------------------------------------------------------------------------
@@ -558,10 +566,12 @@ pub const DsVels = struct { rho: f64, uu: f64, ell: f64 };
 /// "outside the torus" (including quadrature failure, mirroring the
 /// GSL_NEGINF branch).
 pub fn initDsandvels(r: f64, th: f64, a: f64, tc: *const TorusConsts) DsVels {
+    return initDsandvelsKappa(r, th, a, tc, defaults.lt_kappa);
+}
+
+fn initDsandvelsKappa(r: f64, th: f64, a: f64, tc: *const TorusConsts, kappa: f64) DsVels {
     const R = r * @sin(th);
     if (R < lt.rin) return .{ .rho = -1.0, .uu = 0.0, .ell = 0.0 };
-
-    const kappa = lt_kappa;
     const gd = computeGd(r, th, a);
     const lam = lamBL(R, gd, a, tc.lambreak1, tc.lambreak2, lt.xi);
     const l = l3d(lam, a, tc.lambreak1, tc.lambreak2, lt.xi);
@@ -606,6 +616,7 @@ pub fn setHdAtmosphere(
     pp: *[layout.VarLayout(cfg).count]f64,
     geom: *const Geometry,
     atm: *const Atm,
+    phys: *const Physics,
 ) void {
     const L = layout.VarLayout(cfg);
     // normal observer in VELR ≡ VELPRIM — no conversion
@@ -615,10 +626,10 @@ pub fn setHdAtmosphere(
     pp[L.index(.vz)] = ucon[3];
 
     // Bondi-like profile, normalized at r_BL = 2
-    const xx2 = coco.cocoN(geom.xxvec, geom.coords, .bl, mp);
+    const xx2 = coco.cocoN(geom.xxvec, geom.coords, .bl, phys.mp);
     const r = xx2[1];
     const rout: f64 = 2.0;
-    pp[L.index(.rho)] = rhoatmmin * std.math.pow(f64, r / rout, -1.5);
+    pp[L.index(.rho)] = phys.rhoatmmin * std.math.pow(f64, r / rout, -1.5);
     pp[L.index(.uu)] = atm.uintatmmin * std.math.pow(f64, r / rout, -2.5);
 
     if (comptime L.hasVar(.b1)) {
@@ -649,7 +660,7 @@ pub fn setRadAtmosphere(
 /// supplying this problem's fixed metric params. The reduction lives once in
 /// precompute.geometryBLat.
 pub fn fillGeometryBL(g: *const Grid, coords: config.Coords, ix: i64, iy: i64, iz: i64) Geometry {
-    return precompute.geometryBLat(g, coords, mp, ix, iy, iz);
+    return precompute.geometryBLat(g, coords, defaults.mp, ix, iy, iz);
 }
 
 /// prepinit.c:92-93 — the T > 0 root of P = bbb·T + aaa·T⁴ (Mathematica
@@ -698,6 +709,18 @@ pub fn prepInitCell(
     con: *const thermo.Consts,
     atm: *const Atm,
 ) relele.Error![layout.VarLayout(cfg).count]f64 {
+    return prepInitCellWith(cfg, geom, geomBL, tc, con, atm, &defaults);
+}
+
+pub fn prepInitCellWith(
+    comptime cfg: config.Config,
+    geom: *const Geometry,
+    geomBL: *const Geometry,
+    tc: *const TorusConsts,
+    con: *const thermo.Consts,
+    atm: *const Atm,
+    phys: *const Physics,
+) relele.Error![layout.VarLayout(cfg).count]f64 {
     const L = layout.VarLayout(cfg);
     const has_rad = comptime cfg.has(.radiation);
     const has_b = comptime L.hasVar(.b1);
@@ -705,7 +728,7 @@ pub fn prepInitCell(
     const r = geomBL.xxvec[1];
     const th = geomBL.xxvec[2];
 
-    const dv = initDsandvels(r, th, mp.a, tc);
+    const dv = initDsandvelsKappa(r, th, phys.mp.a, tc, phys.lt_kappa);
     const rho = dv.rho;
     var uint = dv.uu;
     var ell = dv.ell;
@@ -713,7 +736,7 @@ pub fn prepInitCell(
     var pp = [_]f64{0} ** L.count;
 
     if (rho < 0.0) { // outside the donut
-        setHdAtmosphere(cfg, &pp, geom, atm);
+        setHdAtmosphere(cfg, &pp, geom, atm, phys);
         if (has_rad) setRadAtmosphere(cfg, &pp, geom, atm);
         pp[L.index(.entr)] = -1.0; // marker only; init overwrites
         return pp;
@@ -723,13 +746,13 @@ pub fn prepInitCell(
     pp[L.index(.entr)] = 1.0;
 
     var ppback = [_]f64{0} ** L.count;
-    setHdAtmosphere(cfg, &ppback, geom, atm);
+    setHdAtmosphere(cfg, &ppback, geom, atm, phys);
     if (has_rad) setRadAtmosphere(cfg, &ppback, geom, atm);
 
-    uint = lt_kappa * std.math.pow(f64, rho, lt.gamma) / (lt.gamma - 1.0);
+    uint = phys.lt_kappa * std.math.pow(f64, rho, lt.gamma) / (lt.gamma - 1.0);
     // optional MRI-seeding noise, torus interior only — applied BEFORE the
     // gas/radiation pressure split so the split stays LTE-consistent
-    if (perturb != 0.0) uint *= 1.0 + perturb * perturbXi(geom.xxvec);
+    if (phys.perturb != 0.0) uint *= 1.0 + phys.perturb * perturbXi(geom.xxvec);
     ell *= -1.0;
 
     const GGBL = &geomBL.GG;
@@ -749,13 +772,13 @@ pub fn prepInitCell(
     if (has_rad) {
         // distribute P = GAMMAM1·uint between gas and radiation by solving
         // P = bbb·T + aaa·T⁴ (prepinit.c:86-97, Mathematica closed form)
-        const P = (gam - 1.0) * uint;
+        const P = (phys.gam - 1.0) * uint;
         const aaa = con.four_sigmarad / 3.0; // C: 4.*SIGMA_RAD/3.
         const bbb = con.kb_over_mugas_mp * rho; // C: K_BOLTZ*rho/MU_GAS/M_PROTON
         const t4 = tFromPtot(P, aaa, bbb);
 
         const E = con.lteEfromT(t4);
-        uint = thermo.uFromTrho(con, t4, rho, gam);
+        uint = thermo.uFromTrho(con, t4, rho, phys.gam);
 
         pp[L.index(.uu)] = @max(uint, ppback[L.index(.uu)]);
         pp[L.index(.ee)] = @max(E, ppback[L.index(.ee)]);
@@ -764,11 +787,11 @@ pub fn prepInitCell(
         pp[L.index(.fz)] = 0.0;
 
         // BL fluid-frame radiative primitives → BL lab
-        pp = try radiation.pradFf2Lab(cfg, pp, geomBL, rad_params);
+        pp = try radiation.pradFf2Lab(cfg, pp, geomBL, phys.rad_params);
     }
 
     // BL → MYCOORDS
-    pp = try frames.transPallCoco(cfg, pp, geomBL, geom, mp);
+    pp = try frames.transPallCoco(cfg, pp, geomBL, geom, phys.mp);
 
     if (has_b) {
         // MYCOORDS vector potential (only A_φ), stored in the B slots
@@ -796,24 +819,30 @@ pub fn prepInitCell(
 /// the limotorus solve per cell is heavy in pow/log/exp — and left serial it
 /// ignored `nthreads` entirely.
 pub fn prepInitDomain(comptime SimT: type, sim: *SimT) !void {
+    return prepInitDomainWith(SimT, sim, &defaults);
+}
+
+pub fn prepInitDomainWith(comptime SimT: type, sim: *SimT, phys: *const Physics) !void {
+    const Ctx = struct { sim: *SimT, phys: *const Physics };
+    var ctx = Ctx{ .sim = sim, .phys = phys };
     const W = struct {
-        fn rows(s: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            prepInitRows(SimT, s, iy0, iy1) catch |e| {
+        fn rows(c: *Ctx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            prepInitRows(SimT, c.sim, c.phys, iy0, iy1) catch |e| {
                 res.err = e;
             };
         }
     };
-    const res = threading.parallelRange(SimT, sim, sim.team, 0, @intCast(sim.grid.ny), W.rows);
+    const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, @intCast(sim.grid.ny), W.rows);
     if (res.err) |e| return e;
 }
 
-fn prepInitRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) !void {
+fn prepInitRows(comptime SimT: type, sim: *SimT, phys: *const Physics, iy0: i64, iy1: i64) !void {
     const cfg = SimT.Cfg;
     const L = SimT.Layout;
 
-    const con = consts();
-    const atm = atmConsts(&con);
-    const tc = torusConsts(mp.a);
+    const con = phys.consts();
+    const atm = phys.atmConsts(&con);
+    const tc = torusConsts(phys.mp.a);
 
     const nx: i64 = @intCast(sim.grid.nx);
     const nz: i64 = @intCast(sim.grid.nz);
@@ -825,12 +854,10 @@ fn prepInitRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) !void {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
                 const geom = sim.cache.fillGeometry(ix, iy, iz);
-                const geomBL = fillGeometryBL(&sim.grid, cfg.coords, ix, iy, iz);
-                var pp = try prepInitCell(cfg, &geom, &geomBL, &tc, &con, &atm);
+                const geomBL = precompute.geometryBLat(&sim.grid, cfg.coords, phys.mp, ix, iy, iz);
+                var pp = try prepInitCellWith(cfg, &geom, &geomBL, &tc, &con, &atm, phys);
                 pp[L.index(.entr)] = hydro.sFromU(pp[L.index(.rho)], pp[L.index(.uu)], sim.opt.gam);
-                const uu = try p2u_mod.p2u(cfg, pp, &geom, sim.opt.gam);
-                sim.p.store(ix, iy, iz, &pp);
-                sim.u.store(ix, iy, iz, &uu);
+                try sim.initCell(ix, iy, iz, pp);
             }
         }
     }
@@ -840,7 +867,11 @@ fn prepInitRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) !void {
 /// calc_BfromA → set_bc → postinit. Returns the β-normalization factor
 /// fac (postinit.c:78).
 pub fn initAll(comptime SimT: type, sim: *SimT) !f64 {
-    try prepInitDomain(SimT, sim);
+    return initAllWith(SimT, sim, &defaults);
+}
+
+pub fn initAllWith(comptime SimT: type, sim: *SimT, phys: *const Physics) !f64 {
+    try prepInitDomainWith(SimT, sim, phys);
     // MPI: each setBc needs exchanged z-ghosts first (its interior-face path
     // is p2u-of-exchanged-p; before the first exchange the ghost planes are
     // still the Field.init zeros). No-ops serially.
@@ -849,12 +880,16 @@ pub fn initAll(comptime SimT: type, sim: *SimT) !f64 {
     try ct.calcBfromA(SimT, sim, true);
     sim.exchangeHalos(); // domain B changed — refresh ghosts before the re-fill
     try sim.setBc(0.0, true);
-    return try postinit(SimT, sim);
+    return try postinitWith(SimT, sim, phys);
 }
 
 /// postinit.c — global β normalization. Returns fac; ghost cells keep their
 /// unscaled B (C does not refresh BCs after postinit).
 pub fn postinit(comptime SimT: type, sim: *SimT) !f64 {
+    return postinitWith(SimT, sim, &defaults);
+}
+
+pub fn postinitWith(comptime SimT: type, sim: *SimT, phys: *const Physics) !f64 {
     const L = SimT.Layout;
     if (comptime !L.hasVar(.b1)) return 1.0;
 
@@ -881,7 +916,7 @@ pub fn postinit(comptime SimT: type, sim: *SimT) !f64 {
     // step 0. Identity serially; max is exact, so the folded value is
     // bit-identical to a serial run's.
     maxb = sim.globalMax(maxb);
-    const fac = @sqrt(maxbeta / maxb);
+    const fac = @sqrt(phys.maxbeta / maxb);
 
     // Pass 2 — apply the factor. Per-cell writes only; band-parallel.
     const ScaleCtx = struct { sim: *SimT, fac: f64 };
@@ -991,6 +1026,10 @@ fn betaScaleRows(comptime SimT: type, sim: *SimT, fac: f64, iy0: i64, iy1: i64) 
 pub const SeedQ = struct { mass: f64 = 0, qr_m: f64 = 0, qth_m: f64 = 0 };
 
 pub fn seedQuality(comptime SimT: type, s: *SimT) !SeedQ {
+    return seedQualityWith(SimT, s, &defaults);
+}
+
+pub fn seedQualityWith(comptime SimT: type, s: *SimT, phys: *const Physics) !SeedQ {
     const cfg = SimT.Cfg;
     const L = SimT.Layout;
     if (comptime !L.hasVar(.b1)) return .{};
@@ -1006,9 +1045,9 @@ pub fn seedQuality(comptime SimT: type, s: *SimT) !SeedQ {
                 const rho = pp[L.index(.rho)];
                 if (!(rho > 0)) continue;
                 const geom = s.cache.fillGeometry(ix, iy, iz);
-                const r = @exp(geom.xxvec[1]) + mp.mksr0;
+                const r = @exp(geom.xxvec[1]) + phys.mp.mksr0;
                 if (r > 100.0) continue;
-                if (rho < 1.0e3 * rhoatmmin * std.math.pow(f64, r / 2.0, -1.5)) continue;
+                if (rho < 1.0e3 * phys.rhoatmmin * std.math.pow(f64, r / 2.0, -1.5)) continue;
                 const ug = try relele.uconUcovFromPrims(
                     .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
                     &geom,
@@ -1021,7 +1060,7 @@ pub fn seedQuality(comptime SimT: type, s: *SimT) !SeedQ {
                 );
                 const omega = @abs(ug.con[3] / ug.con[0]);
                 if (!(omega > 1e-12)) continue;
-                var w = rho + gam * pp[L.index(.uu)];
+                var w = rho + phys.gam * pp[L.index(.uu)];
                 if (comptime cfg.has(.radiation)) {
                     const rt = try radiation.calcFfRtt(cfg, pp, &geom);
                     const ehat = -rt.rtt;
@@ -1056,7 +1095,7 @@ pub fn Bc(comptime SimT: type) type {
             ifinit: bool,
             face: sim_mod.BcFace,
         ) relele.Error![NV]f64 {
-            _ = ctx; // comptime-bound BC — no runtime context
+            _ = ctx; // Sim.opt.mp carries the problem metric; no extra context
             _ = t;
             _ = ifinit;
             const nx: i64 = @intCast(sim.grid.nx);
@@ -1069,12 +1108,12 @@ pub fn Bc(comptime SimT: type) type {
                     sim.p.load(nx - 1, iy, iz, &pp);
 
                     const geom = sim.cache.fillGeometry(ix, iy, iz);
-                    const geomBL = fillGeometryBL(&sim.grid, cfg.coords, ix, iy, iz);
+                    const geomBL = precompute.geometryBLat(&sim.grid, cfg.coords, sim.opt.mp, ix, iy, iz);
 
                     // MHD prims to BL (ghost-cell geometries, as in C)
-                    pp = try frames.transPmhdCoco(cfg, pp, &geom, &geomBL, mp);
+                    pp = try frames.transPmhdCoco(cfg, pp, &geom, &geomBL, sim.opt.mp);
 
-                    const geombdBL = fillGeometryBL(&sim.grid, cfg.coords, nx - 1, iy, iz);
+                    const geombdBL = precompute.geometryBLat(&sim.grid, cfg.coords, sim.opt.mp, nx - 1, iy, iz);
                     const rghost = geomBL.xxvec[1];
                     const rbound = geombdBL.xxvec[1];
                     const scale1 = rbound * rbound / rghost / rghost;
@@ -1097,15 +1136,15 @@ pub fn Bc(comptime SimT: type) type {
                         pp[L.index(.fz)] *= scale1;
                     }
 
-                    pp = try frames.transPmhdCoco(cfg, pp, &geomBL, &geom, mp);
+                    pp = try frames.transPmhdCoco(cfg, pp, &geomBL, &geom, sim.opt.mp);
 
                     // no-inflow: gas
                     var ucon = [4]f64{ 0.0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
                     ucon = try relele.convert(ucon, .velr, .vel4, &geom, .recompute_ut);
-                    ucon = frames.trans2Coco(geom.xxvec, ucon, cfg.coords, .bl, mp);
+                    ucon = frames.trans2Coco(geom.xxvec, ucon, cfg.coords, .bl, sim.opt.mp);
                     if (ucon[1] < 0.0) {
                         ucon[1] = 0.0;
-                        ucon = frames.trans2Coco(geomBL.xxvec, ucon, .bl, cfg.coords, mp);
+                        ucon = frames.trans2Coco(geomBL.xxvec, ucon, .bl, cfg.coords, sim.opt.mp);
                         ucon = try relele.convert(ucon, .vel4, .velr, &geom, .recompute_ut);
                         pp[L.index(.vx)] = ucon[1];
                         pp[L.index(.vy)] = ucon[2];
@@ -1114,10 +1153,10 @@ pub fn Bc(comptime SimT: type) type {
                     if (comptime has_rad) {
                         var urf = [4]f64{ 0.0, pp[L.index(.fx)], pp[L.index(.fy)], pp[L.index(.fz)] };
                         urf = try relele.convert(urf, .velr, .vel4, &geom, .recompute_ut);
-                        urf = frames.trans2Coco(geom.xxvec, urf, cfg.coords, .bl, mp);
+                        urf = frames.trans2Coco(geom.xxvec, urf, cfg.coords, .bl, sim.opt.mp);
                         if (urf[1] < 0.0) {
                             urf[1] = 0.0;
-                            urf = frames.trans2Coco(geomBL.xxvec, urf, .bl, cfg.coords, mp);
+                            urf = frames.trans2Coco(geomBL.xxvec, urf, .bl, cfg.coords, sim.opt.mp);
                             urf = try relele.convert(urf, .vel4, .velr, &geom, .recompute_ut);
                             pp[L.index(.fx)] = urf[1];
                             pp[L.index(.fy)] = urf[2];

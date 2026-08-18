@@ -10,17 +10,17 @@ nx = 384           # TNX (radial)
 ny = 360           # TNY (theta)
 nz = 1             # TNZ — azimuthal resolution. 1 = 2D axisymmetric (validated).
                    # nz>1 subdivides the fixed PHIWEDGE=π/2 wedge for a 3D run
-                   # (M14, in progress). Only nz is honored here; the extents
-                   # below (rmin..maxz) are fixed PUFFY problem constants and
-                   # are NOT read — makeGridNz hardcodes them.
-rmin = 1.85        # RMIN            (problem constant — not read)
-rmax = 500.0       # RMAX            (problem constant — not read)
-mksr0 = 0.1        # MKSR0           (problem constant — not read)
-mksh0 = 0.9        # MKSH0           (problem constant — not read)
-miny = 0.001       # MINY            (problem constant — not read)
-maxy = 0.999       # MAXY = 1-0.001  (problem constant — not read)
-minz = -0.7853981633974483   # -PHIWEDGE/2  (problem constant — not read)
-maxz = 0.7853981633974483    # +PHIWEDGE/2  (problem constant — not read)
+                   # (M14). rmin/rmax/mksr0/mksh0 ARE read (0 / omitted = auto).
+                   # miny..maxz are unused — makeGridNz hardcodes MINY=0.001,
+                   # MAXY=1-0.001, ±PHIWEDGE/2.
+rmin = 1.85        # RMIN  (0 = rminForSpin(bhspin); >0 = explicit)
+rmax = 500.0       # RMAX  (0 = keep 500 M; >0 = explicit)
+mksr0 = 0.1        # MKSR0 (optional override of Physics.mp.mksr0)
+mksh0 = 0.9        # MKSH0 (optional override of Physics.mp.mksh0)
+miny = 0.001       # MINY            (not read — problem constant)
+maxy = 0.999       # MAXY = 1-0.001  (not read — problem constant)
+minz = -0.7853981633974483   # -PHIWEDGE/2  (not read — problem constant)
+maxz = 0.7853981633974483    # +PHIWEDGE/2  (not read — problem constant)
 
 [run]
 tstart = 0.0
