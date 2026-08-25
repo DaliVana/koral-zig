@@ -1,15 +1,12 @@
-# koral-zig — Physics & Numerics Reference
+# koral-zig physics and numerics
 
-This document is the physicist-facing reference for **koral-zig**, a Zig 0.16
-reimplementation of the KORAL general-relativistic radiation-MHD code
-(`../koral_lite`). It states, as precisely as the code allows, *which equations
-the solver integrates and how*. Every equation is cross-referenced to the module
-and function that evaluates it, so the science can be validated or extended
-against the source of truth.
+This reference states the equations that koral-zig integrates and points to the
+functions that evaluate them. It is written for readers checking the model or
+changing its numerical implementation.
 
 The default science target is **PUFFY**, a radiation-supported, geometrically
 thick ("puffy") accretion torus around a black hole, evolved in Modified
-Kerr–Schild (MKS2) coordinates. The validated reference run is the 2D
+Kerr-Schild (MKS2) coordinates. The validated reference run is the 2D
 axisymmetric 10 M$_\odot$ Schwarzschild torus; the mass, spin, grid, and most
 microphysics choices are runtime-retargetable (§10, and the Sgr A* / AGN presets
 in `koral/problems/puffy/`). See
@@ -24,15 +21,15 @@ constant bundle [`koral/physics/thermo.zig`](../koral/physics/thermo.zig)
 
 ---
 
-## Table of contents
+## Contents
 
 1. [Governing system: GR conservation laws](#1-governing-system-gr-conservation-laws)
 2. [Coordinates and metric](#2-coordinates-and-metric)
 3. [Ideal MHD: stress-energy, magnetic 4-vector, equation of state](#3-ideal-mhd-stress-energy-magnetic-4-vector-equation-of-state)
 4. [Radiation: M1 closure and stress tensor](#4-radiation-m1-closure-and-stress-tensor)
-5. [The radiation four-force $G^\mu$: opacities and Comptonization](#5-the-radiation-four-force-g-mu-opacities-and-comptonization)
+5. [The radiation four-force $G^\mu$: opacities and Comptonization](#5-the-radiation-four-force-gmu-opacities-and-comptonization)
 6. [Radiative shear viscosity](#6-radiative-shear-viscosity)
-7. [Mean-field ($\alpha$–$\Omega$) dynamo and scale height](#7-mean-field-alphaomega-dynamo-and-scale-height)
+7. [Mean-field ($\alpha$-$\Omega$) dynamo and scale height](#7-mean-field-alpha-omega-dynamo-and-scale-height)
 8. [Numerical scheme](#8-numerical-scheme)
 9. [Floors and ceilings](#9-floors-and-ceilings)
 10. [The PUFFY problem](#10-the-puffy-problem)
@@ -50,7 +47,7 @@ The continuum equations are:
 $$\nabla_\mu (\rho u^\mu) = 0,$$
 where $\rho$ is the rest-mass density and $u^\mu$ the gas four-velocity.
 
-**Gas energy–momentum with radiation coupling:**
+**Gas energy-momentum with radiation coupling:**
 $$\nabla_\mu T^{\mu\nu} = G^\nu,$$
 where $T^{\mu\nu}$ is the ideal-MHD stress-energy tensor (§3) and $G^\nu$ is the
 radiation four-force (§5).
@@ -71,8 +68,8 @@ spatial part of the homogeneous Maxwell equations, expressed as the antisymmetri
 induction flux of the field 4-vector (§3, §8 constrained transport):
 $$\partial_t(\sqrt{-g}\,B^i) + \partial_j\!\left[\sqrt{-g}\,(b^j u^i - b^i u^j) \right] = 0,$$
 i.e. the conserved flux row $F[B^k] = \sqrt{-g}\,(b^k u^{d} - b^{d} u^k)$ in flux
-direction $d$ (the code carries the field 4-vector $b^\mu$ directly, so no
-$1/u^t$ factor appears — that factor belongs only to the lab-field form
+direction $d$. The code carries the field 4-vector $b^\mu$ directly, so no
+$1/u^t$ factor appears. That factor belongs only to the lab-field form
 $\sqrt{-g}\,(B^k u^d - B^d u^k)/u^t$) ([`koral/physics/flux.zig`](../koral/physics/flux.zig),
 `fFluxPrime`). Divergence-freeness $\nabla_i B^i = 0$ is maintained discretely by
 flux-CT (§8).
@@ -90,11 +87,11 @@ fixed C-compatible ordering:
 |------:|-----|-------------------|-------------------|
 | 0 | `rho` | rest-mass density $\rho$ | $\sqrt{-g}\,\rho u^t$ |
 | 1 | `uu`  | internal energy $u$ | $\sqrt{-g}\,(T^t{}_t + \rho u^t)$ (energy minus rest mass) |
-| 2–4 | `vx,vy,vz` | relative velocity $\tilde u^i$ (**VELR**) | $\sqrt{-g}\,T^t{}_i$ |
+| 2-4 | `vx,vy,vz` | relative velocity $\tilde u^i$ (**VELR**) | $\sqrt{-g}\,T^t{}_i$ |
 | 5 | `entr` | entropy $S(\rho,u)$ | $\sqrt{-g}\,S u^t$ |
-| 6–8 | `b1,b2,b3` | lab field $B^i$ | $\sqrt{-g}\,B^i$ |
+| 6-8 | `b1,b2,b3` | lab field $B^i$ | $\sqrt{-g}\,B^i$ |
 | 9 | `ee` | radiation-frame energy $\hat E$ | $\sqrt{-g}\,R^t{}_t$ |
-| 10–12 | `fx,fy,fz` | radiation-frame velocity $\tilde u_r^i$ (**VELR**) | $\sqrt{-g}\,R^t{}_i$ |
+| 10-12 | `fx,fy,fz` | radiation-frame velocity $\tilde u_r^i$ (**VELR**) | $\sqrt{-g}\,R^t{}_i$ |
 
 The forward map (primitives → conserved) is
 [`koral/p2u.zig`](../koral/p2u.zig) (`p2u`, `p2uMhd`, `p2uRad`); the inverse
@@ -104,8 +101,8 @@ The forward map (primitives → conserved) is
 M1 radiation block.
 
 Velocities are stored as the **relative 4-velocity** $\tilde u^i$ measured by the
-normal (Eulerian) observer — `VELR` in
-[`koral/relele.zig`](../koral/relele.zig) — which is robust in the ergoregion and
+normal (Eulerian) observer, `VELR` in
+[`koral/relele.zig`](../koral/relele.zig), which is robust in the ergoregion and
 at high Lorentz factor. Conversions among the four-velocity $u^\mu$ (VEL4), the
 coordinate three-velocity $u^i/u^t$ (VEL3) and $\tilde u^i$ (VELR) are all in
 `relele.zig` (`convert`).
@@ -124,7 +121,7 @@ metric $g_{\mu\nu}$, its inverse $g^{\mu\nu}$, $\sqrt{-g}$, the Christoffel symb
 $\Gamma^i{}_{jk}$, and coordinate Jacobians are assembled per cell by evaluating
 the analytic covariant metric in **forward-mode dual arithmetic**
 ([`koral/math/dual.zig`](../koral/math/dual.zig),
-[`koral/metric/metric.zig`](../koral/metric/metric.zig), `compute`), so derivatives
+[`koral/metric/metric.zig`](../koral/metric/metric.zig), `compute`). Derivatives
 are exact to machine precision. The metric is **stationary** ($\partial_t
 g_{\mu\nu} = 0$): only the three spatial slots are seeded as dual variables.
 
@@ -137,7 +134,7 @@ Four coordinate systems are supported (`config.Coords`):
 Flat Cartesian, $g_{\mu\nu} = \mathrm{diag}(-1,1,1,1)$ (`gcovMink`). Used for the
 radiative shock-tube tests.
 
-### 2.2 Kerr in Boyer–Lindquist (BL)
+### 2.2 Kerr in Boyer-Lindquist (BL)
 
 With $G=c=M=1$ and spin $a$, defining $\Sigma = r^2 + a^2\cos^2\theta$ and
 $\Delta = r^2 - 2r + a^2$ (`gcovBl`):
@@ -152,7 +149,7 @@ separately for cancellation-free energy assembly. The horizon roots are
 $r_\pm = 1 \pm \sqrt{1-a^2}$ (`metric.rHorizonBL`, alongside `rIscoBL`); for
 Schwarzschild ($a=0$) $r_+ = 2$.
 
-### 2.3 Kerr–Schild (KS)
+### 2.3 Kerr-Schild (KS)
 
 Horizon-penetrating: the extra $g_{tr}$, $g_{r\phi}$ terms make the metric
 regular across the horizon (`gcovKs`). With $\Sigma$ as above and
@@ -163,7 +160,7 @@ g_{rr} = 1 + \frac{2r}{\Sigma},\quad g_{t\phi} = -\frac{2ar\sin^2\theta}{\Sigma}
 $$g_{r\phi} = -a\left(1+\frac{2r}{\Sigma}\right)\sin^2\theta,\quad
 g_{\phi\phi} = \sin^2\theta\left[\Sigma + a^2\left(1+\frac{2r}{\Sigma}\right)\sin^2\theta\right].$$
 
-### 2.4 Modified Kerr–Schild 2 (MKS2)
+### 2.4 Modified Kerr-Schild 2 (MKS2)
 
 MKS2 is the exact diagonal pushforward of KS through the maps
 $$r = R_0 + e^{x^1}, \qquad \theta = \theta(x^2),$$
@@ -179,10 +176,10 @@ $H_0 < 1$ concentrates cells toward the midplane. The reference PUFFY run uses
 negative (the AGN preset uses `MKSR0 = -1.5`, pushing the innermost cells deeper
 toward the horizon rather than away from it).
 
-> **A C quirk *not* preserved (exact π):** KORAL mixes two values of $\pi$ —
+> **A C quirk *not* preserved (exact π):** KORAL mixes two values of $\pi$,
 > the truncated $\pi_c = 3.141592654$ (`ko.h`'s `#define Pi`) inside the
 > Mathematica-exported MKS2 metric expressions, exact `M_PI` in the `coco_*`
-> point transforms — so C's own metric-flavor and coco-flavor θ disagree at
+> point transforms. C's metric and coordinate-transform values for θ disagree at
 > $\sim10^{-9}$. The port originally mirrored that split but has used a single
 > exact `std.math.pi` for both since 2026-07-06 (`metric/forms.zig`); the two
 > θ flavors agree exactly here. C's spread survives only in the oracle
@@ -301,7 +298,7 @@ radiation energy density measured in the fluid frame (`calcFfRtt`,
 `calcFfEhat`):
 $$\hat E_{\rm ff} = -R^t{}_t\big|_{\rm ff} = -\,R^\mu{}_\nu\,u^\nu u_\mu.$$
 Note the distinction: `pp[EE]` $= \hat E$ is the *radiation-rest-frame* energy (a
-primitive), while $\hat E_{\rm ff}$ is the radiation energy seen by the *gas* — it
+primitive), while $\hat E_{\rm ff}$ is the radiation energy seen by the *gas*, it
 uses the gas velocity `pp[VX..VZ]`, not the radiation velocity.
 
 ### 4.3 M1 conserved → primitive inversion
@@ -331,19 +328,19 @@ speeds set the CFL timestep; the $\tau$-limited speeds are used in the flux
 combination.
 
 > **Deliberate C quirk:** the $z$-direction limiter uses the *$y$* optical depth
-> (`rv2z = rv2dim[1]`), a preserved KORAL bug pinned by a theory test.
+> (`rv2z = rv2dim[1]`). A theory test pins this preserved KORAL bug.
 
 An optional axis guard, `DAMPRADWAVESPEEDNEARAXIS` (params key
 `dampradwavespeednearaxis`, off by default, 2 in the AGN preset), zeroes the
 optical depths within N cells of either $\theta$ pole so the radiation speeds
-there stay at the undamped $v^2 = 1/3$ — preventing the $\tau$ limiter from
+there stay at the undamped $v^2 = 1/3$, preventing the $\tau$ limiter from
 starving the timestep in the low-density polar funnel.
 
 ---
 
 ## 5. The radiation four-force $G^\mu$: opacities and Comptonization
 
-The radiation–gas coupling $G^\mu$ carries all the microphysics
+The radiation-gas coupling $G^\mu$ carries all the microphysics
 ([`koral/physics/radforce.zig`](../koral/physics/radforce.zig),
 [`koral/physics/opacities.zig`](../koral/physics/opacities.zig),
 [`koral/physics/thermo.zig`](../koral/physics/thermo.zig)).
@@ -430,12 +427,12 @@ $(T_e/T_c)/(1 + T_e/T_c)$ with $T_c = 5.07783\times10^9$ K.
 ### 5.3b MESA Rosseland opacity tables
 
 For AGN-mass runs the analytic free-free Rosseland fits are inadequate (bound-free
-and line opacities dominate at $10^4$–$10^6$ K), so both free-free **Rosseland**
+and line opacities dominate at $10^4$-$10^6$ K). Both free-free **Rosseland**
 channels can instead be looked up from a tabulated MESA opacity
 ([`koral/physics/mesa.zig`](../koral/physics/mesa.zig), `MesaTable`; data in
 `data/mesa_tables/`, e.g. `a09_z0.02_x0.7.data`; params key `mesa_table`). The
 table stores $\log_{10}\kappa_{\rm Ross}$ [cm²/g] on a $(\log T,\,\log R)$ grid
-with $\log R \equiv \log\rho - 3\log T + 18$; lookup is bilinear in log–log space
+with $\log R \equiv \log\rho - 3\log T + 18$; lookup is bilinear in log-log space
 with both axes clamped to the grid edges (no extrapolation). The wired-in channels
 become
 $$\kappa_{\rm rad,ross} = \max\big(\kappa_{\rm MESA}(T_{\rm rad}, \rho) - 0.2(1+X),\,0\big)\,\rho,\qquad
@@ -444,10 +441,10 @@ $$\kappa_{\rm rad,ross} = \max\big(\kappa_{\rm MESA}(T_{\rm rad}, \rho) - 0.2(1+
 separately as $\kappa_{\rm es}$. The free-free **Planck** channels keep the
 bremsstrahlung formula (and are forced on whenever a MESA table is loaded,
 regardless of the `bremsstrahlung` toggle, matching C). The table file must match
-the configured composition (`hfrac` → X, metallicity → Z) — koral-zig does *not*
+the configured composition (`hfrac` → X, metallicity → Z), koral-zig does *not*
 auto-select the file the way C does.
 
-### 5.4 Electron scattering (Klein–Nishina-corrected Thomson)
+### 5.4 Electron scattering (Klein-Nishina-corrected Thomson)
 
 The scattering opacity (`opacities.kappaEsPuffy`, PUFFY hook):
 $$\kappa_{\rm es} = \kappa_{\rm CGS\to GU}\!\left[0.2\,(1+X)\,f_{\rm KN}\right]\rho,\qquad
@@ -481,8 +478,8 @@ radiation), cold electrons down-scatter. Comptonization is a per-problem toggle
 PUFFY includes an M1 radiative shear-viscosity closure that adds an anisotropic
 stress to the radiation flux. The pure per-cell kernels live in
 [`koral/physics/radvisc.zig`](../koral/physics/radvisc.zig); the sim-coupled
-half — the finite-difference shear gather, the ν-input gathering, and the
-once-per-step domain pass — in
+half, the finite-difference shear gather, the ν-input gathering, and the
+once-per-step domain pass, in
 [`koral/sim/rijvisc.zig`](../koral/sim/rijvisc.zig).
 
 ### 6.1 Lab-frame shear tensor
@@ -513,17 +510,17 @@ $\min_d \Delta x_d\sqrt{g_{dd}}$ over the active dimensions.
 
 ### 6.3 Viscous radiation stress
 
-The viscous stress is Navier–Stokes-like (`calcRijVisc`, KORAL `calc_Rij_visc`):
+The viscous stress is Navier-Stokes-like (`calcRijVisc`, KORAL `calc_Rij_visc`):
 $$R^{ij}_{\rm visc} = -2\,\nu\,\hat E\,\sigma^{ij},$$
 with $\hat E = $ `pp[EE]` and $\sigma^{ij}$ from raising both indices of the shear
 tensor. It is precomputed once per step over the domain plus a ghost ring
-(corners excluded, `Sim.isCorner` — the C `if_outsidegc` rule)
+(corners excluded, `Sim.isCorner`, the C `if_outsidegc` rule)
 (`calcRijViscTotal`) and added at faces to the M1 radiation flux, damped by a
 characteristic-velocity cap `MAXRADVISCVEL` $= 0.1$ (runtime knob
 `radvisc.Params.maxvel`) to keep the diffusive flux causal (`addRadViscFlux`
 wrapping the pure `addViscFlux`).
 
-The per-cell algebra is entirely pure functions in `physics/radvisc.zig` —
+The per-cell algebra is entirely pure functions in `physics/radvisc.zig`,
 `shearFromGradients(du, du2, ucon, ucov, gg, kr)` (split out of `calcShearLab`
 so the invariants $\sigma_{\mu\nu} = \sigma_{\nu\mu}$ and
 $\sigma_{\mu\nu}u^\nu = 0$ can be gated on analytic velocity fields,
@@ -534,9 +531,9 @@ with C's corner-avoidance one-sided-derivative rules.
 
 ---
 
-## 7. Mean-field ($\alpha$–$\Omega$) dynamo and scale height
+## 7. Mean-field ($\alpha$-$\Omega$) dynamo and scale height
 
-PUFFY uses the KORAL "mimic dynamo" — a sub-grid mean-field prescription that
+PUFFY uses the KORAL "mimic dynamo", a sub-grid mean-field prescription that
 regenerates poloidal field from toroidal field to sustain magnetization in a 2D
 axisymmetric run ([`koral/sim/dynamo.zig`](../koral/sim/dynamo.zig)). It runs
 after each explicit RK substep (`applyDynamo`).
@@ -547,7 +544,7 @@ The angular disk scale height at each radius (`calcScaleHeight`, KORAL
 `calc_avgs_throughout`):
 $$\left(\frac{H}{R}\right)(r) = \sqrt{\frac{\sum_{\theta,\phi}\rho\sqrt{-g}\,(\pi/2 - \theta_{\rm BL})^2}{\sum_{\theta,\phi}\rho\sqrt{-g}}},$$
 the density-weighted RMS angular displacement from the midplane. (Innermost radial
-index stored unnormalized — a preserved C quirk.)
+index stored unnormalized. This is a preserved C quirk.)
 
 ### 7.2 Dynamo vector potential
 
@@ -610,14 +607,14 @@ Cell-average primitives are reconstructed to left/right face states
 `Scheme = {donor, linear{theta}, ppm}` dispatched by `reconstruct`/
 `reconstructN`). PUFFY uses **PPM** (Colella & Woodward 1984) on a five-point
 non-uniform stencil (`ppm`): the interface value (eq 1.6), the monotonized slope
-(eqs 1.7–1.8), and the parabola monotonicity limiter (eq 1.10) that flattens the
+(eqs 1.7-1.8), and the parabola monotonicity limiter (eq 1.10) that flattens the
 profile to first order at local extrema. A linear minmod-$\theta$ limiter
 (PUFFY $\theta = 1.5$) and donor-cell are the lower-order options. PPM sets the
 ghost depth to $N_G = 3$. With `reduceorderatbh` set (C `REDUCEORDERATBH`), cells
 whose BL radius is inside the horizon drop one order (PPM → linear → donor); with
 `reduceorderafterfixup` set (koral_lite_puffy `REDUCEORDERAFTERFIXUP`, 2026-08-11,
 AGN preset on), a cell whose most recent u2p/implicit pass demanded a fixup also
-drops one order for the following sweep — one diffusive step to let the
+drops one order for the following sweep, one diffusive step to let the
 neighbour-averaged cell relax before returning to full order. The MC/Superbee
 variants of C's `FLUXLIMITER` are not implemented.
 
@@ -625,12 +622,12 @@ variants of C's `FLUXLIMITER` are not implemented.
 
 One-sided fluxes are combined per face
 ([`koral/fv/laxf.zig`](../koral/fv/laxf.zig); the face loop is
-`sim.zig::fluxesAtFaces`). **Lax–Friedrichs** (PUFFY):
+`sim.zig::fluxesAtFaces`). **Lax-Friedrichs** (PUFFY):
 $$F^\star = \tfrac12\big(F_L + F_R\big) - \tfrac12\,a_g\,(U_R - U_L),$$
-with $a_g$ the local maximum characteristic speed. **HLL**:
+with $a_g$ the local maximum characteristic speed. The HLL flux is
 $$F^\star = \begin{cases} F_L, & a_l > 0\\ F_R, & a_r < 0\\ \dfrac{-a_l F_R + a_r F_L + a_l a_r (U_R - U_L)}{a_r - a_l}, & \text{else}\end{cases}$$
 Hydro and radiation are treated as **two independent hyperbolic systems**, each
-with its own wave speeds — the split point is the `ee` row (`fluxesAtFaces`).
+with its own wave speeds, the split point is the `ee` row (`fluxesAtFaces`).
 
 ### 8.4 Constrained transport ($\nabla\!\cdot\!B = 0$)
 
@@ -647,7 +644,7 @@ $B$ slots) via the discrete curl $B^i = \mathrm{curl}(A)^i/\sqrt{-g}$
 ### 8.5 RK2 IMEX time integrator
 
 The stiff radiation source is integrated implicitly while the hydro/MHD fluxes are
-explicit, using the Pareschi–Russo SSP2(2,2,2) IMEX scheme with
+explicit, using the Pareschi-Russo SSP2(2,2,2) IMEX scheme with
 $$\gamma = 1 - \frac{1}{\sqrt2}\approx 0.2929$$
 (`step`, KORAL `problem.c:141-402`). Writing $U(1), U(2)$ for the stage states,
 the explicit stage derivative is $\mathrm{dut} = [F(U)]$ and the implicit one is
@@ -672,7 +669,7 @@ lab/fluid-frame $\times$ RAD/MHD-iterated), each using a one-sided finite-differ
 Jacobian, a backtracking damping ladder, and an optional 1-D bisection warm start.
 The residual enforces conservation, e.g. for the radiation-iterated energy equation
 $$f_0 = R^t{}_t - R^t{}_t{}^{(0)} + dt\,\sqrt{-g}\,G_0 = 0,$$
-with the opposite sign for the gas — the $G$ sign convention of §1. The
+with the opposite sign for the gas, the $G$ sign convention of §1. The
 conservation glue `applyConstraints` reconstructs the non-iterated fluid from
 total energy-momentum conservation before every residual/Jacobian evaluation.
 
@@ -688,18 +685,18 @@ fails. Level 0 is bit-identical to the plain single pass.
 **Opacity lagging** (koral_lite_puffy `copy_state_opac`, 2026-08-11; params key
 `radimp_lag_opac`, default off / AGN preset on): with the flag set, $\kappa_{es}$
 and the six $\kappa$ channels are frozen at the once-per-solve reference state
-for every Newton iteration, Jacobian perturbation and trial step — κ's own
+for every Newton iteration, Jacobian perturbation and trial step, κ's own
 T-dependence stays out of the iteration, which non-monotonic tabulated
 opacities (the MESA iron bump, §5.6) can otherwise destabilize. Emission is
 *not* lagged ($B = \sigma T_e^4/\pi$ follows the trial state, as in C).
 
-**Deliberate C divergence — the ENTROPYEQ residual:** C's entropy rungs read
+**Deliberate C divergence in the ENTROPYEQ residual.** C's entropy rungs read
 `S = state->Tgas` where Sgas is intended (rad.c:1749/1767), solving
 $T(T - S_0) = d\tau\,\hat G^0$. koral-zig solves the intended
 $T(S - S_0) = d\tau\,\hat G^0$ with $S = S_{\rm gas}$ (koral_lite_puffy fixed
 the same bug). Entropy rungs run only after every energy rung failed; energy
 results are bit-identical. ~21/336 records of the `rad_implicit` oracle flip
-success/failure because of this — the implicit golden counts and excludes
+success or failure because of this. The implicit golden counts and excludes
 exactly those flips.
 
 **CFL timestep** (`saveWavespeeds`):
@@ -731,7 +728,7 @@ by the koral_lite_puffy **guard ladder** (2026-08-11, always on, bit-transparent
 on healthy states): a near-zero-field bail-out, a $u^t_{\rm dr}$
 finite/magnitude check, a NaN-aware clamp on the parallel-momentum ratio, a
 halving loop that damps $v_\parallel$ until the composed 3-velocity is timelike,
-and a `catch` on the VEL3→VELR conversion — every bail-out keeps the pre-floor
+and a `catch` on the VEL3→VELR conversion. Every bail-out keeps the pre-floor
 velocity (always physical) instead of failing the step, and increments the
 `n_floorguard` counter in `scalars.dat`. Three policy switches (all default off;
 AGN preset on, matching the fork's 2026-08-11 configuration):
@@ -755,16 +752,16 @@ $$\gamma^2 = 1 + \tilde u^i \tilde u^j g_{ij} \le (\gamma_{\max}^{\rm hd})^2.$$
 
 **Radiation floors** (`checkFloorsRad`): $\hat E \ge E_{\rm rad,floor}$
 ($=10\times10^{-80}$), plus ceilings/floors on $\hat E_{\rm ff}/\rho$
-($10^{-20}$–$10^{4}$) and $\hat E_{\rm ff}/u$ ($10^{-20}$–$10^{20}$) that rescale
+($10^{-20}$-$10^{4}$) and $\hat E_{\rm ff}/u$ ($10^{-20}$-$10^{20}$) that rescale
 $\hat E$, $\rho$, or $u$. After any floor trips, the entropy primitive is
 re-synced from $(\rho,u)$. The radiation Lorentz-factor ceiling
-$\gamma_{\max}^{\rm rad} = 10$ is *not* applied here — it is enforced inside the
-closed-form M1 inversion `u2pRad` (the non-failure test and the two-branch cold
+$\gamma_{\max}^{\rm rad} = 10$ is not applied here. The closed-form M1 inversion
+`u2pRad` enforces it through the non-failure test and two-branch cold
 fallback in [`koral/solve/invert_rad.zig`](../koral/solve/invert_rad.zig)).
 
 **Cell fixups** are the second "keep it physical" mechanism: cells whose
-inversion or implicit solve failed are flagged (`hd_fixup`, `rad_fixup`, and —
-off in the validated build, on in the AGN preset via `doradimpfixups` — the
+inversion or implicit solve failed are flagged (`hd_fixup`, `rad_fixup`, and,
+off in the validated build, on in the AGN preset via `doradimpfixups`, the
 post-implicit `radimp_fixup`) and replaced by the arithmetic mean of their
 non-flagged face neighbours (≥1/2/3 valid neighbours required in 1D/2D/3D),
 followed by `p2u`. Fixups never touch $\rho$ or $B$: `hd_fixup` averages $u$ and
@@ -774,7 +771,7 @@ Polar-axis-corrected rows are skipped.
 All of these thresholds are compiled presets (`FloorParams.puffy`,
 `RadParams.puffy`) but most are runtime-overridable from the params file
 (`rhofloor`, `uurhoratio*`, `eerhoratio*`, `eeuuratio*`, `b2*ratiomax`,
-`gammamaxhd`/`gammamaxrad`, `zamo_floor_frame`, …) — the AGN and Sgr A* presets
+`gammamaxhd`/`gammamaxrad`, `zamo_floor_frame`, …), the AGN and Sgr A* presets
 use this instead of a recompile.
 
 ---
@@ -787,7 +784,7 @@ The PUFFY initial condition and problem physics live in
 [`koral/problems/puffy/main.zig`](../koral/problems/puffy/main.zig); the
 arbitrary-precision enthalpy integral uses
 [`koral/math/quad.zig`](../koral/math/quad.zig). It is a Penna-style
-**limotorus** — a relativistic, radiation-supported, geometrically thick
+**limotorus**, a relativistic, radiation-supported, geometrically thick
 equilibrium torus. The reference (golden-validated) configuration is a
 $10\,M_\odot$ Schwarzschild ($a=0$) hole in MKS2 with `MKSR0 = 0.1`,
 `MKSH0 = 0.9`, on a $384\times360\times1$ grid over $r\in[1.85, 500]$. The mass,
@@ -842,8 +839,8 @@ energy is then recomputed from $T$ (`thermo.uFromTrho`) and the radiation energy
 $\hat E = 4\sigma_{\rm rad}T^4$; the fluid-frame radiation state is lifted to the
 lab frame (`radiation.pradFf2Lab`) with $u_r^\mu = u^\mu$ (radiation comoving with
 the gas, zero flux). All primitives are then transformed BL → MKS2
-(`frames.transPallCoco`). This is what makes the torus **radiation-supported**:
-a large fraction of the pressure that holds it up geometrically thick is
+(`frames.transPallCoco`). This construction makes the torus radiation-supported.
+A large fraction of the pressure that holds it up geometrically thick is
 $P_{\rm rad}$.
 
 ### 10.4 Initial poloidal field and $\beta$-normalization
@@ -859,7 +856,7 @@ $$f = \sqrt{\frac{\beta_{\max}}{\max_{\rm domain}(p_{\rm mag}/p_{\rm tot})}},\qq
 B^i \to f\,B^i,\qquad \beta_{\max} = \frac{1}{20},$$
 with $p_{\rm mag} = b^2/2$, $p_{\rm tot} = (\Gamma-1)u + \hat E_{\rm ff}/3$, and
 $\beta_{\max}$ runtime-overridable as `maxbeta` (AGN preset: $1/30$). So the
-initial field is weak; the $\alpha$–$\Omega$ dynamo (§7) then sustains it.
+initial field is weak; the $\alpha$-$\Omega$ dynamo (§7) then sustains it.
 `maxPmagPtot` ([`koral/io/scalars.zig`](../koral/io/scalars.zig)) reports
 whether that magnetization is held over the run.
 
@@ -871,9 +868,9 @@ radial-inner boundary is a plain copy (the inner edge $r_{\rm in,grid} =
 $\theta$ boundaries are polar reflection
 with sign flips of $v^\theta, B^\theta, F^\theta$ (`Bc.calc`). The driver runs the
 RK2IMEX loop with the CFL $dt = 1/\mathrm{tstepdenmax}$, emitting `scalars.dat`
-diagnostics — total mass, accretion rate $\dot M$ at the horizon shell,
+diagnostics, total mass, accretion rate $\dot M$ at the horizon shell,
 radiative/total luminosity at the outer shell, disk scale height, maximum
-magnetization — and periodic binary primitive dumps
+magnetization, and periodic binary primitive dumps
 ([`koral/io/scalars.zig`](../koral/io/scalars.zig),
 [`koral/io/dump.zig`](../koral/io/dump.zig)). Key diagnostic definitions:
 $$M = \int\rho\sqrt{-g}\,dx\,dy\,dz,\qquad
@@ -898,10 +895,10 @@ Exact literals from KORAL's `ko.h`, kept verbatim for bit-comparability
 | $k_B$ | $1.3806488\times10^{-16}$ | Boltzmann (erg/K) |
 | $m_e$ | $9.1094\times10^{-28}$ | electron mass (g) |
 | $m_p$ | $1.67262158\times10^{-24}$ | proton mass (g) |
-| $\sigma_{\rm rad}$ | $5.670367\times10^{-5}$ | Stefan–Boltzmann |
+| $\sigma_{\rm rad}$ | $5.670367\times10^{-5}$ | Stefan-Boltzmann |
 | $h$ | $6.6260755\times10^{-27}$ | Planck (erg·s) |
 
-(KORAL's truncated `#define Pi` = 3.141592654 is *not* kept — the port uses
+(KORAL's truncated `#define Pi` = 3.141592654 is not kept. The port uses
 exact `std.math.pi` everywhere; see §2.4.)
 
 ### 11.2 Geometrized-unit scaling
@@ -913,18 +910,18 @@ $$\text{length: } x/\mathrm{masscm},\qquad
 \text{velocity: } x/c,$$
 $$\text{density: } x\,\frac{G\,\mathrm{masscm}^2}{c^2}\ (\propto M^{-2}),\qquad
 \text{energy density: } x\,\frac{G\,\mathrm{masscm}^2}{c^4}\ (\propto M^{-2}).$$
-The Boltzmann constant and Stefan–Boltzmann constant in GU are
+The Boltzmann constant and Stefan-Boltzmann constant in GU are
 $k_B^{\rm GU} = k_{B,\rm CGS}\,G/c^4/\mathrm{masscm}$ and
 $\sigma_{\rm rad}^{\rm GU} = \sigma_{\rm rad,CGS}\,G/c^5\,\mathrm{masscm}^2$, with
-$a = 4\sigma_{\rm rad}$. Because $a_{\rm code}\propto M^2$ exactly, the radiative
+$a = 4\sigma_{\rm rad}$. Because $a_{\rm code}\propto M^2$, the radiative
 shock-tube tests pick the BH mass to match a paper's radiation constant
 ([`koral/testing/tubes.zig`](../koral/testing/tubes.zig), `massForA`).
 
 ### 11.3 Where to look next
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — module graph, comptime configuration,
+- [`ARCHITECTURE.md`](ARCHITECTURE.md), module graph, comptime configuration,
   storage layout, the C-oracle test strategy.
-- [`USER_GUIDE.md`](USER_GUIDE.md) — building, configuring a run, parameters.
+- [`USER_GUIDE.md`](USER_GUIDE.md), building, configuring a run, parameters.
 - The subsystem source files referenced throughout this document are the
   authoritative statement of each equation; they carry per-function citations to
   the KORAL C source they transcribe.

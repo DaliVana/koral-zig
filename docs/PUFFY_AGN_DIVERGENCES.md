@@ -1,33 +1,31 @@
-# PUFFY AGN preset — divergences from `koral_lite_puffy`
+# How the PUFFY AGN preset differs from `koral_lite_puffy`
 
 `koral/problems/puffy/puffy_agn.toml` retargets koral-zig to the configuration
 committed in the sibling C tree `koral_lite_puffy/PROBLEMS/PUFFY/define.h`
 (PROBLEM 147): a **10⁹ M☉ AGN torus** with metallicity composition, MESA
 opacities, wider floors, hardened b²/ρ floors, and different coordinates.
 
-This is a **different, newer configuration** than the one koral-zig is validated
-against. koral-zig's bit-for-bit goldens track `koral_lite/PROBLEMS/PUFFY/define.h`
-— the 10 M☉ radiation-supported torus of Lančová et al. (2019). The AGN preset is
-applied purely through the runtime override fields in `koral/params.zig`, so **the
-validated `.puffy` constants and every golden are untouched** (`zig build test` is
-unaffected).
+This preset does not use the configuration behind koral-zig's golden tests. Those
+tests track the 10 M☉ torus in `koral_lite/PROBLEMS/PUFFY/define.h`. The AGN
+settings enter through runtime fields in `koral/params.zig`, so they do not change
+the `.puffy` defaults or the golden records.
 
 > **History note (2026-07-09).** An earlier version of this document listed eight
 > "unportable" §2 divergences. A verbatim re-reading of the C source
 > (`opacities.c`, `u2p.c`, `rad.c`, `finite.c`, `problem.h`) overturned several of
-> those claims and surfaced one the document had missed. The physics features are
+> those claims and found one the document had missed. The physics code is
 > now **ported and wired through the preset**; the corrected ledger is below.
 
-> **History note (2026-08-12).** Restored — the file was accidentally deleted in
+> **History note (2026-08-12).** Restored, the file was accidentally deleted in
 > the 2026-08-09 docs cleanup (commit 099d476) while eight references still
-> pointed here — and refreshed against the fork's big 2026-08-11 update (HEAD
+> pointed here, and refreshed against the fork's big 2026-08-11 update (HEAD
 > `ed6d2f2`): the fork's floor policy is now **drift-frame** (ZAMO retained here
 > as an option), `radimp_lag_opac` (C: `copy_state_opac`) and
 > `reduceorderafterfixup` are ported, the fork's ENTROPYEQ Sgas fix is adopted
 > *unconditionally* (the port's first deliberate divergence from the validated
 > baseline), and `puffy_debora.toml` was added as the full fork-mirror preset.
 
-> **The AGN run is still NOT bit-comparable to `koral_lite_puffy`** — see §4 — but
+> **The AGN run is not bit-comparable to `koral_lite_puffy`.** See §4. It
 > it matches the C *physics*, not just "as closely as a few knobs allow."
 
 Comparison basis: `koral_lite_puffy/PROBLEMS/PUFFY/{define.h,problem.h}`,
@@ -48,7 +46,7 @@ Scalar knobs that map cleanly onto koral-zig, set in `puffy_agn.toml`:
 | RHOFLOOR | 1e-30 | 1e-40 | `rhofloor` |
 | UURHORATIOMIN / MAX | 1e-8 / 1e0 | 1e-10 / 1e2 | `uurhoratiomin` / `uurhoratiomax` |
 | EERHORATIOMAX | 1e4 | 1e20 | `eerhoratiomax` |
-| B2UURATIOMAX | 50 | 1e3 | `b2uuratiomax` (but see §3 — the trigger is disabled) |
+| B2UURATIOMAX | 50 | 1e3 | `b2uuratiomax` (but see §3, the trigger is disabled) |
 | RADIMPEPS | 1e-6 | 1e-5 | `radimpeps` |
 | RADIMPMAXITER | 40 | 50 | `radimpmaxiter` |
 | MU_* → HFRAC/HEFRAC/MFRAC | 1/2/2 | .70/.28/.02 | `hfrac` / `hefrac` |
@@ -69,27 +67,27 @@ SYNCHROTRON, INT_ORDER 2 (PPM), CORRECT_POLARAXIS, NCCORRECTPOLAR 2, SPECIFIC_BC
 
 ---
 
-## 2. Ported (physics features implemented for the preset)
+## 2. Physics implemented for the preset
 
 All are default-off (so the validated goldens are untouched) and turned on by
 `puffy_agn.toml`:
 
 | C `#define` | what it does | koral-zig implementation | knob |
 |---|---|---|---|
-| **`MESA_KAPPA`** | MESA Rosseland opacity table | `physics/mesa.zig` (loader + logT/logR bilinear lookup, transcribed from `read_MESA_table`/`return_MESA_kappa`); the **free-free Rosseland** channel becomes `max(κ_MESA − κ_es, 0)`. **Correction:** MESA feeds only the *Rosseland* channels, NOT absorption — the free-free *Planck* absorption stays the bremsstrahlung formula, computed regardless of the (commented-out) `BREMSSTRAHLUNG` macro, exactly as C's MESA branch does. So absorption = FF-Planck + synchrotron. Physics stake: at AGN/Sgr A* masses the disk body sits at T ~ 1e5–1e6 K, H/He/iron-bump territory where the analytic FF formula is up to ~10× too transparent near logT ≈ 5.2 — suppressing bump-driven convection/inflation (this is why the 3D `puffy3d_sgra*` presets also set `mesa_table`). | `mesa_table` |
-| **scattering = 0** | not a `#define` — `PR_KAPPAES` is *undefined* for PROBLEM 147 | **The old ledger missed this.** `calc_kappaes` ≡ 0 in koral_lite_puffy, so the scattering opacity AND the Comptonization four-force term (∝ κ_es) both vanish. The preset sets `kappaes = .none`. | `scattering = false` |
+| **`MESA_KAPPA`** | MESA Rosseland opacity table | `physics/mesa.zig` loads the table and performs bilinear lookup in log T and log R. The free-free Rosseland channel becomes `max(κ_MESA − κ_es, 0)`. MESA does not replace Planck absorption; that remains free-free plus synchrotron, matching the C branch. Near log T ≈ 5.2, the analytic Rosseland formula can be about 10 times too transparent. | `mesa_table` |
+| **scattering = 0** | `PR_KAPPAES` is undefined for PROBLEM 147 | `calc_kappaes` returns zero, which removes scattering opacity and the Comptonization term proportional to κ_es. | `scattering = false` |
 | `USE_SYNCHROTRON_BRIDGE_FUNCTIONS` | Ramesh NR bridge | in `opacities.zig`: clamp Trad→Trad_lim=TradBB^(4/3)/Te^(1/3); add the NR component (∝ B²/T³) to the gas/rad synchrotron absorption; multiply the number opacity by the Te/Tc_n crossover; drop the Terelfactor suppression | `synchrotron_bridge` |
-| **b²/ρ floor policy** (`B2RHOFLOORFRAME`, `ISENTROPIC_B2RHOFLOORS`) | frame the floor mass is injected in | The fork's 2026-08-11 `u2p.c` default is **DRIFTFRAME + ISENTROPIC_B2RHOFLOORS**, the b²/u trigger commented out entirely (u2p.c:611), and fluid-frame floors (velocity untouched) inside the horizon — koral-zig mirrors it via `isentropic_b2rhofloors` / `b2uufloor = false` / `fluid_floor_inside_horizon` (`FloorParams.horizon_x1` computed in `Physics.toOptions`). The earlier **ZAMO** build (normal observer n^μ=−α g^{μ0}, isentropic delta-conserved injection, fluid-frame backup) remains available: `zamo_floor_frame = true` (ignores the three flags). On top of either path, `checkFloorsMhd` carries an always-on **guard ladder** (`solve/invert.zig`) — bit-transparent on healthy states; where C reads uninitialized `ucont` the bail-outs keep the pre-floor velocity; recoveries counted in the `n_floorguard` scalars column. | `zamo_floor_frame`, `isentropic_b2rhofloors`, `b2uufloor`, `fluid_floor_inside_horizon` |
+| **b²/ρ floor policy** (`B2RHOFLOORFRAME`, `ISENTROPIC_B2RHOFLOORS`) | frame used when injecting floor mass | The 2026-08-11 fork uses drift-frame, isentropic b²/ρ floors, disables the b²/u trigger, and leaves velocity unchanged inside the horizon. koral-zig mirrors those choices. The older ZAMO path remains available through `zamo_floor_frame`. `checkFloorsMhd` keeps the pre-floor velocity when C would read uninitialized `ucont`; `n_floorguard` counts those recoveries. | `zamo_floor_frame`, `isentropic_b2rhofloors`, `b2uufloor`, `fluid_floor_inside_horizon` |
 | `OPDAMPINIMPLICIT` (`OPDAMPMAXLEVELS 3`, `OPDAMPFACTOR 10`) | opacity-damping ladder | in `implicit.zig solveImplicitLab`: wrap the 6-rung ladder in an outer level loop; on total failure retry with the four-force scaled by `factor⁻ˡᵉᵛᵉˡ` (via `radforce.Params.opdamp`) | `opdamp_maxlevels` / `opdamp_factor` |
-| **`copy_state_opac`** (fork, 2026-08-11) | opacity lagging in the implicit solver | opacities frozen at the pre-solve state across the whole implicit Newton solve — keeps the MESA table's non-monotonic κ(T) (iron bump) out of the Jacobian; added by the fork for MESA convergence | `radimp_lag_opac` |
+| **`copy_state_opac`** (fork, 2026-08-11) | opacity lagging in the implicit solver | Freezes opacities at the pre-solve state for the full Newton solve. This keeps the MESA iron bump out of the Jacobian. | `radimp_lag_opac` |
 | `DAMPRADWAVESPEEDNEARAXIS` (`…NCELLS 2`) | damp rad wavespeed near the pole | in `sim.zig wavespeedRows`: within N cells of either pole, zero τ so the rad wavespeed keeps its undamped 1/3 (equivalent to C's override) | `dampradwavespeednearaxis` |
 | `DORADIMPFIXUPS 1` | post-implicit radiation fixup | the neighbour-averaging pass already matched C; now enabled | `doradimpfixups` |
 | `REDUCEORDERATBH` | drop reconstruction order inside r_h | in `sim.zig`: a once-computed radial threshold (r_BL(cell) < r_h) drives PPM→linear there | `reduceorderatbh` |
 | **`REDUCEORDERAFTERFIXUP`** (fork, 2026-08-11) | fixup-flagged cells reconstruct one order lower on the next sweep | in `sim.zig`; flags are consumed from the u2p/implicit pass just before the sweep *within* the step (RK2IMEX runs `calcU2p` before `opExplicit`) | `reduceorderafterfixup` |
 
-**Not preset-gated — unconditional:** the fork's **ENTROPYEQ Sgas fix** (rad.c
+**Unconditional ENTROPYEQ fix.** The fork's Sgas fix in `rad.c`
 uses `Sgas` where the achael baseline reads `Tgas`) is adopted *unconditionally*
-in `solve/implicit.zig` — the port's first deliberate divergence from the
+in `solve/implicit.zig`, the port's first deliberate divergence from the
 validated-baseline C. Versus `koral_lite_puffy` this is **parity**, not a
 divergence; versus the 10 M☉ oracle it flips ~21/336 entropy-rung records,
 counted and bounded (≤30) by `implicit_golden_tests`. Energy rungs stay
@@ -97,34 +95,34 @@ bit-identical.
 
 ---
 
-## 3. Non-divergences / no effect (do NOT implement)
+## 3. Settings with no effect
 
-- **`MAXDIFFTRADS` 1e4 / `MAXDIFFTRADSNEARBH` 1e2** — all three C sites are inside
+- **`MAXDIFFTRADS` 1e4 / `MAXDIFFTRADSNEARBH` 1e2.** All three C sites are inside
   `#ifdef EVOLVEPHOTONNUMBER`, which is **off** for PUFFY (`define.h:26`
   commented). The clamp is compiled out; with Trad ≡ TradBB it would be a no-op
   anyway. Implementing a clamp would *diverge* from C, not converge. Not ported.
-- **`UUEERATIOMAX` 10** — a **dead macro**: `#define`d in `define.h:165` but
+- **`UUEERATIOMAX` 10** is a dead macro. It is defined in `define.h:165` but
   referenced **nowhere** in the C tree. No clamp exists in C. Not ported.
-- **`u2pconv` 1e-10 → 1e-8** — the C run loosens the u2p Newton tolerance;
+- **`u2pconv` 1e-10 → 1e-8.** The C run loosens the u2p Newton tolerance;
   koral-zig hardwires the *tighter* 1e-10 (`solve/invert.zig:28`). Convergence
-  tolerance, not physics — effect at inversion round-off level. Still a genuine
+  tolerance, not physics, effect at inversion round-off level. Still a genuine
   (tiny) divergence; see §4.
-- **`EXPECTEDHR` 0.3 → 0.7** — only used when `CALCHRONTHEGO` is off; PUFFY sets
+- **`EXPECTEDHR` 0.3 → 0.7.** This is used only when `CALCHRONTHEGO` is off. PUFFY sets
   it, so `EXPECTEDHR` is dead in both configs (the `expectedhr` params knob
   exists for `puffy_debora.toml`'s record).
-- **`POLARAXISAVGIN3D`** — 3D-only; this preset is 2D (`nz = 1`).
-- **`EVOLVEPHOTONNUMBER` / `NPH_*` / `RADIMPLICITMAXNPHCHANGE`** — photon-number
+- **`POLARAXISAVGIN3D`**, 3D-only; this preset is 2D (`nz = 1`).
+- **`EVOLVEPHOTONNUMBER` / `NPH_*` / `RADIMPLICITMAXNPHCHANGE`**, photon-number
   evolution is off (`define.h:26`). koral-zig has no NF variable either.
-- **`RESTARTNUM` / `PERTURB*`** — restart bookkeeping; koral-zig restarts via
-  `--restart <file|dir>` (`RESTORETORUS` is a real gap — §5).
-- **`NTX` / `NTY` tiling** — MPI decomposition (single-node here; the MPI port
+- **`RESTARTNUM` / `PERTURB*`**, restart bookkeeping; koral-zig restarts via
+  `--restart <file|dir>` (`RESTORETORUS` is a real gap, §5).
+- **`NTX` / `NTY` tiling**, MPI decomposition (single-node here; the MPI port
   tracks it separately).
-- **`SILOOUTPUT` / `RADOUTPUT` / `SCAOUTPUT` / `NOUTSTOP` / `PRINT_*`** — C output
+- **`SILOOUTPUT` / `RADOUTPUT` / `SCAOUTPUT` / `NOUTSTOP` / `PRINT_*`**, C output
   flags; koral-zig writes `scalars.dat`, KDMP, and optional `.silo` (`-Dsilo`).
-- **`B2UURATIOMIN` / `B2RHORATIOMIN` 0** — "not implemented anyway" in C. And the
+- **`B2UURATIOMIN` / `B2RHORATIOMIN` 0**, "not implemented anyway" in C. And the
   b²/uu (`B2UURATIOMAX`) *ceiling* trigger is commented out in the fork's u2p.c,
   so `b2uuratiomax` in the toml is set for the record but is dead (§2, floor row).
-- **`FLUXLIMITER` 1** — only affects INT_ORDER 1 reconstruction; both configs use
+- **`FLUXLIMITER` 1.** This affects only INT_ORDER 1 reconstruction; both configs use
   PPM (INT_ORDER 2), which ignores it.
 
 ---
@@ -134,31 +132,31 @@ bit-identical.
 The ports match the C *physics*, but a bit-for-bit reproduction would still differ
 on:
 
-- **libm ULP** — the MESA lookup takes `log10`, and the opacity/bridge use
+- **libm ULP.** The MESA lookup takes `log10`, and the opacity/bridge use
   `pow`/`cbrt`/`exp`. Zig's LLVM intrinsics vs the C libm differ at the
   sub-ULP level; over many steps this diffuses. (The MESA *table interpolation* is
-  bit-faithful — same bilinear formula on the same values.)
-- **Exact π** — the port uses one exact `std.math.pi` where C mixes the truncated
+  bit-faithful, same bilinear formula on the same values.)
+- **Exact π.** The port uses one exact `std.math.pi` where C mixes the truncated
   `#define Pi = 3.141592654` and exact `M_PI` (MKS2 metric flavor vs coco point
   transforms; `fourpi` vs `fourmpi` in the emission constants). θ-sensitive MKS2
   quantities differ from C at ~1e-9 (see `PHYSICS.md` §2.4). Unified 2026-07-06.
-- **`u2pconv` 1e-10 vs 1e-8** — koral-zig uses the tighter tolerance (§3). Plumb it
+- **`u2pconv` 1e-10 vs 1e-8.** koral-zig uses the tighter tolerance (§3). Plumb it
   into the solver if an exact match is wanted.
-- **`REDUCEMINMODTHETA 1`** — koral_lite_puffy also reduces the minmod-θ limiter
-  near the axis (`define.h:104`). NOT ported (a minor near-axis reconstruction
-  tweak, only bites where order is already reduced).
-- **Floor guard ladder on unhealthy states** — where C's floor path reads
+- **`REDUCEMINMODTHETA 1`.** `koral_lite_puffy` reduces the minmod-θ limiter
+  near the axis (`define.h:104`). This small reconstruction change is not ported
+  and matters only where order is already reduced.
+- **Floor guard ladder on unhealthy states.** Where C's floor path reads
   uninitialized `ucont` (γ ≫ GAMMAMAXHD + strong field), koral-zig's bail-outs
   keep the pre-floor velocity instead. C's behavior there is undefined, so
   bit-comparison is meaningless on exactly those cells; healthy states are
   bit-identical (`solve/invert.zig`, gated in `state_tests`).
-- **Entry-conserveds quirk** — C's `check_floors_mhd` adds the floor delta to the
+- **Entry-conserveds quirk.** C's `check_floors_mhd` adds the floor delta to the
   conserveds computed at function *entry* (before the scalar ρ/u floors);
   koral-zig reproduces this, but it is a subtle C behavior worth flagging.
 
-Treat this preset as **"koral_lite_puffy's physics as koral-zig now expresses
-it"** — a faithful AGN-scale reproduction of the C *model*, not a byte-identical
-oracle. `zig build test` (the 10 M☉ validated goldens) is unaffected: every
+Treat this preset as koral-zig's expression of the `koral_lite_puffy` model. It
+is not a byte-identical oracle. `zig build test` for the 10 M☉ goldens is
+unaffected: every
 preset feature is default-off, and the one unconditional change (ENTROPYEQ Sgas,
 §2) is excluded record-by-record in `implicit_golden_tests`.
 
@@ -171,23 +169,23 @@ Gaps broader than this preset needs, catalogued for the full fork-mirror preset
 
 - **`RESTORETORUS`** + the per-step problem hook it needs (C's "my_finger"
   per-step density restore toward the initial torus).
-- **Live magnetic rad-floor block** — the fork flipped `check_floors_rad`'s
+- **Live magnetic rad-floor block.** The fork flipped `check_floors_rad`'s
   magnetic block from `SKIP_MAGNFIELD` to `MAGNFIELD`.
 - **Midplane-κ text output** (fork diagnostic).
-- **INT_ORDER 1** — the koral-zig PUFFY binary is comptime PPM.
+- **INT_ORDER 1.** The koral-zig PUFFY binary uses compile-time PPM.
 - **`REDUCEMINMODTHETA`**, **`BALANCEENTROPYWITHRADIATION`** (and `UUEERATIOMAX`,
-  dead in C — §3).
+  dead in C, §3).
 - The fork's entropy-u2p Jacobian change `dwmrho0dW` 1/γ² → 1/γ is deliberately
-  **not** adopted — the baseline's 1/γ² matches harmpi and the fork change is
+  **not** adopted, the baseline's 1/γ² matches harmpi and the fork change is
   unverified (`solve/invert.zig:13`).
 
 ---
 
 ## Smoke check
 
-(2026-07-09) A tiny 60×56, 8-step run of the preset exercised every then-new path
-— MESA lookup, ZAMO floor, synchrotron bridge, opacity-damping ladder,
-reduce-order-at-BH, near-axis wavespeed damping, radimp fixups, scattering-off —
+(2026-07-09) A 60×56, eight-step run exercised MESA lookup, the ZAMO floor,
+the synchrotron bridge, the opacity-damping ladder,
+reduce-order-at-BH, near-axis wavespeed damping, radimp fixups, scattering-off,
 with `nan=0`, `radimpfail=0`, clean exit. The 2026-08-12 additions (drift-frame
 policy + guard ladder, lagged opacities, after-fixup reduce-order, unconditional
 Sgas) landed with all tests and goldens green; `puffy_tests` parses every shipped

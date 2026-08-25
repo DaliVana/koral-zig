@@ -1,45 +1,45 @@
 # koral-zig
 
-A [Zig](https://ziglang.org) reimplementation of **[KORAL](https://github.com/achael/koral_lite)** — a
-general-relativistic radiation-magnetohydrodynamics (GR-RMHD) code — targeting the
-**PUFFY** radiation-supported accretion torus around a 10 M☉ Schwarzschild black
-hole (Lančová et al. 2019).
+A Zig reimplementation of [KORAL](https://github.com/achael/koral_lite), the
+general-relativistic radiation-magnetohydrodynamics (GR-RMHD) code. This port
+focuses on the PUFFY radiation-supported torus around a 10 M☉ Schwarzschild black
+hole from Lančová et al. (2019).
 
 ![Zig 0.16.0](https://img.shields.io/badge/Zig-0.16.0-f7a41d)
 ![status](https://img.shields.io/badge/status-2D%20%26%203D%20validated-brightgreen)
 ![license](https://img.shields.io/badge/license-GPLv3-blue)
 
-It is a **faithful, bit-comparable transcription** of the C code: matching variable
-order and floating-point expression shapes so that, cell for cell, it reproduces the
-reference to machine precision — deliberate C quirks included. The goal is a modern,
-memory-safe, dependency-light GR-RMHD core that is easy to read, test, and extend.
+The implementation preserves KORAL's variable order and floating-point expression
+shape. Its comparison tests can therefore check individual cells against the C
+reference at machine precision, including deliberate C quirks. Zig adds memory
+safety and a small dependency footprint without hiding the numerical lineage.
 
-- **What it solves.** The GRMHD conservation laws coupled to the M1 radiation
-  moments, with an implicit radiation–gas four-force, opacities (bremsstrahlung,
-  synchrotron, Klein–Nishina scattering) + Comptonization, radiative shear
-  viscosity, constrained-transport magnetic fields, and a mean-field dynamo — on
-  a black-hole spacetime in modified Kerr–Schild (MKS2) coordinates.
+- **What it solves.** The GRMHD conservation laws coupled to M1 radiation
+  moments on a black-hole spacetime in modified Kerr-Schild (MKS2) coordinates.
+  The model includes an implicit radiation-gas four-force, bremsstrahlung,
+  synchrotron, Klein-Nishina scattering, Comptonization, radiative shear
+  viscosity, constrained transport, and a mean-field dynamo.
 - **How it runs.** Single binary per problem, one TOML config, no runtime
   dependencies beyond the Zig standard library. Serial by default with **opt-in
   shared-memory threading**; opt-in **φ-only MPI** (`-Dmpi`) splits a 3D wedge
   across ranks. Runs on a laptop, a workstation node, or a multi-node φ-ring.
-- **How it's checked.** Validated against the original C code — the 2D and 3D
-  PUFFY problems reproduce it bit-for-bit — through a large battery of analytic
-  "theory" tests and C-generated golden files. See [Testing](#testing).
+- **How it's checked.** Analytic tests and C-generated golden files cover the
+  physics kernels and assembled step. The 2D and 3D PUFFY comparison cases match
+  the C reference bit for bit. See [Testing](#testing).
 
-> **New to the physics or the code?** The [documentation](#documentation) below
-> has a dedicated guide for each audience — users, programmers, and physicists.
+The [documentation index](docs/README.md) points to separate guides for running the
+code, understanding its structure, and checking the physics.
 
 ---
 
-## Quickstart
+## Quick start
 
 ### 1. Install Zig 0.16.0
 
 koral-zig requires **exactly Zig 0.16.0** (it uses the 0.16 `std.Io` API; earlier
 releases will not compile it). Pick one:
 
-**A. Official prebuilt binary (recommended — pins the exact version).**
+**Official binary.** This is the safest way to pin the required version.
 Download the `0.16.0` archive for your OS/arch from
 **[ziglang.org/download](https://ziglang.org/download/)**, unpack it, and put the
 folder on your `PATH`. For example, on Apple Silicon macOS:
@@ -54,15 +54,15 @@ export PATH="$PWD/zig-aarch64-macos-0.16.0:$PATH"   # add to your shell profile 
 Linux (`zig-x86_64-linux-0.16.0.tar.xz`) and Windows (`zig-x86_64-windows-0.16.0.zip`)
 work the same way.
 
-**B. A version manager** — handy if you juggle Zig versions:
+**Version manager.** Use this if you switch between Zig versions:
 
 ```sh
-# zvm — https://github.com/tristanisham/zvm
+# zvm, https://github.com/tristanisham/zvm
 zvm install 0.16.0 && zvm use 0.16.0
 ```
 
-**C. A package manager** (e.g. `brew install zig`) — convenient, but only if it
-currently ships **0.16.0**; otherwise use A or B.
+**Package manager.** A command such as `brew install zig` works only when the
+package is Zig 0.16.0.
 
 Verify:
 
@@ -109,8 +109,8 @@ puffy: done (t=…, … steps)
 ```
 
 Every quantity is in **geometrized/code units (GU)**, matching KORAL's convention;
-convert to CGS/Eddington in downstream analysis. To run longer or larger, edit the
-TOML (`tmax`, `nstep_max`, `nx`/`ny`, `nthreads`) — see below.
+convert to CGS/Eddington in downstream analysis. To run longer or larger, edit
+`tmax`, `nstep_max`, `nx`, `ny`, and `nthreads` in the TOML.
 
 ---
 
@@ -132,25 +132,26 @@ Common knobs: `mass`, `bhspin`, `gam` (physics); `nx`/`ny`/`nz` (resolution);
 floors/ceilings. The full field-by-field reference is in the
 [User Guide](docs/USER_GUIDE.md#3-the-params-toml-file).
 
-Anything that changes the *generated code* (module set, reconstruction scheme,
-coordinate system) is a compile-time `Config` in the problem source, not a runtime
-param — see the guide's ["creating a new problem"](docs/USER_GUIDE.md) recipe.
+Anything that changes generated code, such as the module set, reconstruction
+scheme, or coordinate system, belongs in the problem's compile-time `Config`.
+See the guide's [new-problem recipe](docs/USER_GUIDE.md#7-recipe-creating-a-new-problem).
 
 ---
 
-## Output & visualization
+## Output and visualization
 
 Written into the config's `out_dir`:
 
-- **`scalars.dat`** — a whitespace-separated time series of global diagnostics
+- **`scalars.dat`.** A whitespace-separated time series of global diagnostics
   (mass, accretion rate Ṁ, radiative/total luminosity, scale height H/R,
   peak magnetization, fixup/NaN counters). One row per output frame.
-- **`prims#####.kdmp`** — little-endian binary snapshots of all primitives
-  (enabled when `dtout2 > 0`). Each is also a complete restart checkpoint.
-- **`.silo`** *(optional)* — VisIt-openable field dumps, when built with
+- **`prims#####.kdmp`.** Little-endian snapshots of every primitive, written on
+  each `dtout1` or `nout_step` output frame. Each file is a restart checkpoint.
+  `dtout2` is reserved and does not control these files.
+- **`.silo`** *(optional).* VisIt-readable field dumps, enabled with
   `-Dsilo`. Silo is compiled from source (LLNL Silo 4.12, PDB driver, no HDF5)
-  and linked statically via the sibling [`silo-zig`](../silo-zig) wrapper — **no
-  VisIt or Silo install required**.
+  and linked statically through the sibling [`silo-zig`](../silo-zig) wrapper.
+  VisIt and a system Silo installation are not build dependencies.
 
 See the [User Guide](docs/USER_GUIDE.md#4-output-formats) for exact byte layouts
 and column definitions.
@@ -171,8 +172,7 @@ KDMP checkpoint with `zig build res2kdmp -- <path/res####.head> [out.kdmp]`.
 
 ## Documentation
 
-Three cross-referenced guides in [`docs/`](docs/README.md), written from the actual
-source — start with the one that matches what you need:
+The [`docs/`](docs/README.md) directory has focused guides for each kind of work:
 
 | Document | For | Covers |
 |---|---|---|
@@ -180,43 +180,43 @@ source — start with the one that matches what you need:
 | **[Architecture](docs/ARCHITECTURE.md)** | programmers getting into the code | design philosophy and the C-diffability contract, the module graph, the core data model, and the anatomy of one time step |
 | **[Physics & Numerics](docs/PHYSICS.md)** | physicists validating or extending the science | the governing equations, metric/coordinates, stress tensors, opacities, viscosity, dynamo, the numerical scheme, and the PUFFY initial conditions |
 
-The [validation log](docs/MILESTONES.md) records each milestone (M0–M14) and how it
+The [validation log](docs/MILESTONES.md) records each milestone (M0-M14) and how it
 was checked against C.
 
 ---
 
 ## Testing
 
-End-to-end regression against the C code is impossible (turbulent GR-RMHD runs are
-chaotic), so correctness is pinned three ways:
+Long turbulent runs diverge after tiny floating-point changes, so the test suite
+checks smaller deterministic pieces:
 
-- **Theory tests** — pure Zig unit/property tests of analytic identities
+- **Theory tests.** Pure Zig unit and property tests cover analytic identities
   (`g·G = δ`, Christoffel symmetry, p2u↔u2p round-trips, M1 closure invariants,
   `E = aT⁴`, conservation in the implicit solve, …) and known solutions
   (Sod tube, Bondi/Michel stationarity, radiative-shock battery).
-- **C-comparison goldens** — records generated by small C harnesses in
+- **C-comparison goldens.** Small C harnesses in
   [`oracle/`](oracle/) (compiled against the C KORAL) plus short forced-`dt` step
   comparisons on tiny grids, committed under `tests/golden/`. The 2D and 3D PUFFY
   problems match C bit-for-bit.
-- **Self-goldens** — the assembled PUFFY pipeline (init → CFL → RK2IMEX → BCs →
+- **Self-goldens.** The assembled PUFFY pipeline (init → CFL → RK2IMEX → BCs →
   fixups) run for a few steps and pinned against a baseline this repository
-  generated itself, under `tests/selfgolden/`. These say nothing about whether
-  the physics is *right* — that is the C goldens' job — only whether our own
-  numbers have **moved**, which the theory tests cannot see because they check
-  identities and known solutions rather than the composition. They are the
+  generated itself, under `tests/selfgolden/`. These detect movement in the
+  composed Zig pipeline. They do not establish physical correctness; the theory
+  and C-comparison tests do that. Self-goldens remain useful if the Zig and C
+  implementations intentionally stop matching because they are the
   end-to-end net that survives if the Zig side ever stops matching koral_lite
   bit-for-bit, since at that point the C baseline can no longer be regenerated.
 
 ```sh
 zig build test                    # the fast battery
 zig build test -Dslow-tests       # + convergence studies, soaks, full-grid PUFFY t=0 keystone
-zig build update-self-goldens     # rewrite the self-golden baseline — see the caveat below
+zig build update-self-goldens     # rewrite the self-golden baseline; review first
 ```
 
 Regenerating the C goldens needs `clang`, GSL (`brew install gsl`), and a sibling
 checkout of [koral_lite](https://github.com/achael/koral_lite); the committed goldens
 mean you only need the Zig toolchain to build, run, and test. The self-goldens need
-nothing but the Zig toolchain — but regenerate them only after reviewing what moved:
+nothing but the Zig toolchain, but regenerate them only after reviewing what moved:
 the committed files *are* the record of what this code used to compute, and rewriting
 them without looking discards it. Details in the
 [User Guide](docs/USER_GUIDE.md#5-running-the-tests) and the
@@ -226,10 +226,10 @@ them without looking discards it. Details in the
 
 ## Status
 
-All planned milestones (M0–M14) are complete: the metric layer, frames/velocities,
+All planned milestones (M0-M14) are complete: the metric layer, frames/velocities,
 p2u/u2p inversions with floors, reconstruction + wavespeeds + fluxes, hydro/MHD
 evolution with constrained transport, M1 radiation, opacities + four-force, the
-implicit radiation–gas solver, the full RK2-IMEX pipeline, the PUFFY problem
+implicit radiation-gas solver, the full RK2-IMEX pipeline, the PUFFY problem
 (2D **and** 3D, both validated bit-for-bit against C), the dynamo + radiative
 viscosity + Comptonization, scalar diagnostics, restart checkpoints, and opt-in
 threading.
@@ -250,13 +250,13 @@ which is released under the **GNU General Public License v3.0**. koral-zig is
 therefore distributed under the [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html)
 as well.
 
-## Credits & references
+## Credits and references
 
-- **KORAL** — the original GR radiation-MHD code, by Aleksander Sądowski and
+- **KORAL.** The original GR radiation-MHD code, by Aleksander Sądowski and
   collaborators (Sądowski, Narayan, Tchekhovskoy, Zhu, et al.).
-- **koral_lite** — the lighter reference implementation this port follows, by
+- **koral_lite.** The lighter reference implementation this port follows, by
   Andrew Chael: <https://github.com/achael/koral_lite>.
-- **PUFFY** — the radiation-supported thick-torus problem: Lančová et al. (2019),
+- **PUFFY.** The radiation-supported thick-torus problem from Lančová et al. (2019),
   *"Puffy Accretion Disks: Sustaining 3D Dynamics of Radiation-supported Thick Tori,"*
   ApJ Letters 884, L37.
 
