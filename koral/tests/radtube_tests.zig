@@ -2,22 +2,22 @@
 //! radiative shock tubes evolved to a stationary state and validated
 //! against the semi-analytic stationary system itself:
 //!
-//!   (a) stationarity  — the profile stops evolving,
-//!   (b) plateaus      — the near-boundary states match the published
+//!   (a) stationarity: the profile stops evolving,
+//!   (b) plateaus: the near-boundary states match the published
 //!                       asymptotic (jump-condition + LTE) states,
-//!   (c) flux constancy— the ANALYTIC total fluxes (ρu^x, T^{xν}+R^{xν})
+//!   (c) flux constancy; the ANALYTIC total fluxes (ρu^x, T^{xν}+R^{xν})
 //!                       evaluated from the numerical primitives are
 //!                       constant across the domain (they are the first
 //!                       integrals of the stationary ODE system; also the
-//!                       Rankine–Hugoniot conditions across the embedded
+//!                       Rankine-Hugoniot conditions across the embedded
 //!                       gas shock of tubes 1/2),
-//!   (d) ODE residual  — for smooth tubes, ∂x R^{xν} = −G^ν pointwise
+//!   (d) ODE residual: for smooth tubes, ∂x R^{xν} = −G^ν pointwise
 //!                       along the profile (the remaining two equations of
 //!                       the stationary system).
 //!
 //! (b)+(c)+(d) together state that the computed profile IS a solution of
 //! the semi-analytic stationary equations with the correct boundary
-//! values — the same content as integrating the ODEs and comparing in L1,
+//! values: the same content as integrating the ODEs and comparing in L1,
 //! without the shooting fragility. Each run finishes with a dt/5 "polish"
 //! phase: the RK2IMEX fixed point carries a dt-proportional splitting bias
 //! in the pointwise balance (F and G are evaluated at intermediate states
@@ -27,7 +27,7 @@
 //! Tubes 3a and 4a run in the default suite; 1 (non-relativistic: flush
 //! time ~3200), 2 (contact residue flushes at v ≈ 0.08) and 4b, plus
 //! hi-res 3a/4a, run under `zig build test -Dslow-tests`. Tube 3b (κ = 25)
-//! is excluded — see the note in the slow set.
+//! is excluded. See the note in the slow set.
 
 const std = @import("std");
 const config = @import("../config.zig");

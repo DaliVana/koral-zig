@@ -1,5 +1,5 @@
-//! Units and physical constants — the single source of truth for
-//! geometrized-unit (GU) ↔ CGS conversions (C: ko.h lines 6–78).
+//! Units and physical constants; the single source of truth for
+//! geometrized-unit (GU) ↔ CGS conversions (C: ko.h lines 6-78).
 //!
 //! KORAL's geometrized units: G = c = 1, the black-hole mass sets the length
 //! scale MASSCM = MASS·MSUNCM (cm per code length unit). Temperatures stay

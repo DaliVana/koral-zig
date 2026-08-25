@@ -3,7 +3,7 @@
 //!  * camera tetrad orthonormality in Kerr,
 //!  * null-geodesic integration: E = −k_t and L = k_φ conservation and the
 //!    null norm through a strong-field passage (Kerr a = 0.9375, MKS2),
-//!  * the Schwarzschild photon-capture threshold b_crit = √27 M — rays
+//!  * the Schwarzschild photon-capture threshold b_crit = √27 M; rays
 //!    inside are swallowed, outside escape,
 //!  * LTE consistency of the emission model: source function j/χ = B(T)
 //!    when gas and radiation are in equilibrium,
@@ -15,7 +15,7 @@
 //!    traceRayWith and the full 3-phase sweep; a time-localized flare
 //!    arriving retarded by the Shapiro-corrected travel time; the radial
 //!    KS flight time Δt = Δr + 4M ln(...); consecutive photon-ring windings
-//!    delayed by the photon-orbit period 2π·3√3 M; and the adaptive
+//!    delayed by the photon-orbit period 2π·3√3 M, and the adaptive
 //!    quadtree plan (exact pixel weights, capture-boundary marking,
 //!    antialiased shadow edge).
 

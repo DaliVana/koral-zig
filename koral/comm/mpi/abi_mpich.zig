@@ -1,4 +1,4 @@
-//! MPICH-family ABI (MPICH, Intel MPI, MVAPICH, Cray MPICH — the
+//! MPICH-family ABI (MPICH, Intel MPI, MVAPICH, Cray MPICH; the
 //! `libmpi.so.12` compatibility initiative). Handles are `int`; predefined
 //! objects are compile-time hex constants. Values verified against MPICH
 //! 4.x `mpi.h` (MPI plan §3.1); the build's `mpi-abi-check` self-test
@@ -10,7 +10,7 @@ pub const RawDatatype = c_int;
 pub const RawOp = c_int;
 pub const RawRequest = c_int;
 /// The one MPICH handle that is NOT an int: MPI_File comes from ROMIO
-/// (`typedef struct ADIOI_FileD *MPI_File;`, mpio.h) — a pointer in both
+/// (`typedef struct ADIOI_FileD *MPI_File;`, mpio.h); a pointer in both
 /// families, unlike every other MPICH handle.
 pub const RawFile = ?*anyopaque;
 pub const RawInfo = c_int;
@@ -48,7 +48,7 @@ pub fn infoNull() RawInfo {
     return 0x1c000000;
 }
 
-/// MPI_STATUSES_IGNORE == (MPI_Status*)1 — a sentinel, never a Zig optional
+/// MPI_STATUSES_IGNORE == (MPI_Status*)1; a sentinel, never a Zig optional
 /// (plan §3.1: the two families disagree on the bit pattern). `align(1)` is
 /// load-bearing: `Status` is five c_int, so its natural alignment is 4 and
 /// Zig rejects the address 1 without it. The pointer is never dereferenced
@@ -57,7 +57,7 @@ pub fn statusesIgnore() ?[*]align(1) Status {
     return @ptrFromInt(1);
 }
 
-/// MPI_STATUS_IGNORE == (MPI_Status*)1 — same sentinel story as
+/// MPI_STATUS_IGNORE == (MPI_Status*)1; same sentinel story as
 /// statusesIgnore above (the MPI-IO calls take a single-status pointer).
 pub fn statusIgnore() ?*align(1) Status {
     return @ptrFromInt(1);

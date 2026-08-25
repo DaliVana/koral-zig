@@ -1,10 +1,10 @@
-//! CORRECT_POLARAXIS — the polar-axis special treatment (PUFFY define.h:107-109,
+//! CORRECT_POLARAXIS: the polar-axis special treatment (PUFFY define.h:107-109,
 //! NCCORRECTPOLAR = 2). The NCCORRECTPOLAR most-polar θ rows on each side are
 //! not evolved: they are overwritten every step from the first row below the
 //! band.
 //!
-//!   correct_polaraxis            finite.c:5525 — the overwrite (this file)
-//!   is_cell_corrected_polaraxis  finite.c:6132 — the predicate the evolution
+//!   correct_polaraxis            finite.c:5525; the overwrite (this file)
+//!   is_cell_corrected_polaraxis  finite.c:6132; the predicate the evolution
 //!                                  passes gate on: u2p inverts B only
 //!                                  (u2p.c:57/80/92, both floor checks
 //!                                  skipped), cell_fixup never targets these
@@ -13,17 +13,17 @@
 //!
 //! Those two are one contract, not two features: a row the predicate claims
 //! MUST be a row the overwrite rewrites, or the evolution passes skip work that
-//! nothing then supplies — p decouples from u, and since the B-only u2p branch
+//! nothing then supplies; p decouples from u, and since the B-only u2p branch
 //! deliberately zeroes the fixup flags, nothing reports it. `Band` is the
 //! single source of truth both halves derive from, and it carries BOTH
 //! activation gates (the `correct_polaraxis` option and the coordinate system)
-//! so they cannot drift apart. `Sim.init` additionally rejects the two configs
+//! so they cannot drift apart. `Sim.init` also rejects the two configs
 //! that would make the contract unsatisfiable: `ny ≤ 2·nccorrectpolar` (the
 //! overwrite's sources would lie inside the overwritten band) and non-spherical
 //! coords (preconditions (5) and (7)).
 //!
-//! `sim.zig` keeps the two entry points — `Sim.doCorrect` and
-//! `Sim.isCellCorrectedPolaraxis` — as thin delegates, the same way it fronts
+//! `sim.zig` keeps the two entry points; `Sim.doCorrect` and
+//! `Sim.isCellCorrectedPolaraxis`; as thin delegates, the same way it fronts
 //! sim/bc.zig with `Sim.setBc`.
 //!
 //! Not yet transcribed, but lands here rather than in sim/ct.zig when it does:
@@ -35,7 +35,7 @@ const p2u_mod = @import("../p2u.zig");
 
 const Error = @import("../relele.zig").Error || error{OutOfMemory};
 
-/// The θ rows the axis treatment owns. Construct only via `band()` — a `Band`
+/// The θ rows the axis treatment owns. Construct only via `band()`; a `Band`
 /// existing means the treatment is active and both halves agree on its extent.
 pub const Band = struct {
     /// C: NCCORRECTPOLAR
@@ -51,7 +51,7 @@ pub const Band = struct {
     }
 
     /// The row `iy` is overwritten from (C: finite.c:5525 loop bounds). Never
-    /// itself owned — `Sim.init` precondition (5) rejects `ny ≤ 2·nc` — so the
+    /// itself owned; `Sim.init` precondition (5) rejects `ny ≤ 2·nc`, so the
     /// overwrite never reads a cell it also writes, at any ordering.
     pub fn sourceRow(b: Band, iy: i64) i64 {
         return if (iy < b.nc) b.nc else b.ny - 1 - b.nc;
@@ -72,14 +72,14 @@ pub fn band(comptime SimT: type, sim: *const SimT) ?Band {
     return .{ .nc = sim.opt.nccorrectpolar, .ny = sim.nyi() };
 }
 
-/// C: correct_polaraxis (finite.c:5525) — scalars and in-row velocities copied
+/// C: correct_polaraxis (finite.c:5525). Scalars and in-row velocities copied
 /// from the source row, the θ-components scaled by |θ−θ_axis|/|θ_src−θ_axis|
 /// (internal x2), then p2u at the *target* geometry rewrites all conserveds. B
 /// is untouched: PUFFY defines no CORRECTMAGNFIELD.
 ///
 /// Band-parallel over ix columns: each column reads only its own (unowned)
 /// source rows and writes only its own owned rows, so banding is bit-identical
-/// to serial. For the same reason the two sides can share one `ic` loop —
+/// to serial. For the same reason the two sides can share one `ic` loop;
 /// no write is ever read back, so their interleaving cannot change a value.
 pub fn correct(comptime SimT: type, sim: *SimT) Error!void {
     const b = band(SimT, sim) orelse return;

@@ -1,14 +1,14 @@
 //! Constrained transport and vector-potential machinery (C: magn.c).
 //!
-//!   flux_ct          magn.c:240  — Tóth flux-CT: corner EMFs from the B
+//!   flux_ct          magn.c:240: Tóth flux-CT; corner EMFs from the B
 //!                                  rows of flbx/flby/flbz, then the B fluxes
 //!                                  rebuilt from EMF averages.
-//!   calc_BfromA      magn.c:462  — cell-centered A → corner A (linear
+//!   calc_BfromA      magn.c:462: cell-centered A → corner A (linear
 //!                                  interpolation) → curl → B, optionally
 //!                                  overwriting p/u.
-//!   calc_BfromA_core magn.c:568  — the curl. 2D (TNZ==1) uses the exact
+//!   calc_BfromA_core magn.c:568: the curl. 2D (TNZ==1) uses the exact
 //!                                  flux-ct-compatible corner differences.
-//!   calc_divB        magn.c:693  — corner-based divergence diagnostic.
+//!   calc_divB        magn.c:693: corner-based divergence diagnostic.
 //!
 //! All functions are generic over Sim(cfg) (passed as the type + pointer) so
 //! this module doesn't circularly import sim.zig at comptime.
@@ -16,8 +16,8 @@
 //! C quirks kept:
 //!  * fl_x/fl_y/fl_z pin an index to 0 when that dimension is collapsed.
 //!  * coefemf is 0.5 unless *both* transverse dimensions are active (0.25).
-//!  * calc_divB divides the x-differences by 2·(x(ix+1)−x(ix)) — the
-//!    *forward* center distance — while differencing (ix)−(ix−1).
+//!  * calc_divB divides the x-differences by 2·(x(ix+1)−x(ix)); the
+//!    *forward* center distance; while differencing (ix)−(ix−1).
 //!  * adjust_fluxcttoth_emfs (polar-axis EMF zeroing) is CORRECT_POLARAXIS
 //!    machinery and lands with M11; none of the M6 problems define it.
 
@@ -31,7 +31,7 @@ fn flPin(n: i64, i: i64) i64 {
 }
 
 /// C: flux_ct (magn.c:240). Requires GDETIN == 1 (ours always is).
-/// P1: both passes run band-parallel over iy corner rows — pass 1 writes
+/// P1: both passes run band-parallel over iy corner rows; pass 1 writes
 /// only its own corners' EMFs, pass 2 only its own faces' flb rows; the
 /// region boundary between them is the required RAW barrier (pass 2 reads
 /// pass 1's EMFs at iy and iy+1).
@@ -138,7 +138,7 @@ fn rebuildBandWorker(comptime SimT: type) fn (*SimT, i64, i64, *threading.ChunkR
     }.w;
 }
 
-/// flux_ct pass 2 — rebuild the B rows of the face fluxes from the corner
+/// flux_ct pass 2; rebuild the B rows of the face fluxes from the corner
 /// EMFs, for corner rows iy ∈ [iy0, iy1).
 fn rebuildBand(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) void {
     const L = SimT.Layout;
@@ -178,7 +178,7 @@ fn rebuildBand(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) void {
 
 /// C: calc_BfromA (magn.c:462) with the default linear-interpolation branch.
 /// Reads cell-centered A_i from the B1..B3 slots of `sim.p`, averages to
-/// corners, takes the curl, and (ifoverwrite) writes B into p/u everywhere —
+/// corners, takes the curl, and (ifoverwrite) writes B into p/u everywhere;
 /// ghost cells get the stale scratch (zeros) exactly like C, so call setBc
 /// afterwards, as ko.c does.
 pub fn calcBfromA(comptime SimT: type, sim: *SimT, ifoverwrite: bool) relele.Error!void {
@@ -221,7 +221,7 @@ pub fn calcBfromA(comptime SimT: type, sim: *SimT, ifoverwrite: bool) relele.Err
 /// Corner-averaged vector potential (magn.c:499-515): A_i at each corner is
 /// the average of the surrounding cell-centered A_i, read from `src` slots
 /// [base, base+1, base+2] and written into `scratch` slots 0..2. `src` is any
-/// Field on the same grid — sim.p (B slots) for calc_BfromA, the dynamo scratch
+/// Field on the same grid; sim.p (B slots) for calc_BfromA, the dynamo scratch
 /// for mimic_dynamo; `scratch` is the 6-slot work Field (`&sim.vecpot`) that
 /// carries the corner A (0..2) then the curl B (3..5). Exposed via pub so the
 /// dynamo can reuse the curl.
@@ -265,8 +265,8 @@ pub fn cornerAverageA(comptime SimT: type, sim: *SimT, scratch: anytype, src: an
 
 /// Curl of a cell-centered vector potential held in `src` slots
 /// [base..base+2]: corner-average then curl, leaving B^i in `scratch` slots
-/// 3..5 (C: calc_BfromA(pinput, 0) — the ifoverwrite==0 path the dynamo uses).
-/// Returns `scratch` so the consumer visibly reads the result there — slots
+/// 3..5 (C: calc_BfromA(pinput, 0); the ifoverwrite==0 path the dynamo uses).
+/// Returns `scratch` so the consumer visibly reads the result there; slots
 /// 0..2 are clobbered (corner A), 3..5 hold the output B.
 pub fn curlFromA(comptime SimT: type, sim: *SimT, scratch: anytype, src: anytype, base: usize) @TypeOf(scratch) {
     cornerAverageA(SimT, sim, scratch, src, base);
@@ -274,7 +274,7 @@ pub fn curlFromA(comptime SimT: type, sim: *SimT, scratch: anytype, src: anytype
     return scratch;
 }
 
-/// C: calc_BfromA_core (magn.c:568) — curl of the corner A over the domain,
+/// C: calc_BfromA_core (magn.c:568). Curl of the corner A over the domain,
 /// stored back into the `scratch` slots (as C reuses pvecpot[1..3]).
 fn calcBfromACore(comptime SimT: type, sim: *SimT, scratch: anytype) void {
     const nx = sim.nxi();
@@ -333,7 +333,7 @@ fn calcBfromACore(comptime SimT: type, sim: *SimT, scratch: anytype) void {
     }
 }
 
-/// C: calc_divB (magn.c:693) — corner-based ∇·(√−g B)/√−g at cell corners
+/// C: calc_divB (magn.c:693). Corner-based ∇·(√−g B)/√−g at cell corners
 /// using cell-centered values. Returns 0 outside the domain, like C.
 pub fn calcDivB(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64) f64 {
     const L = SimT.Layout;

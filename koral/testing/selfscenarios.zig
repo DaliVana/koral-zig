@@ -7,8 +7,8 @@
 //! The option sets are written out inline rather than taken from
 //! `puffy.simOptions(p)` on purpose. They reference this repository's physics
 //! constants (`FloorParams.puffy`, `RadParams.puffy`, …), so a change to the
-//! *code* moves the numbers and the self-golden catches it — which is the whole
-//! point — while the `.toml`-driven knobs stay pinned at fixed values, so
+//! *code* moves the numbers and the self-golden catches it, which is the whole
+//! point: while the `.toml`-driven knobs stay pinned at fixed values, so
 //! editing a params default or adding a new one does not silently redefine the
 //! baseline.
 //!

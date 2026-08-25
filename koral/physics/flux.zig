@@ -5,7 +5,7 @@
 //! the √−g factor is what turns the curvilinear divergence into a plain
 //! difference of face fluxes. Mass and entropy advect as ρu^i and S·u^i;
 //! the momentum rows are the mixed stress tensor T^i_j; the energy row is
-//! T^i_t, assembled cancellation-free — in the Newtonian limit
+//! T^i_t, assembled cancellation-free; in the Newtonian limit
 //! T^t_t ≈ −ρ(1 + small), so the evolved energy is T^t_t + ρu^t and its
 //! flux uses u_t + 1 (calcUtp1) to dodge the rest-mass cancellation. The
 //! induction rows b^i u^j − b^j u^i are the dual Maxwell tensor: field
@@ -34,7 +34,7 @@ const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
-/// C: f_flux_prime — flux vector at the face whose geometry is `geom`
+/// C: f_flux_prime. Flux vector at the face whose geometry is `geom`
 /// (idim: 0/1/2 for x/y/z). GDETIN == 1: gdetu = geom.gdet. Returns
 /// relele.Error.NanInFlux if the assembled flux is non-finite (see below).
 pub fn fFluxPrime(

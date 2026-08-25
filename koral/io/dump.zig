@@ -4,13 +4,13 @@
 //! own the serial and MPI file protocol so drivers do not reimplement it.
 //!
 //!  * KDMP: a self-describing snapshot of the domain primitives (little-endian,
-//!    iv-fastest AoS — the same ordering as the KSTP/KINI goldens and C's
+//!    iv-fastest AoS; the same ordering as the KSTP/KINI goldens and C's
 //!    get_u). Because the header carries `t`, `nstep` and `out_idx`, one KDMP
 //!    file is a complete checkpoint: a run can be *continued* from it with no
 //!    side file (unlike C's split res####.head / res####.dat pair). The C
 //!    restart dumps are bridged into this format by tools/res2kdmp.zig.
 //!  * scalars.dat: one whitespace-separated text row per output, mirroring
-//!    KORAL's scalars.dat (fileop.c:113) — the diagnostic time series.
+//!    KORAL's scalars.dat (fileop.c:113); the diagnostic time series.
 
 const std = @import("std");
 const scalars = @import("scalars.zig");
@@ -22,7 +22,7 @@ pub const kdmp_magic = "KDMP";
 pub const kdmp_version: u32 = 2;
 
 /// Fixed-size KDMP header. `nx,ny,nz` are the *domain* (active) cell counts and
-/// `nv` the primitive count — a restart onto a differently shaped grid is a
+/// `nv` the primitive count; a restart onto a differently shaped grid is a
 /// hard error, not a silent reinterpretation. `t`/`nstep`/`out_idx` restore the
 /// clock and the output bookkeeping so a continued run neither rewinds nor
 /// clobbers earlier frames.
@@ -53,9 +53,9 @@ pub fn primBodySize(comptime SimT: type, sim: *const SimT) usize {
 }
 
 /// Byte offset of global z-plane `tok` in a KDMP file. The body is
-/// `p[iz][iy][ix][iv]` global row-major, so a φ-slab (r and θ whole — the
+/// `p[iz][iy][ix][iv]` global row-major, so a φ-slab (r and θ whole; the
 /// φ-only decomposition) is one contiguous byte range: this offset is the
-/// whole addressing scheme of the collective write/read (MPI plan §8.1 —
+/// whole addressing scheme of the collective write/read (MPI plan §8.1;
 /// no file views, no subarray types). Serial ⇔ MPI checkpoints are
 /// therefore the same bytes, and restart works at any rank count.
 pub fn bodyOffset(nx: usize, ny: usize, nv: usize, tok: usize) u64 {
@@ -80,7 +80,7 @@ pub fn writeDumpHeader(out: []u8, h: DumpHeader) usize {
 }
 
 /// Parse and validate the magic/version, returning the header. Does not touch
-/// the body — a caller with a `SimT` should use `loadPrimDump` (which also
+/// the body; a caller with a `SimT` should use `loadPrimDump` (which also
 /// checks the dimensions against the live grid).
 pub fn parseDumpHeader(bytes: []const u8) ReadError!DumpHeader {
     if (bytes.len < header_size) return error.Truncated;
@@ -98,7 +98,7 @@ pub fn parseDumpHeader(bytes: []const u8) ReadError!DumpHeader {
 }
 
 /// Serialize the domain primitives into `out` (must be ≥ primDumpSize).
-/// Header (see DumpHeader) then p[nz][ny][nx][nv] with iv fastest, iz slowest —
+/// Header (see DumpHeader) then p[nz][ny][nx][nv] with iv fastest, iz slowest;
 /// the same cell order the golden readers expect. Returns bytes written.
 pub fn serializePrimDump(comptime SimT: type, sim: *const SimT, out_idx: u32, out: []u8) usize {
     var w = writeDumpHeader(out, .{
@@ -115,8 +115,8 @@ pub fn serializePrimDump(comptime SimT: type, sim: *const SimT, out_idx: u32, ou
     return w;
 }
 
-/// Serialize just the body — this sim's domain interior, iv fastest, iz
-/// slowest — into `out` (≥ primBodySize). Under MPI this is one rank's
+/// Serialize just the body; this sim's domain interior, iv fastest, iz
+/// slowest: into `out` (≥ primBodySize). Under MPI this is one rank's
 /// contiguous slab of the global file body (see bodyOffset); serially it
 /// is the whole body. Returns bytes written.
 pub fn serializePrimBody(comptime SimT: type, sim: *const SimT, out: []u8) usize {
@@ -137,11 +137,11 @@ pub fn serializePrimBody(comptime SimT: type, sim: *const SimT, out: []u8) usize
 }
 
 /// Restart/continue: load a KDMP snapshot into `sim`, cell by cell, via
-/// `initCell` (p stored verbatim, u = p2u without re-flooring — exactly C's
+/// `initCell` (p stored verbatim, u = p2u without re-flooring; exactly C's
 /// fread_restartfile_bin path, which trusts the saved primitives). The caller
-/// must still run `finishInit` (halo + setBc + dt guess — ghosts and dt are
+/// must still run `finishInit` (halo + setBc + dt guess; ghosts and dt are
 /// recomputed, never stored) and adopt the returned `t`/`nstep`/`out_idx`.
-/// Errors if the grid or nv disagree with the file — no silent reshaping.
+/// Errors if the grid or nv disagree with the file; no silent reshaping.
 pub fn loadPrimDump(comptime SimT: type, sim: *SimT, bytes: []const u8) !DumpHeader {
     const h = try parseDumpHeader(bytes);
     if (h.nx != sim.grid.nx or h.ny != sim.grid.ny or h.nz != sim.grid.nz or h.nv != SimT.nv)
@@ -154,7 +154,7 @@ pub fn loadPrimDump(comptime SimT: type, sim: *SimT, bytes: []const u8) !DumpHea
     return h;
 }
 
-/// Load just a body slab — this sim's domain interior — from `bytes`
+/// Load just a body slab; this sim's domain interior; from `bytes`
 /// (≥ primBodySize; under MPI, the rank's slab read collectively at
 /// bodyOffset). Same initCell semantics as loadPrimDump; the caller has
 /// already validated the header against the GLOBAL grid.
@@ -378,7 +378,7 @@ pub fn collectDiag(comptime SimT: type, s: *const SimT) Diag {
     return d;
 }
 
-/// Globally-folded scalar row. Every rank must call this — it is collective.
+/// Globally-folded scalar row. Every rank must call this; it is collective.
 /// `r_lum` / `r_scale` are the problem's diagnostic radii (PUFFY: 5000, 15).
 pub fn scalarRow(comptime SimT: type, s: *SimT, dt: f64, r_lum: f64, r_scale: f64) !ScalarRow {
     const r_horizon = @import("../metric/metric.zig").rHorizonBL(s.opt.mp.a);
@@ -409,8 +409,8 @@ pub fn scalarRow(comptime SimT: type, s: *SimT, dt: f64, r_lum: f64, r_scale: f6
     };
 }
 
-/// One row of scalars.dat — the diagnostic time series (all in code/GU units;
-/// the executable may additionally print CGS/Eddington-scaled copies).
+/// One row of scalars.dat: the diagnostic time series (all in code/GU units;
+/// the executable may also print CGS/Eddington-scaled copies).
 pub const ScalarRow = struct {
     t: f64,
     dt: f64,
@@ -424,7 +424,7 @@ pub const ScalarRow = struct {
     n_hd_fixup: u64,
     n_radimp_fail: u64,
     n_nan: u64,
-    /// Cumulative drift-floor guard recoveries (invert.n_guard_recoveries) —
+    /// Cumulative drift-floor guard recoveries (invert.n_guard_recoveries) ;
     /// how often the koral_lite_puffy guard ladder diverted from the baseline
     /// drift-frame floor algebra. 0 on a healthy run.
     n_floorguard: u64,

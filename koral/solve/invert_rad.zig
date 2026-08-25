@@ -6,17 +6,17 @@
 //! Ê = 3 R^tt α²/(4γ²−1) and the relative 4-velocity. Two cancellation
 //! branches exist for γ² (gamma2a for the generic case, gamma2b when Rtt
 //! is small); failures fall back to the "cold" solver that discards R^t_t,
-//! keeps R^t_i, and pins γ to either 1 or GAMMAMAXRAD — whichever
+//! keeps R^t_i, and pins γ to either 1 or GAMMAMAXRAD; whichever
 //! reproduces the original R^t_t more closely (u2prad.c:369).
 //!
 //! C-fidelity notes:
-//!  * delta/numerator/divisor are vestigial (always 0) — the failure1/2/3
+//!  * delta/numerator/divisor are vestigial (always 0); the failure1/2/3
 //!    flags they feed only guard a never-taken diagnostic print.
 //!  * On a cold-branch non-finite result u2p_rad returns −1 *without*
 //!    touching pp (primitives keep their previous values), but `corrected`
-//!    was already set — the caller still flags the cell for rad fixups.
+//!    was already set; the caller still flags the cell for rad fixups.
 //!  * Power(x,2) in the C source is pow(x,2.), which clang -O2 folds to
-//!    x*x — transcribed as plain multiplication.
+//!    x*x; transcribed as plain multiplication.
 //!  * GDETIN == 1 (gdetu = gdet), VELPRIMRAD == VELR (the trailing
 //!    conv_vels is an identity copy and is skipped).
 
@@ -57,11 +57,11 @@ pub const RadParams = struct {
 pub const U2pRadResult = struct {
     /// C return code: 0 ok, −1 non-finite cold result (pp untouched).
     ret: i32,
-    /// C `corrected` — cell needs rad fixup consideration (RADFIXUPFLAG).
+    /// C `corrected`; cell needs rad fixup consideration (RADFIXUPFLAG).
     corrected: bool,
 };
 
-/// C: get_m1closure_gammarel2 (u2prad.c:236). Always "succeeds"; may
+/// C: get_m1closure_gammarel2 (u2prad.c:236). Always "succeeds". May
 /// produce NaN/inf which the caller's failure logic handles.
 fn m1GammaRel2(geom: *const Geometry, avcov: [4]f64) f64 {
     const GG = &geom.GG;
@@ -135,7 +135,7 @@ const ColdResult = struct {
     urfconrel: [4]f64,
 };
 
-/// C: get_m1closure_gammarel2_cold (u2prad.c:136) — fixed γ², discard
+/// C: get_m1closure_gammarel2_cold (u2prad.c:136). Fixed γ², discard
 /// R^t_t, keep R^t_i.
 fn m1Cold(geom: *const Geometry, avcov_in: [4]f64, gammarel2: f64) ColdResult {
     const GG = &geom.GG;
@@ -184,7 +184,7 @@ fn m1Cold(geom: *const Geometry, avcov_in: [4]f64, gammarel2: f64) ColdResult {
     return .{ .avcov = avcov, .erf = erf, .urfconrel = urfconrel };
 }
 
-/// C: u2p_rad / u2p_rad_urf (u2prad.c:31/:67) — no EVOLVEPHOTONNUMBER.
+/// C: u2p_rad / u2p_rad_urf (u2prad.c:31/:67). No EVOLVEPHOTONNUMBER.
 /// Writes pp[EE..FZ] on success; leaves pp untouched when ret == −1.
 pub fn u2pRad(
     comptime cfg: config.Config,
@@ -260,7 +260,7 @@ pub fn u2pRad(
     return .{ .ret = 0, .corrected = corrected };
 }
 
-/// C: check_floors_rad (u2prad.c:526) — rad-frame E floor plus Ehat/ρ and
+/// C: check_floors_rad (u2prad.c:526). Rad-frame E floor plus Ehat/ρ and
 /// Ehat/u ratio floors (no SKIPRADSOURCE, no EVOLVEPHOTONNUMBER; the
 /// magnetic block is behind the never-defined SKIP_MAGNFIELD).
 pub fn checkFloorsRad(

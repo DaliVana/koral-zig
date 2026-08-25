@@ -2,7 +2,7 @@
 //! transforms of primitives, p2u/u2p round trips, floors.
 //!
 //! Everything here checks *mathematical identities* (or documented C
-//! quirks) — no golden data needed. Tolerances follow the plan:
+//! quirks); no golden data needed. Tolerances follow the plan:
 //! algebraic identities 1e-13, boost/transform identities 1e-12,
 //! iterative inversion round trips 1e-8 (bounded by U2PCONV = 1e-10).
 

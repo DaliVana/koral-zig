@@ -1,6 +1,6 @@
 //! The hand-written extern MPI core (MPI plan §3.2): the small function
 //! subset koral needs, declared over the comptime-selected family's raw
-//! handle types. Signatures are family-invariant given those types — this
+//! handle types. Signatures are family-invariant given those types; this
 //! file never changes when a family is added. No `@cImport`/translate-c
 //! anywhere (0.16's Aro chokes on OMPI's link-time constants and JIT-
 //! compiles for minutes; ~20 externs are decisively cheaper).

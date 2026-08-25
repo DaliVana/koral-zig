@@ -1,31 +1,31 @@
-//! Radiative shear viscosity — the pure per-cell kernels (PUFFY's
+//! Pure per-cell kernels for radiative shear viscosity (PUFFY's
 //! RADVISCOSITY == SHEARVISCOSITY, KORAL rad.c):
 //!
-//!   shearFromGradients  rad.c:4090  — σ_μν and the expansion θ from
+//!   shearFromGradients  rad.c:4090: σ_μν and the expansion θ from
 //!                                     assembled velocity gradients.
-//!   viscCoeff           rad.c:4508  — ν = ALPHARADVISC·mfp with the
+//!   viscCoeff           rad.c:4508: ν = ALPHARADVISC·mfp with the
 //!                                     RADVISCMFPSPH mfp limiter and the
 //!                                     RADVISCNUDAMP diffusion cap.
-//!   rijVisc             rad.c:4670  — R^ij_visc = −2 ν Ê σ^ij → R^i_j.
-//!   addViscFlux         rad.c:3799  — the RADVISCMAXVELDAMP velocity cap
+//!   rijVisc             rad.c:4670: R^ij_visc = −2 ν Ê σ^ij → R^i_j.
+//!   addViscFlux         rad.c:3799: the RADVISCMAXVELDAMP velocity cap
 //!                                     and the face addition to the M1 flux.
 //!
-//! Physics: M1 cannot represent crossing photon streams — near the polar
+//! Physics: M1 cannot represent crossing photon streams; near the polar
 //! axis radiation converging from both funnel walls collapses into one
-//! unphysical radial beam. The patch adds a Navier–Stokes-like viscous
+//! unphysical radial beam. The patch adds a Navier-Stokes-like viscous
 //! stress to the radiation tensor, R^ij_visc = −2 ν Ê σ^ij: the next-order
 //! diffusive correction the closure truncates away. σ_μν is the fluid
-//! shear — covariant velocity gradients symmetrized, projected orthogonal
+//! shear: covariant velocity gradients symmetrized, projected orthogonal
 //! to u^μ with P_μν = g_μν + u_μu_ν, trace (the expansion θ) removed, time
 //! row fixed by σ_μν u^ν = 0. The coefficient ν = α·mfp (mfp = 1/χ)
 //! carries three physical limiters: the mfp is capped by the local radius
 //! (a photon cannot diffuse farther than the system size) and killed
 //! near/inside the horizon; ν ≤ Δx²/(4Δt) keeps the explicit diffusion
-//! stable so viscosity never sets the timestep; and the face flux is
-//! rescaled so the implied transport velocity stays ≤ MAXRADVISCVEL —
+//! stable so viscosity never sets the timestep, and the face flux is
+//! rescaled so the implied transport velocity stays ≤ MAXRADVISCVEL;
 //! viscous transport must never outrun the physical signal.
 //!
-//! Everything here is values-in/values-out — no grid, no stencil, no
+//! Everything here is values-in/values-out; no grid, no stencil, no
 //! threading, like the rest of physics/. The sim-coupled half (the FD gather
 //! of the velocity gradients, the χ/cell-size/BL-radius inputs of ν, and the
 //! once-per-step threaded domain pass) lives in sim/rijvisc.zig.
@@ -46,9 +46,9 @@ const small: f64 = 1.0e-80; // C: SMALL
 /// PUFFY viscosity parameters (define.h:96-102). Held on Sim.Options so the
 /// coefficient limiter has ALPHARADVISC / MAXRADVISCVEL without a global.
 pub const Params = struct {
-    /// C: ALPHARADVISC — ν = alpha·mfp.
+    /// C: ALPHARADVISC; ν = alpha·mfp.
     alpha: f64 = 0.1,
-    /// C: MAXRADVISCVEL — the characteristic-velocity damping threshold.
+    /// C: MAXRADVISCVEL. The characteristic-velocity damping threshold.
     maxvel: f64 = 0.1,
 };
 
@@ -64,7 +64,7 @@ pub const ShearOut = struct {
 /// (only the diagonal is read, for the expansion), the frame 4-velocity
 /// (ucon/ucov), the metric `gg`, and the Christoffel block `kr`
 /// (kr[k·16 + i·4 + j] = Γ^k_ij), build σ_μν and the expansion θ. No grid or
-/// sim access — feed it an analytic gradient and check the kinematic
+/// sim access; feed it an analytic gradient and check the kinematic
 /// invariants (σ symmetric, σ_μν u^ν = 0) directly. The FD stencil that
 /// assembles the gradients from neighbour cells is sim/rijvisc.zig's
 /// calcShearLab.
@@ -149,7 +149,7 @@ pub const ViscCoeffIn = struct {
     global_dt: f64,
 };
 
-/// C: calc_rad_visccoeff (rad.c:4508) with RADVISCMFPSPH + RADVISCNUDAMP —
+/// C: calc_rad_visccoeff (rad.c:4508) with RADVISCMFPSPH + RADVISCNUDAMP;
 /// the pure limiter chain.
 pub inline fn viscCoeff(in: ViscCoeffIn) f64 {
     var mfp = 1.0 / in.chi;
@@ -172,7 +172,7 @@ pub inline fn viscCoeff(in: ViscCoeffIn) f64 {
     return nu;
 }
 
-/// C: calc_Rij_visc (rad.c:4670) — R^ij_visc = −2 ν Ê σ^ij (σ^ij both
+/// C: calc_Rij_visc (rad.c:4670); R^ij_visc = −2 ν Ê σ^ij (σ^ij both
 /// indices raised), returned lowered to R^i_j (indices_2221).
 pub inline fn rijVisc(nu: f64, erad: f64, shear: *const [4][4]f64, geom: *const Geometry) [4][4]f64 {
     var rvisc: [4][4]f64 = undefined;

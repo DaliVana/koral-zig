@@ -4,14 +4,14 @@
 //!  * κ = 0 ⇒ RK2IMEX ≡ its explicit RK2 part. With G ≡ 0 the implicit
 //!    stage degenerates to the FORCEUEQPINIMPLICIT p2u∘u2p projection plus
 //!    Newton exits by relative change (RADIMPCONVREL = 1e-8), each call
-//!    legitimately moving a converged cell by up to ~1e-8 — in C exactly
+//!    legitimately moving a converged cell by up to ~1e-8; in C exactly
 //!    as here. 2 calls × 5 steps ⇒ agreement at ~1e-7 (measured 1.2e-7),
 //!    gated at 1e-6.
-//!  * temporal order ≈ 2 on a smooth 0-D gas–radiation relaxation driven
+//!  * temporal order ≈ 2 on a smooth 0-D gas-radiation relaxation driven
 //!    through the full step machinery (uniform periodic grid: the explicit
 //!    operator telescopes to zero and only the IMEX source arithmetic acts).
 //!  * L-stability through the step: κρΔt = 1e4 relaxation is monotone with
-//!    no oscillation around the equilibrium (Pareschi–Russo SSP2(2,2,2)
+//!    no oscillation around the equilibrium (Pareschi-Russo SSP2(2,2,2)
 //!    with γ = 1 − 1/√2 has R(∞) = 0).
 //!  * optically thin streaming pulse propagates at the M1 streaming speed.
 //!  * optically thick scattering pulse spreads diffusively, σ²(t) growing

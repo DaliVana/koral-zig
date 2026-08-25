@@ -1,15 +1,15 @@
-//! MPI ABI self-check (MPI plan §3.2) — the guard that was missing.
+//! MPI ABI self-check (MPI plan §3.2); the guard that was missing.
 //!
 //! `comm/mpi/abi.zig` picks ONE family at comptime, so a serial build (and
 //! the Open MPI dev loop) never semantically analyzes the other family's
 //! file. That is exactly how `abi_mpich.zig` came to contain a hard
-//! compile error — `@ptrFromInt(1)` into a 4-aligned `?[*]Status` — that
+//! compile error; `@ptrFromInt(1)` into a 4-aligned `?[*]Status`; that
 //! nothing in the tree could surface until someone built on an Intel-MPI
 //! or Cray cluster.
 //!
 //! These tests import BOTH family files directly and call their pure
-//! (non-extern) accessors, so `zig build test` — with no `-Dmpi`, no
-//! libmpi, on any machine — fails if either family stops compiling or its
+//! (non-extern) accessors, so `zig build test`; with no `-Dmpi`, no
+//! libmpi, on any machine; fails if either family stops compiling or its
 //! sentinel/layout table drifts.
 //!
 //! Deliberately NOT covered here: `commWorld/dtDouble/op*` of the Open MPI

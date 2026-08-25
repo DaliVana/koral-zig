@@ -1,9 +1,9 @@
 //! Open MPI ABI. Handles are struct pointers; the predefined objects are
 //! extern global symbols in libmpi (`MPI_COMM_WORLD` expands to
-//! `&ompi_mpi_comm_world` — a LINK-TIME value, which is exactly why it
+//! `&ompi_mpi_comm_world`; a LINK-TIME value, which is exactly why it
 //! cannot be a Zig comptime constant and lives behind a function here;
 //! MPI plan §3.1/§3.2). The symbols are declared as `u8` because only
-//! their addresses are ever used — the pointee is opaque to us.
+//! their addresses are ever used; the pointee is opaque to us.
 
 pub const RawComm = ?*anyopaque;
 pub const RawDatatype = ?*anyopaque;
@@ -55,14 +55,14 @@ pub fn infoNull() RawInfo {
 }
 
 /// MPI_STATUSES_IGNORE == NULL in Open MPI. The `align(1)` matches the
-/// MPICH family's signature (which needs it — see abi_mpich.zig) so
+/// MPICH family's signature (which needs it. See abi_mpich.zig) so
 /// core.zig's extern declaration is family-invariant.
 pub fn statusesIgnore() ?[*]align(1) Status {
     return null;
 }
 
 /// MPI_STATUS_IGNORE == NULL, like statusesIgnore (`align(1)` for the
-/// family-invariant core.zig signature — MPICH's sentinel is address 1).
+/// family-invariant core.zig signature; MPICH's sentinel is address 1).
 pub fn statusIgnore() ?*align(1) Status {
     return null;
 }

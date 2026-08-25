@@ -1,19 +1,19 @@
-//! kdmp2lc — slow-light 230 GHz (or any-ν) LIGHT CURVE of a KDMP series:
+//! kdmp2lc: slow-light 230 GHz (or any-ν) LIGHT CURVE of a KDMP series:
 //! the EHT variability observable (Sgr A* Paper V's modulation-index
-//! criterion — the constraint most GRMHD models fail).
+//! criterion: the constraint most GRMHD models fail).
 //!
 //! All observation epochs are batched into ONE streaming sweep
 //! (sweep.SlowOpts.t_cam_of): every epoch's rays ride the same sliding
 //! two-frame window, so the whole light curve costs a single pass over the
-//! series — N_epochs × the per-frame ray count, but each KDMP file is read
+//! series: N_epochs × the per-frame ray count, but each KDMP file is read
 //! from disk exactly once.
 //!
-//! Output: one text row per epoch —
+//! Output: one text row per epoch;
 //!     idx   t_obs[M]   t_obs[s]   S_nu[Jy]   I_max[cgs]
 //! plus mean flux, σ, and the modulation index M = σ/mean at the end.
 //! t_obs[s] uses GM/c³ of the params mass, so the curve is directly
 //! comparable to observed light-curve segments (for Sgr A*: 1 M = 21.2 s,
-//! a 3-hour EHT window is ~510 M — mind the series span).
+//! a 3-hour EHT window is ~510 M; mind the series span).
 //!
 //! usage: kdmp2lc <params.toml> --slow DIR [out.txt]
 //!   --nu GHZ       observing frequency          (default 230)
@@ -32,18 +32,18 @@
 //!   --eps E --tau T --max-steps N --threads N
 //!   --gamma G --wp PCT                          (frames display; 0.65 / 99.8)
 //!
-//! CHOOSING --rslow: it must ENCLOSE the time-variable emission region —
+//! CHOOSING --rslow: it must ENCLOSE the time-variable emission region;
 //! everything outside samples one frozen reference frame, so variability
 //! from out there is erased. For compact synchrotron sources (EHT-type,
 //! emission within ~20 M) the default 40 is right; verified on the
 //! sgra_spin dumps, whose 230 GHz flux is bulk free-free: rslow 40 gave
 //! M ~ 1e-6 (inner region only) while rslow 200 recovered the true
-//! ~3e-3/50 M secular rate — at the cost of a lookback that outruns the
+//! ~3e-3/50 M secular rate; at the cost of a lookback that outruns the
 //! series (watch the "rays past start" stat).
 //!
 //! CAVEAT the tool prints: a φ-wedge domain is tiled m-fold to 2π, so
-//! azimuthal structure — and therefore variability — is artificially
-//! m-periodic; treat wedge-run light-curve statistics as machinery
+//! azimuthal structure, and therefore variability, is artificially
+//! m-periodic: treat wedge-run light-curve statistics as machinery
 //! validation, not physics, until full-2π campaign data exists.
 
 const std = @import("std");

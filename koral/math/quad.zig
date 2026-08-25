@@ -1,4 +1,4 @@
-//! Adaptive Gauss–Kronrod 21-point quadrature.
+//! Adaptive Gauss-Kronrod 21-point quadrature.
 //!
 //! Replaces the C side's `gsl_integration_qags` (PROBLEMS/PUFFY/tools.c:276,
 //! epsrel 1e-8) for the limotorus ln f integral. GSL's qags is GK21 +
@@ -6,11 +6,11 @@
 //! feed it (smooth up to two kinks at the angular-momentum breaks) need no
 //! extrapolation, so this is plain GK21 with worst-first bisection run to a
 //! tighter tolerance (callers use rtol 1e-12 where C used 1e-8). Agreement
-//! with C is then bounded by C's own epsrel — pinned by the epsrel-1e-12
+//! with C is then bounded by C's own epsrel; pinned by the epsrel-1e-12
 //! oracle variant of the PUFFY t=0 golden.
 //!
 //! Nodes/weights are QUADPACK's dqk21 constants. The error estimate is the
-//! plain |GK21 − G10| difference — strictly more conservative than
+//! plain |GK21 − G10| difference; strictly more conservative than
 //! QUADPACK's rescaled estimate, which only ever shrinks it.
 
 const std = @import("std");
@@ -56,7 +56,7 @@ const wg = [5]f64{
 
 pub const Panel = struct {
     value: f64,
-    /// |GK21 − G10| · |half-width| — conservative error estimate.
+    /// |GK21 − G10| · |half-width|; conservative error estimate.
     abserr: f64,
 };
 
@@ -90,7 +90,7 @@ pub fn gk21(f: anytype, a: f64, b: f64) Panel {
 pub const Result = struct {
     value: f64,
     abserr: f64,
-    /// false when max_segments was exhausted before the tolerance was met —
+    /// false when max_segments was exhausted before the tolerance was met ;
     /// callers mirror C's GSL-failure branch in that case.
     converged: bool,
 };
@@ -100,7 +100,7 @@ const max_segments = 512;
 const Segment = struct { a: f64, b: f64, value: f64, abserr: f64 };
 
 /// Adaptive GK21 over [a, b] (either orientation) to
-/// max(epsabs, epsrel·|I|), splitting the worst segment first — the same
+/// max(epsabs, epsrel·|I|), splitting the worst segment first; the same
 /// strategy qags uses, minus the extrapolation stage.
 pub fn integrate(f: anytype, a: f64, b: f64, epsabs: f64, epsrel: f64) Result {
     if (a == b) return .{ .value = 0.0, .abserr = 0.0, .converged = true };

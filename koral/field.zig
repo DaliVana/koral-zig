@@ -1,4 +1,4 @@
-//! Cell-centered field storage — Array-of-Structs, variable-fastest, exactly
+//! Cell-centered field storage; Array-of-Structs, variable-fastest, exactly
 //! C's get_u/set_u layout (ko.h:517-523):
 //!
 //!   data[iv + (ix+ngx)*NV + (iy+ngy)*SX*NV + (iz+ngz)*SY*SX*NV]
@@ -43,7 +43,7 @@ pub fn Field(comptime NV: usize) type {
         }
 
         /// Flat offset of (ix,iy,iz), C's get_u index arithmetic.
-        /// `inline`: O(NV × cells × passes)/step leaf on every hot loop — the
+        /// `inline`: O(NV × cells × passes)/step leaf on every hot loop; the
         /// win is Debug/ReleaseSafe (ReleaseFast already inlines it). No FP
         /// change → golden-safe (P2 #10).
         pub inline fn cellOffset(self: *const Self, ix: i64, iy: i64, iz: i64) usize {

@@ -3,14 +3,14 @@
 //! Stores, for every cell incl. ghosts: the 4×5 metric block g (metric +
 //! dlgdet + gdet), the 4×5 inverse block G (inverse + gttpert), Christoffels
 //! (64 per cell, with the gdet-trace correction below), Jacobians to/from
-//! the output coordinates; and the 4×5 g/G blocks at all x/y/z faces.
+//! the output coordinates, and the 4×5 g/G blocks at all x/y/z faces.
 //!
 //! Christoffel trace correction (C: calc_Krzysie_at_center with
 //! MODYFIKUJKRZYSIE, on when GDETIN=1): the trace Γ^μ_κμ is adjusted so it
 //! equals the *finite-difference* gdet gradient across the cell,
 //! (√−g|_{face+} − √−g|_{face−})/(Δx √−g|_c), distributing the correction
 //! over the four terms by their magnitude. This makes the geometric source
-//! terms telescope against the discrete flux divergence — uniform states
+//! terms telescope against the discrete flux divergence; uniform states
 //! stay uniform.
 
 const std = @import("std");
@@ -72,7 +72,7 @@ pub fn applyKrisCorrection(coords: Coords, mp: MetricParams, g: *const Grid, d: 
     }
 }
 
-/// Metric data at one cell center with the corrected Christoffels — what
+/// Metric data at one cell center with the corrected Christoffels; what
 /// the cache stores, computable standalone (for tests and small tools).
 pub fn computeCorrected(coords: Coords, mp: MetricParams, g: *const Grid, ix: i64, iy: i64, iz: i64) metric.CoordData {
     var d = metric.compute(coords, mp, .{ 0, g.xc(ix), g.yc(iy), g.zc(iz) });
@@ -106,11 +106,11 @@ pub fn geometryAt(coords: Coords, mp: MetricParams, x: [4]f64) Geometry {
     return geo;
 }
 
-/// BL (OUTCOORDS) geometry at a cell center — C: fill_geometry_arb(...,
+/// BL (OUTCOORDS) geometry at a cell center; C: fill_geometry_arb(...,
 /// OUTCOORDS) with OUTCOORDS == BLCOORDS. Transforms the cell-center MYCOORDS
-/// position to Boyer–Lindquist and evaluates the Kerr-BL metric there. The
+/// position to Boyer-Lindquist and evaluates the Kerr-BL metric there. The
 /// single home for this reduction, shared by the diagnostics (io/scalars),
-/// the dynamo (sim/dynamo), and PUFFY init (problems/puffy) — see those
+/// the dynamo (sim/dynamo), and PUFFY init (problems/puffy). See those
 /// modules' thin wrappers.
 pub fn geometryBLat(g: *const Grid, coords: Coords, mp: MetricParams, ix: i64, iy: i64, iz: i64) Geometry {
     const xx = [4]f64{ 0.0, g.xc(ix), g.yc(iy), g.zc(iz) };
@@ -139,7 +139,7 @@ pub const MetricCache = struct {
     /// returning a NaN geometry.
     gb: [3]?[]f64,
     gconb: [3]?[]f64,
-    /// BL (OUTCOORDS) geometry per cell — one entry per cell (incl. ghosts),
+    /// BL (OUTCOORDS) geometry per cell; one entry per cell (incl. ghosts),
     /// filled only when `bl_cache` is set (the dynamo / radviscosity passes).
     /// Empty otherwise. Each entry is bit-identical to geometryBLat(...) and
     /// its .xxvec carries the cell's BL {r, θ}, so callers read those without
@@ -167,7 +167,7 @@ pub const MetricCache = struct {
         /// evaluation over the whole padded grid (Christoffels + their FD gdet
         /// trace correction + a Jacobian, plus 3 face sweeps and optionally the
         /// BL sidecar). Left serial it ignored `nthreads` entirely and cost ~2×
-        /// a 60-step run on a 64×60×24 wedge — a startup cost that grows
+        /// a 60-step run on a 64×60×24 wedge; a startup cost that grows
         /// linearly with the grid and would dominate a 3D production launch.
         team: ?*threading.Team = null,
     };
@@ -356,8 +356,8 @@ pub const MetricCache = struct {
     // building the full cache.)
 
     /// Fill the BL (OUTCOORDS) geometry sidecar over every cell incl. ghosts.
-    /// Each entry equals geometryBLat(&grid, coords, mp, ix, iy, iz) exactly —
-    /// same cocoN → geometryAt(.bl) chain — so cached reads are bit-identical.
+    /// Each entry equals geometryBLat(&grid, coords, mp, ix, iy, iz) exactly ;
+    /// same cocoN → geometryAt(.bl) chain, so cached reads are bit-identical.
     fn fillBl(self: *MetricCache, team: ?*threading.Team) void {
         var ctx = RowCtx{ .cache = self };
         _ = threading.parallelRange(RowCtx, &ctx, team, 0, rowCount(&self.grid), blRows);
@@ -437,21 +437,21 @@ pub const MetricCache = struct {
     }
 
     /// The full 64-entry Christoffel block Γ^i_jk (flattened i·16 + j·4 + k)
-    /// at a cell center — fetched once so the metric-source and shear loops
+    /// at a cell center; fetched once so the metric-source and shear loops
     /// index it directly instead of recomputing cellIndex on every one of the
     /// 64/128 kr() calls per cell. Bit-identical to kr(i,j,k,ix,iy,iz).
     pub inline fn krBlock(self: *const MetricCache, ix: i64, iy: i64, iz: i64) *const [64]f64 {
         return self.kris[self.cellIndex(ix, iy, iz) * 64 ..][0..64];
     }
 
-    /// √−g at a cell center — the block store's gdet slot (off + 3·5 + 4),
+    /// √−g at a cell center; the block store's gdet slot (off + 3·5 + 4),
     /// identical to fillGeometry(ix,iy,iz).gdet without building a Geometry.
     /// Finding #1: the calc_BfromA_core hot path only needs this scalar.
     pub fn gdet(self: *const MetricCache, ix: i64, iy: i64, iz: i64) f64 {
         return self.g[self.cellIndex(ix, iy, iz) * 20 + 19];
     }
 
-    /// BL (OUTCOORDS) geometry at a cell center — requires the bl_cache
+    /// BL (OUTCOORDS) geometry at a cell center; requires the bl_cache
     /// sidecar. Bit-identical to precompute.geometryBLat(&grid, coords, mp,
     /// ix, iy, iz); its .xxvec holds the cell's BL {r, θ}.
     pub fn blGeom(self: *const MetricCache, ix: i64, iy: i64, iz: i64) *const Geometry {
@@ -459,7 +459,7 @@ pub const MetricCache = struct {
         return &self.bl_geom[self.cellIndex(ix, iy, iz)];
     }
 
-    /// The MYCOORDS→BL point Jacobian ∂x_BL/∂x_my at a cell center — the
+    /// The MYCOORDS→BL point Jacobian ∂x_BL/∂x_my at a cell center; the
     /// dxdx_my2out store when out_coords == .bl. Equals
     /// coco.dxdx({0, xc, yc, zc}, coords, .bl, mp), i.e. exactly the Jacobian
     /// trans_pmhd_coco recomputes; used by transPmhdCocoJ (finding #1).
@@ -506,7 +506,7 @@ pub const MetricCache = struct {
         );
     }
 
-    /// C: fill_geometry_face (metric.c:1971) — left face of cell in `dim`.
+    /// C: fill_geometry_face (metric.c:1971). Left face of cell in `dim`.
     // (test below pins the threaded fills' bit-identity)
     pub fn fillGeometryFace(self: *const MetricCache, ix: i64, iy: i64, iz: i64, dim: usize) Geometry {
         const grid = &self.grid;
@@ -532,7 +532,7 @@ pub const MetricCache = struct {
 /// Compare by BIT PATTERN, not by `==`. Ghost cells outside the coordinate
 /// map (e.g. BL geometry inside the horizon) legitimately hold NaN, and
 /// NaN != NaN would fail a value compare even when both fills produced the
-/// identical bits — which is exactly the property under test.
+/// identical bits, which is exactly the property under test.
 fn expectSameBits(a: []const f64, b: []const f64) !void {
     try std.testing.expectEqual(a.len, b.len);
     for (a, b, 0..) |x, y, i| {

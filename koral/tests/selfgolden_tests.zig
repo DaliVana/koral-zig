@@ -1,7 +1,7 @@
 //! Self-golden regression gates: re-run the pinned scenarios and compare them
 //! against the committed baselines in `tests/selfgolden/`.
 //!
-//! **What a failure here means.** Not "the physics is wrong" — that is the
+//! **What a failure here means.** Not "the physics is wrong"; that is the
 //! C-oracle goldens' job (`tests/golden/`, `koral/tests/golden/`). It means the
 //! numbers this repository produces have moved since the baseline was recorded,
 //! and only the author can say whether that was intended. A refactor that is
@@ -11,8 +11,8 @@
 //!
 //! This is the net that has to hold once the Zig side stops matching koral_lite
 //! bit-for-bit: at that point `tools/gen_golden.sh` can no longer produce an
-//! authoritative C baseline, and the analytic theory tests — which check
-//! identities and known solutions, not the assembled pipeline — are all that is
+//! authoritative C baseline, and the analytic theory tests, which check
+//! identities and known solutions, not the assembled pipeline; are all that is
 //! left of end-to-end coverage. See koral/testing/selfgolden.zig.
 //!
 //! The scenario definitions live in koral/testing/selfscenarios.zig and are
@@ -24,7 +24,7 @@ const build_options = @import("build_options");
 const selfgolden = @import("../testing/selfgolden.zig");
 const scenarios = @import("../testing/selfscenarios.zig");
 
-/// These are DIAGNOSIS thresholds, not pass/fail lines — the gate is bit
+/// These are DIAGNOSIS thresholds, not pass/fail lines; the gate is bit
 /// identity (see `selfgolden.Cmp.check`). Generator and checker build against
 /// the same `koral` module at the same -Doptimize, so equality is achievable;
 /// the threshold only separates "the numbers really changed" from "only the

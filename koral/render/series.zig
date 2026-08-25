@@ -1,27 +1,27 @@
 //! KDMP time series for slow-light GRRT (see sweep.zig for the integrator).
 //!
-//! Fast light samples ONE snapshot everywhere — every pixel shows the flow
+//! Fast light samples ONE snapshot everywhere; every pixel shows the flow
 //! at a single instant, as if photons propagated infinitely fast. Slow light
 //! samples the fluid at each photon's own coordinate time x⁰, which the
 //! geodesic integrator already carries exactly (render.zig integrates the
 //! full 4-vector; KS-based time is horizon-regular, so x⁰ is well behaved
 //! all the way down to r_capture). This file supplies the time axis:
 //!
-//!  * `Series` — a directory of prims*.kdmp scanned by HEADER ONLY (44-byte
+//!  * `Series`; a directory of prims*.kdmp scanned by HEADER ONLY (44-byte
 //!    v2 or 32-byte v1 reads, no bodies), sorted by the header time t and
-//!    optionally strided. Dump cadence is NOT assumed uniform — the sgra_spin
-//!    series changes cadence mid-run — so every consumer walks the actual
+//!    optionally strided. Dump cadence is NOT assumed uniform; the sgra_spin
+//!    series changes cadence mid-run, so every consumer walks the actual
 //!    sorted times.
-//!  * `WindowSampler` — the time-interpolating sampler: trilinear-in-space
+//!  * `WindowSampler`; the time-interpolating sampler: trilinear-in-space
 //!    (render.sampleData, both frames share the grid) and linear-in-time
 //!    between a bracketing pair of frames. Outside [t_lo, t_hi] it clamps
-//!    (holds the edge frame) and counts the clamp — the sweep only exposes
+//!    (holds the edge frame) and counts the clamp; the sweep only exposes
 //!    out-of-range times at the series edges, so the counters measure how
 //!    much of the render leaned on the ends of the series.
 //!    The lerp is written `a + w·(b − a)`, so two frames with IDENTICAL
-//!    bodies reproduce the fast-light sample BIT-EXACTLY for any w — the
+//!    bodies reproduce the fast-light sample BIT-EXACTLY for any w; the
 //!    static-series identity gate in render_tests.zig pins this.
-//!  * frame sources — `FileSource` (refcounted load/free of series frames;
+//!  * frame sources; `FileSource` (refcounted load/free of series frames;
 //!    the sweep's sliding window keeps at most two frames + the reference
 //!    frame resident) and `SliceSource` (frames already in memory; tests).
 
@@ -35,13 +35,13 @@ const render = @import("render.zig");
 
 /// Sampler over a bracketing frame pair [t_lo, t_hi]: spatial trilinear from
 /// both frames, then linear in the ray's own coordinate time x[0]. Mutable
-/// (clamp counters) — pass a pointer to render.advanceRay.
+/// (clamp counters); pass a pointer to render.advanceRay.
 pub const WindowSampler = struct {
     lo: *const render.DumpData,
     hi: *const render.DumpData,
     t_lo: f64,
     t_hi: f64,
-    /// samples clamped to the window edges (series-end hold); see file doc
+    /// samples clamped to the window edges (series-end hold). See file doc
     n_below: u64 = 0,
     n_above: u64 = 0,
 
@@ -73,7 +73,7 @@ pub const WindowSampler = struct {
 pub const ScanError = error{ NoFrames, DimMismatch, Truncated, BadMagic, BadVersion };
 
 /// A directory of KDMP snapshots: names + header times, ascending in t.
-/// Bodies are NOT loaded here — see FileSource.
+/// Bodies are NOT loaded here. See FileSource.
 pub const Series = struct {
     dir: []u8,
     /// frame file names (inside `dir`), parallel to `ts`
@@ -84,8 +84,8 @@ pub const Series = struct {
     shape: dump.DumpHeader,
 
     /// Scan `dir_path` for *.kdmp, order by header t (ties: the lexically
-    /// later name wins — a rewritten checkpoint replaces the original), then
-    /// keep every `stride`-th frame COUNTING FROM THE LAST — the newest
+    /// later name wins; a rewritten checkpoint replaces the original), then
+    /// keep every `stride`-th frame COUNTING FROM THE LAST; the newest
     /// frame is always in the strided series, since the default t_obs
     /// anchors to it. Real dump directories accumulate foreign frames (a
     /// restart at different resolution, a resolution test): the shape of
@@ -194,7 +194,7 @@ pub const Series = struct {
 
 /// Disk-backed frame source with refcounted residency: the sweep's window
 /// slide double-acquires the shared frame of consecutive pairs, and the CLI
-/// holds the reference frame across the whole render — refcounts make both
+/// holds the reference frame across the whole render; refcounts make both
 /// safe while keeping at most window+reference frames in memory.
 pub const FileSource = struct {
     ser: *const Series,

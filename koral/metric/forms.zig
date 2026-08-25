@@ -1,10 +1,10 @@
 //! Covariant metric forms g_μν per coordinate system, in Dual3 arithmetic.
 //!
 //! Base forms transcribed from KORAL's calc_g_arb_ana (metric.c:534):
-//! MINKCOORDS, KERRCOORDS (Boyer–Lindquist), KSCOORDS (Kerr–Schild), in
+//! MINKCOORDS, KERRCOORDS (Boyer-Lindquist), KSCOORDS (Kerr-Schild), in
 //! G = c = M = 1 units. MKS2 is *not* transcribed (the C version is a huge
 //! Mathematica export): it is the exact pushforward of KS through the
-//! diagonal map r = R0 + e^{x1}, θ = θ(x2) — mathematically identical,
+//! diagonal map r = R0 + e^{x1}, θ = θ(x2); mathematically identical,
 //! with all derivatives supplied by the chain rule through Dual3.
 
 const std = @import("std");
@@ -33,7 +33,7 @@ pub fn gcovMink(x: [4]Dual3, mp: MetricParams) [4][4]Dual3 {
     return g;
 }
 
-/// Kerr in Boyer–Lindquist coordinates (C: KERRCOORDS), x = (t, r, θ, φ).
+/// Kerr in Boyer-Lindquist coordinates (C: KERRCOORDS), x = (t, r, θ, φ).
 pub fn gcovBl(x: [4]Dual3, mp: MetricParams) [4][4]Dual3 {
     const a = mp.a;
     const r = x[1];
@@ -56,7 +56,7 @@ pub fn gcovBl(x: [4]Dual3, mp: MetricParams) [4][4]Dual3 {
     return g;
 }
 
-/// Kerr in horizon-penetrating Kerr–Schild coordinates (C: KSCOORDS).
+/// Kerr in horizon-penetrating Kerr-Schild coordinates (C: KSCOORDS).
 pub fn gcovKs(x: [4]Dual3, mp: MetricParams) [4][4]Dual3 {
     const a = mp.a;
     const r = x[1];
@@ -115,12 +115,12 @@ pub fn mks2DThetaDx2Metric(x2: Dual3, h0: f64) Dual3 {
     return t.sq().addc(1.0).scale(0.5 * h0 * pi * pi * mks2Cot(h0));
 }
 
-/// x2(θ) — inverse point transform (C: coco_KS2MKS2, exact-π literals).
+/// x2(θ): inverse point transform (C: coco_KS2MKS2, exact-π literals).
 pub fn mks2X2FromTheta(theta: f64, h0: f64) f64 {
     return (0.5 * h0 + (1.0 / pi) * std.math.atan((1.0 / pi) * (2.0 * theta - pi) * @tan(0.5 * pi * h0))) / h0;
 }
 
-/// Modified Kerr–Schild type 2 (C: MKS2COORDS): x = (t, x1, x2, φ),
+/// Modified Kerr-Schild type 2 (C: MKS2COORDS): x = (t, x1, x2, φ),
 /// r = R0 + e^{x1}, θ = θ(x2). Exact pushforward of KS in the metric flavor.
 pub fn gcovMks2(x: [4]Dual3, mp: MetricParams) [4][4]Dual3 {
     const j1 = x[1].exp(); // dr/dx1 (also r − R0)

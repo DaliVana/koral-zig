@@ -1,41 +1,41 @@
-//! The implicit radiation–gas coupling solver (C: rad.c):
+//! The implicit radiation-gas coupling solver (C: rad.c):
 //!
-//!   rad.c:73    solve_implicit_lab — the rung ladder (energy-LAB →
+//!   rad.c:73    solve_implicit_lab; the rung ladder (energy-LAB →
 //!               energy-FF → RAD/MHD swap ×2 → entropy-FF ×2)
-//!   rad.c:341   solve_implicit_lab_4dprim — 4-prim Newton with one-sided
+//!   rad.c:341   solve_implicit_lab_4dprim; 4-prim Newton with one-sided
 //!               FD Jacobian (ε = RADIMPEPS), Jacobian scaling
 //!               (SCALE_JACOBIAN, on in PUFFY), damping ladder, per-step
 //!               energy/temperature change limiters
-//!   rad.c:1279  implicit_apply_constraints — the conservation constraint
+//!   rad.c:1279  implicit_apply_constraints; the conservation constraint
 //!               tying the non-iterated fluid to the iterated one
-//!   rad.c:1460  f_implicit_lab_4dprim_with_state — the residual
-//!   rad.c:2001  solve_implicit_lab_1dprim — bisection starting guess
+//!   rad.c:1460  f_implicit_lab_4dprim_with_state; the residual
+//!   rad.c:2001  solve_implicit_lab_1dprim; bisection starting guess
 //!               (RADIMP_START_WITH_BISECT, on in PUFFY)
 //!
 //! C-fidelity notes:
 //!  * DELIBERATE C DIVERGENCE: the C 4D ENTROPYEQ residual reads
-//!    `S = state->Tgas` where Sgas is obviously intended (rad.c:1749/1767)
-//!    — the entropy rungs solve Tgas·(Tgas − Sgas0) = dτ·Ĝ⁰. We use Sgas
+//!    `S = state->Tgas` where Sgas is clearly intended (rad.c:1749/1767).
+//!    The entropy rungs solve Tgas·(Tgas − Sgas0) = dτ·Ĝ⁰. We use Sgas
 //!    (the intended equation; koral_lite_puffy fixed the same bug,
 //!    2026-08-11). Entropy rungs are only reachable when every energy rung
 //!    has failed; energy-rung results are bit-unaffected (sgas is unread
 //!    there). ~21/336 records of the rad_implicit oracle flip
-//!    success/failure on entropy rungs because of this — the implicit
+//!    success/failure on entropy rungs because of this; the implicit
 //!    golden counts and excludes exactly those flips
 //!    (implicit_golden_tests.zig). The 1D bisection's entropy branch always
 //!    used Sgas (and is never reached anyway: the bisect always runs the
 //!    energy equation).
 //!  * The 1D bisection's RAD-branch residual uses pp0[EE]/ratio where
-//!    ·ratio would reproduce Ehat0 (rad.c:1929) — transcribed as-is (it
+//!    ·ratio would reproduce Ehat0 (rad.c:1929); transcribed as-is (it
 //!    only shapes the starting guess).
 //!  * The wrapper picks RAD/MHD by Ehat < RADIMPLICITTHRESHOLD·u (1e-2);
 //!    the bisection uses its own hardwired 1e-3.
-//!  * inverse_matrix (misc.c) is GSL LU without error checking — a
+//!  * inverse_matrix (misc.c) is GSL LU without error checking; a
 //!    singular Jacobian silently yields inf/nan which the damping ladder
 //!    then rejects. invert4 below mirrors that (no error path).
 //!  * xxxbest/errbest bookkeeping in C is dead (never restored); the
 //!    `isinf` flag in the residual checks f[0] repeatedly and is unused;
-//!    u2pret in the 4D solver is never set after init — all skipped.
+//!    u2pret in the 4D solver is never set after init; all skipped.
 //!  * C's my_err abort on NaN mid-bisection is replaced by a clean −1
 //!    (the caller treats the bisect result as optional anyway).
 //!  * PUFFY switches: RADIMP_START_WITH_BISECT, SCALE_JACOBIAN,
@@ -49,9 +49,9 @@
 //! ImplicitParams.simd_jacobian (default on) the FD Jacobian's 4 perturbed
 //! residual evaluations run as lanes of one @Vector(4, f64) batch through
 //! the comptime-T-generic chain (fillRadStateG → calcGiFromStateG →
-//! residualG). The batch is bit-identical to the scalar loop — same
+//! residualG). The batch is bit-identical to the scalar loop; same
 //! per-lane arithmetic, per-lane libm transcendentals, selects of
-//! both-sides-computed values — gated in simd_tests.zig, so all C goldens
+//! both-sides-computed values; gated in simd_tests.zig, so all C goldens
 //! see identical results either way.
 
 const std = @import("std");
@@ -99,7 +99,7 @@ pub const ImplicitParams = struct {
     allow_rad_ceiling: bool = false, // ALLOWRADCEILINGINIMPLICIT
     allow_entr_in_4dprim: bool = false, // ALLOWFORENTRINF4DPRIM
 
-    /// C: OPDAMPINIMPLICIT / OPDAMPMAXLEVELS — if a whole rung ladder fails,
+    /// C: OPDAMPINIMPLICIT / OPDAMPMAXLEVELS. If a whole rung ladder fails,
     /// retry it with the four-force scaled by opdamp_factor⁻ˡᵉᵛᵉˡ, level =
     /// 1..opdamp_maxlevels. 0 = off (single pass; the validated behavior).
     opdamp_maxlevels: usize = 0, // OPDAMPMAXLEVELS (0 when OPDAMPINIMPLICIT off)
@@ -107,8 +107,8 @@ pub const ImplicitParams = struct {
 
     /// koral_lite_puffy copy_state_opac (rad.c/physics.c, 2026-08-11): freeze
     /// the opacities at the once-per-solve reference state (state00) for the
-    /// whole 4D Newton solve — initial fill, Jacobian perturbations, and trial
-    /// steps — so κ's own T-dependence doesn't enter the iteration. Tabulated
+    /// whole 4D Newton solve; initial fill, Jacobian perturbations, and trial
+    /// steps: so κ's own T-dependence doesn't enter the iteration. Tabulated
     /// non-monotonic opacities (the MESA iron bump) can otherwise defeat
     /// convergence. Off = the validated per-iteration recompute.
     lag_opac: bool = false,
@@ -121,7 +121,7 @@ pub const ImplicitParams = struct {
     simd_jacobian: bool = true,
 
     /// Zig-only (code review 2026-07-06, hot-path finding #4): fill the
-    /// per-iteration RadState via the slim path — skip the entropy Sgas and
+    /// per-iteration RadState via the slim path; skip the entropy Sgas and
     /// the number-averaged / gas-Rosseland opacity channels that the residual
     /// never reads on the ENERGY rungs (~8 of ~22 transcendentals per
     /// evaluation). The entropy rungs read st.sgas (see the ENTROPYEQ note in
@@ -156,14 +156,14 @@ pub const Result = struct {
     rung: i32,
     /// Newton iterations of the successful 4dprim call
     iters: usize,
-    /// the successful rung's configuration (valid when ok — comparable
+    /// the successful rung's configuration (valid when ok; comparable
     /// against C's GLOBALINTSLOT_NIMP* success counters)
     whichprim: WhichPrim = .rad,
     whicheq: WhichEq = .energy,
     whichframe: WhichFrame = .lab,
 };
 
-/// C: my_sign (misc.c:1285) — sign(0) = +1.
+/// C: my_sign (misc.c:1285). Sign(0) = +1.
 fn mySign(x: f64) f64 {
     if (x > 0.0) return 1.0;
     if (x < 0.0) return -1.0;
@@ -171,7 +171,7 @@ fn mySign(x: f64) f64 {
 }
 
 /// 4×4 LU inversion with partial pivoting (C: inverse_matrix, GSL LU).
-/// No error path — a singular matrix propagates inf/nan into the update,
+/// No error path; a singular matrix propagates inf/nan into the update,
 /// which the damping ladder then rejects.
 fn invert4(a_in: [4][4]f64) [4][4]f64 {
     var lu = a_in;
@@ -234,7 +234,7 @@ pub fn Solver(comptime cfg: config.Config) type {
     const i_ee = L.index(.ee);
 
     return struct {
-        /// C: implicit_apply_constraints (rad.c:1279) — make the
+        /// C: implicit_apply_constraints (rad.c:1279). Make the
         /// non-iterated fluid consistent with total conservation.
         /// Returns C's u2pret: 0 ok, −1 tolerable correction, −2 fatal.
         pub fn applyConstraints(
@@ -331,7 +331,7 @@ pub fn Solver(comptime cfg: config.Config) type {
             return residualG(f64, uu, pp, st, uu0, st0, dt, geom.cov(), geom.con(), geom.gdet, opac, whichprim, whicheq, whichframe, f);
         }
 
-        /// residual over lane type T — the batched Jacobian evaluates the
+        /// residual over lane type T; the batched Jacobian evaluates the
         /// 4 perturbed states as lanes of one @Vector(4, f64) call. uu0/st0
         /// stay scalar (the base state is shared by all lanes).
         pub fn residualG(
@@ -466,7 +466,7 @@ pub fn Solver(comptime cfg: config.Config) type {
             }
         }
 
-        /// C: solve_implicit_lab_1dprim (rad.c:2001) — bisection on the
+        /// C: solve_implicit_lab_1dprim (rad.c:2001). Bisection on the
         /// fluid-frame energy equation, writing the improved guess into
         /// pp0out. Returns −1 (pp0out untouched beyond the pp00 copy) if
         /// no bracket is found.
@@ -576,7 +576,7 @@ pub fn Solver(comptime cfg: config.Config) type {
         pub const Solve4dResult = struct {
             ok: bool,
             iters: usize,
-            /// the solver's internal conserveds — exactly conservation-
+            /// the solver's internal conserveds; exactly conservation-
             /// constrained (before the wrapper's final p2u regenerates uu)
             uu: [NV]f64,
         };
@@ -619,13 +619,13 @@ pub fn Solver(comptime cfg: config.Config) type {
         }
 
         /// The Newton core of solve4dPrim. `state00` (the once-per-solve
-        /// reference fill — the full fill: residual reads state00.sgas on the
+        /// reference fill; the full fill: residual reads state00.sgas on the
         /// entropy rungs) and `pp0in` (the bisect-adjusted starting guess) are
         /// rung-independent, so solveImplicitLab computes them once and hands
         /// the same two to all six rungs (finding #10).
         /// koral_lite_puffy copy_state_opac (physics.c, 2026-08-11): overwrite
         /// the per-iteration state's opacities with the once-per-solve
-        /// reference values — exactly C's field set: κ_es plus the six κ
+        /// reference values; exactly C's field set: κ_es plus the six κ
         /// channels. Emission is NOT lagged (C's B = σT⁴/π comes from the
         /// trial state's temperature, and tot_emissivity is output-only).
         fn lagOpac(comptime T: type, st: *radforce.RadStateOf(T), st00: *const radforce.RadState) void {
@@ -921,7 +921,7 @@ pub fn Solver(comptime cfg: config.Config) type {
             return .{ .ok = true, .iters = iter, .uu = uu };
         }
 
-        /// C: solve_implicit_lab (rad.c:73) — the rung ladder. Reads pp
+        /// C: solve_implicit_lab (rad.c:73). The rung ladder. Reads pp
         /// (uu is regenerated: FORCEUEQPINIMPLICIT == 1); on success both
         /// are overwritten with the coupled state, on failure untouched.
         pub fn solveImplicitLab(

@@ -4,7 +4,7 @@
 //! uniform Minkowski state, so they are checked to machine precision here. The
 //! BL-frame luminosity and the scale height run through the coordinate
 //! transform and the density-weighted average and are pinned by the C golden
-//! on the real PUFFY state (golden_puffystep_test.zig / harness_scalars.c) —
+//! on the real PUFFY state (golden_puffystep_test.zig / harness_scalars.c);
 //! there is no clean flat-space analytic for them.
 
 const std = @import("std");

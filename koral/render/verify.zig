@@ -1,10 +1,10 @@
-//! Gold et al. 2020 (ApJ 897, 148) standardized GRRT verification scenes —
+//! Gold et al. 2020 (ApJ 897, 148) standardized GRRT verification scenes;
 //! the EHT radiative-transfer code-comparison tests, implemented so this
 //! imager sits on the same validation footing as BHOSS/ipole/RAPTOR/
 //! GRTRANS/ODYSSEY/RAIKOU/VRT2.
 //!
 //! The five tests (their §3.2, Table 1) are fully analytic single-fluid
-//! scenes on Kerr, in Boyer–Lindquist language:
+//! scenes on Kerr, in Boyer-Lindquist language:
 //!
 //!   n/n0 = exp{−½[(r/10)² + (h·cosθ)²]}          (eq 5; h=0 → sphere,
 //!                                                  h=100/3 → razor disk)
@@ -24,8 +24,8 @@
 //!
 //! Geometry: M = 6e11 cm (~4e6 M☉), d = 2.4e22 cm (~7.78 kpc), camera at
 //! r = 1000 M, i = 60°, fov 30 M × 30 M, spin axis up, stationary observer,
-//! center ray k_φ = 0 — all of which are ALREADY this renderer's
-//! conventions (the tetrad's (t,φ,r,θ) Gram–Schmidt ordering is exactly
+//! center ray k_φ = 0; all of which are ALREADY this renderer's
+//! conventions (the tetrad's (t,φ,r,θ) Gram-Schmidt ordering is exactly
 //! their "zero angular momentum at image center" condition). Rays stop
 //! within 1e−4 M of the horizon or past the camera radius.
 //!
@@ -34,14 +34,14 @@
 //! ∫2Mr/Δ dr and φ_KS = φ_BL + ∫a/Δ dr,
 //!     u^KS_t = −ū,   u^KS_r = ū(2Mr − a·l)/Δ,   u^KS_φ = ū·l,
 //! (verified: u·u = −1 recovers exactly in KS), and x1 = ln(r − r0) gives
-//! u_x1 = u^KS_r·(r − r0). n, l, ū are scalars of (r, θ) — chart-free.
+//! u_x1 = u^KS_r·(r − r0). n, l, ū are scalars of (r, θ); chart-free.
 //! Near the horizon Δ → 0 makes ū → 0 while ū/Δ stays finite via
 //! ū ∝ √Δ, so the medium is regular down to the capture radius.
 //!
 //! The transfer step mirrors traceRay's monochromatic branch (invariant
 //! I_ν/ν̂³, dτ = α_ν·dl with dl = ν̂·h·M_cm the fluid-frame path in cm),
 //! and the geodesic stepping IS render.zig's (rk4Step/flatPoleStep/
-//! stepSize) — so this validates the production integration scheme, not a
+//! stepSize), so this validates the production integration scheme, not a
 //! lookalike.
 
 const std = @import("std");

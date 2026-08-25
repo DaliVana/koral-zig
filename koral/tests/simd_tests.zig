@@ -1,4 +1,4 @@
-//! P3a SIMD gates — the @Vector(4, f64) instantiation of the
+//! P3a SIMD gates; the @Vector(4, f64) instantiation of the
 //! comptime-T-generic residual chain (parallelization plan §2.2/§2.3 #1)
 //! reproduces the scalar chain BIT-FOR-BIT, and the batched FD Jacobian
 //! leaves the implicit solver bit-identical to the scalar reference path.
@@ -48,7 +48,7 @@ const ImplT = implicit.Solver(cfg);
 const rad_params = invert_rad.RadParams.puffy;
 
 /// Bitwise equality of two f64 aggregates (structs/arrays of f64),
-/// walked by comptime reflection — catches sign-of-zero and NaN-payload
+/// walked by comptime reflection; catches sign-of-zero and NaN-payload
 /// differences that `==` would hide.
 fn expectAggBits(comptime S: type, want: S, got: S) !void {
     if (comptime S == f64) {

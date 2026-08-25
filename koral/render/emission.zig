@@ -3,13 +3,13 @@
 //! & Gammie 2011 fit used by grmonty/ipole), thermal bremsstrahlung
 //! (Rybicki & Lightman 5.18b with a constant mean Gaunt factor), and the
 //! electron-scattering source with the radiation field taken blackbody-
-//! shaped at T_rad — which is exact in normalization by the definition of
+//! shaped at T_rad, which is exact in normalization by the definition of
 //! T_rad (Ê = 4σT_rad⁴), times the M1 dipole factor the caller supplies.
 //!
 //! Everything here is CGS and per-Hz in the FLUID frame: j [erg/s/cm³/sr/Hz],
 //! χ [1/cm], ν [Hz], T [K], B [Gauss]. Absorption obeys Kirchhoff's law
 //! (α_ν = j_ν/B_ν(T_e)) for both thermal channels, so LTE source functions
-//! are exactly Planckian — pinned by a test.
+//! are exactly Planckian; pinned by a test.
 //!
 //! Constants match units.zig/thermo.zig where they exist there.
 
@@ -22,7 +22,7 @@ pub const m_e_cgs: f64 = 9.1094e-28; // units.M_ELECTR_CGS
 pub const e_esu: f64 = 4.80320425e-10; // electron charge (statC; not in units.zig)
 
 /// Mean free-free Gaunt factor. A constant ~1.2 is good to ~20% across the
-/// mm–X-ray range we image; upgrade to a ν,T-dependent fit if spectra ever
+/// mm-X-ray range we image; upgrade to a ν,T-dependent fit if spectra ever
 /// need better.
 pub const gaunt_ff: f64 = 1.2;
 
@@ -88,7 +88,7 @@ pub const MonoIn = struct {
     /// radiation (blackbody) temperature [K] for the scattering source
     trad: f64,
     b_gauss: f64,
-    /// sine of the photon–B pitch angle in the fluid frame
+    /// sine of the photon-B pitch angle in the fluid frame
     sin_pitch: f64,
     /// electron-scattering extinction [1/cm]
     chi_es_cgs: f64,

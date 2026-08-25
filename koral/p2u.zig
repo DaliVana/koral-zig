@@ -1,5 +1,5 @@
 //! Primitives → conserved (C: p2u.c). GDETIN == 1 for PUFFY, so the
-//! conserved variables carry √−g (gdetu = gdet) — asserted, not optional.
+//! conserved variables carry √−g (gdetu = gdet); asserted, not optional.
 //!
 //! The energy conserved uu[UU] is C's T^t_t + ρu^t, assembled through
 //! utp1 = 1 + u_t (p2u.c:95) to avoid catastrophic cancellation in the
@@ -13,7 +13,7 @@ const layout = @import("layout.zig");
 const Geometry = @import("geometry.zig").Geometry;
 
 /// 1 + u_t computed cancellation-free (C: calc_utp1, p2u.c:163; the
-/// VELPRIM == VELR branch — the only one KORAL's defaults ever take).
+/// VELPRIM == VELR branch; the only one KORAL's defaults ever take).
 pub fn calcUtp1(vcon: [4]f64, geom: *const Geometry) f64 {
     const gg = &geom.gg;
     var qsq: f64 = 0;
@@ -35,7 +35,7 @@ pub fn calcUtp1(vcon: [4]f64, geom: *const Geometry) f64 {
     return ud0tilde + (geom.gttpert - alphasq * (betasqoalphasq + qsq)) / (1.0 + alpgam);
 }
 
-/// C: p2u_mhd (p2u.c:32) — writes the hydro+magnetic slots of `uu`.
+/// C: p2u_mhd (p2u.c:32). Writes the hydro+magnetic slots of `uu`.
 pub fn p2uMhd(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
@@ -99,7 +99,7 @@ pub fn p2uMhd(
     }
 }
 
-/// C: p2u_rad (p2u.c:300) — M1 closure: R^t_μ from (Êrf, ũ_rad).
+/// C: p2u_rad (p2u.c:300); M1 closure: R^t_μ from (Êrf, ũ_rad).
 pub fn p2uRad(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
@@ -131,7 +131,7 @@ pub fn p2uRad(
     }
 }
 
-/// C: p2u (p2u.c:14) — full conserved vector.
+/// C: p2u (p2u.c:14). Full conserved vector.
 pub fn p2u(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,

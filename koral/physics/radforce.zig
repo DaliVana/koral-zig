@@ -1,10 +1,10 @@
-//! Radiation–gas coupling: the state fill (the radiation-relevant subset
+//! Radiation-gas coupling: the state fill (the radiation-relevant subset
 //! of C's fill_struct_of_state, physics.c:12), the thermal four-force
 //! calc_Gi (rad.c:2653 calc_all_Gi_with_state) with its Comptonization
 //! term (rad.c:2907), and the pp-level opacity wrappers calc_kappa /
 //! calc_kappaes / calc_chi (opacities.c).
 //!
-//! Physics: G^μ is the gas–radiation energy-momentum exchange rate,
+//! Physics: G^μ is the gas-radiation energy-momentum exchange rate,
 //! entering the gas and radiation equations with opposite signs. In the
 //! fluid frame the time component is transparent:
 //!   Ĝ⁰ = −κ_gasAbs·4πB(T_e) + κ_radAbs·Ê
@@ -12,21 +12,21 @@
 //!   G^μ = −(κ_radRoss+κ_es) R^μν u_ν
 //!         − [(κ_radRoss+κ_es−κ_radAbs) Ê + κ_gasAbs·4πB] u^μ
 //! uses the flux-weighted (Rosseland + scattering) opacity for the
-//! momentum drag and the Planck-type means for the energy exchange — the
+//! momentum drag and the Planck-type means for the energy exchange; the
 //! standard mixed-mean grey formulation. Thermal Comptonization adds
 //! ∝ κ_es Ê·4k(T_rad−T_e)/m_ec² (with a relativistic Θ_e correction): net
-//! scattering energy exchange driving T_rad → T_e — Compton heating of the
+//! scattering energy exchange driving T_rad → T_e; Compton heating of the
 //! gas when the radiation is hotter, inverse-Compton cooling when the
 //! electrons are. G^μ is stiff (∝ opacity), which is why the implicit
-//! solver iterates on it — hence the Slim variants below.
+//! solver iterates on it. Hence the Slim variants below.
 //!
 //! C-fidelity notes:
 //!  * Two kappaes flavors coexist in C: fill_struct_of_state calls
 //!    calc_kappaes_with_temperatures with Trad = TradBB (used by calc_Gi),
-//!    while the standalone calc_kappaes(pp,ggg) — the one calc_chi and the
-//!    wavespeed limiter use — sets Trad = Te. Both preserved here.
+//!    while the standalone calc_kappaes(pp,ggg); the one calc_chi and the
+//!    wavespeed limiter use; sets Trad = Te. Both preserved here.
 //!  * calc_all_Gi_with_state's return value is 1/(Tgas²·kappa) with a
-//!    NEVER-ASSIGNED local kappa — uninitialized stack garbage. Every call
+//!    NEVER-ASSIGNED local kappa; uninitialized stack garbage. Every call
 //!    site discards it; we return void.
 //!  * Gith_ff is the α-scaled lab→ff boost of Gith_lab with the time
 //!    component then overwritten by the exact fluid-frame expression
@@ -47,12 +47,12 @@ const opacities = @import("opacities.zig");
 const units_mod = @import("../units.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
-/// C: PR_KAPPA — the per-problem absorption-opacity hook textually included
+/// C: PR_KAPPA. The per-problem absorption-opacity hook textually included
 /// into calc_kappa_from_state (opacities.c:72). `.default` is the no-PR_KAPPA
 /// branch (calc_opacities_from_state). `.grey` mirrors a problem kappa.c of
 /// the shape `kappa = COEFF*rho;` that also assigns all six opac slots (the
 /// C wrapper otherwise reads UNINITIALIZED stack in its `kappaGasAbs >= 0.`
-/// broadcast test — LRTORUS/kappa.c really does that; our oracle problems
+/// broadcast test; LRTORUS/kappa.c really does that; our oracle problems
 /// set the slots explicitly to stay deterministic).
 pub const KappaMode = union(enum) {
     default,
@@ -61,8 +61,8 @@ pub const KappaMode = union(enum) {
     grey: f64,
 };
 
-/// C: PR_KAPPAES — the scattering hook (opacities.c:114/138). Without it C
-/// returns 0; PUFFY's kappaes.c is the Klein–Nishina-corrected Thomson value.
+/// C: PR_KAPPAES. The scattering hook (opacities.c:114/138). Without it C
+/// returns 0; PUFFY's kappaes.c is the Klein-Nishina-corrected Thomson value.
 pub const KappaesMode = union(enum) {
     none,
     puffy,
@@ -76,7 +76,7 @@ pub const Params = struct {
     channels: opacities.Channels = .{},
     kappa: KappaMode = .default,
     /// C-faithful neutral default: without a PR_KAPPAES hook C returns 0.
-    /// PUFFY's Klein–Nishina scattering is opt-in via `Params.puffy()`, so a
+    /// PUFFY's Klein-Nishina scattering is opt-in via `Params.puffy()`, so a
     /// non-PUFFY problem never silently inherits PUFFY scattering physics.
     kappaes: KappaesMode = .none,
     /// C: OPDAMPINIMPLICIT opacity damping (rad.c:1488). Scales the thermal
@@ -92,15 +92,15 @@ pub const Params = struct {
 
     /// The PUFFY build: MASS = 10 M☉, HFRAC = 1 with the direct
     /// MU_GAS/MU_I/MU_E = 1/2/2 overrides, all channels on, and the
-    /// Klein–Nishina scattering hook (PR_KAPPAES) enabled explicitly.
-    /// This is the validated-golden entry point — every oracle comparison
+    /// Klein-Nishina scattering hook (PR_KAPPAES) enabled explicitly.
+    /// This is the validated-golden entry point; every oracle comparison
     /// holds the mass at 10, so leave it here.
     pub fn puffy() Params {
         return puffyMass(10.0);
     }
 
-    /// The PUFFY build at an arbitrary black-hole mass (solar masses) — same
-    /// composition, channels and Klein–Nishina scattering as `puffy()`; only
+    /// The PUFFY build at an arbitrary black-hole mass (solar masses); same
+    /// composition, channels and Klein-Nishina scattering as `puffy()`; only
     /// the CGS↔GU unit scale differs (opacities, LTE temperatures, radiation
     /// floors). Used by the Sagittarius A* preset (MASS ≈ 4.3e6). The goldens
     /// stay on `puffy()` at MASS = 10.
@@ -109,9 +109,9 @@ pub const Params = struct {
     }
 
     /// The PUFFY build at an arbitrary mass with an explicit gas composition
-    /// and opacity channel set — the entry point the `puffy_agn.toml` preset
+    /// and opacity channel set; the entry point the `puffy_agn.toml` preset
     /// uses to retarget to the koral_lite_puffy configuration (HFRAC/HEFRAC/
-    /// MFRAC metallicity, bremsstrahlung/Klein–Nishina toggled). Klein–Nishina
+    /// MFRAC metallicity, bremsstrahlung/Klein-Nishina toggled). Klein-Nishina
     /// scattering (`kappaes = .puffy`) is still the PUFFY hook; its KN
     /// correction is itself gated by `chan.kleinnishina`, so switching that
     /// channel off falls back to plain Thomson. `puffyMassChan(m,
@@ -151,7 +151,7 @@ pub const Params = struct {
 };
 
 /// The radiation-relevant subset of C's struct_of_state, over lane type T
-/// (parallelization plan §2.2 — the `<name>G` functions are the generic
+/// (parallelization plan §2.2; the `<name>G` functions are the generic
 /// cores, the plain `<name>` scalar API delegates to T = f64).
 pub fn RadStateOf(comptime T: type) type {
     return struct {
@@ -160,7 +160,7 @@ pub fn RadStateOf(comptime T: type) type {
         tgas: T,
         te: T,
         ti: T,
-        /// Sgas = kB/(μ_gas m_p) · calc_Sfromu (physics.c:41) — note the
+        /// Sgas = kB/(μ_gas m_p) · calc_Sfromu (physics.c:41); note the
         /// different normalization from the ENTR primitive
         sgas: T,
         ne: T,
@@ -182,7 +182,7 @@ pub const RadState = RadStateOf(f64);
 /// photon number (Trad = TradBB) or electrons (Te = Ti = Tgas).
 ///
 /// The error union is kept for API compatibility, but with VELPRIM == VELR
-/// the fill is infallible (the velr→vel4 conversion cannot fail) — the
+/// the fill is infallible (the velr→vel4 conversion cannot fail); the
 /// generic core below has no error path.
 pub fn fillRadState(
     comptime cfg: config.Config,
@@ -194,7 +194,7 @@ pub fn fillRadState(
     return fillRadStateG(cfg, f64, pp, geom.cov(), geom.con(), gamma_adiab, par);
 }
 
-/// Slim scalar fillRadState — the solver hot path (see fillRadStateSlimG).
+/// Slim scalar fillRadState; the solver hot path (see fillRadStateSlimG).
 pub fn fillRadStateSlim(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
@@ -206,7 +206,7 @@ pub fn fillRadStateSlim(
 }
 
 /// Slim fillRadState over lane type T: the implicit-solver path. Skips the
-/// entropy `sgas` (only the once-per-solve reference state's Sgas is read —
+/// entropy `sgas` (only the once-per-solve reference state's Sgas is read;
 /// implicit.zig:377) and the number-averaged / gas-Rosseland opacity channels
 /// (radforce.zig:264), all of which the residual and f1dErr never consume.
 /// Every consumed field is bit-identical to fillRadStateG (simd_tests.zig).
@@ -222,7 +222,7 @@ pub fn fillRadStateSlimG(
     return fillRadStateCoreG(cfg, T, pp, gg, GG, gamma_adiab, par, false);
 }
 
-/// fillRadState over lane type T (the full struct_of_state — every field).
+/// fillRadState over lane type T (the full struct_of_state; every field).
 pub fn fillRadStateG(
     comptime cfg: config.Config,
     comptime T: type,
@@ -360,7 +360,7 @@ pub fn GiOf(comptime T: type) type {
 }
 pub const Gi = GiOf(f64);
 
-/// C: calc_Compt_Gi_with_state (rad.c:2907) — thermal Comptonization,
+/// C: calc_Compt_Gi_with_state (rad.c:2907). Thermal Comptonization,
 /// no RELELECTRONS correction. Returns coeff so both frames reuse it.
 pub fn comptonGiCoeff(c: *const thermo.Consts, st: *const RadState) f64 {
     return comptonGiCoeffG(f64, c, st);
@@ -389,7 +389,7 @@ pub fn calcGiFromState(
     return calcGiFromStateG(f64, st, vprim, geom.cov(), geom.con(), par);
 }
 
-/// Slim scalar calcGiFromState — the solver hot path (see calcGiFromStateSlimG).
+/// Slim scalar calcGiFromState; the solver hot path (see calcGiFromStateSlimG).
 pub fn calcGiFromStateSlim(
     st: *const RadState,
     vprim: [3]f64,
@@ -400,7 +400,7 @@ pub fn calcGiFromStateSlim(
 }
 
 /// Slim calcGiFromState over lane type T: the implicit-residual path. Skips
-/// the lab→ff Lorentz boost — the residual and f1dErr read only `gi.ff[0]`
+/// the lab→ff Lorentz boost; the residual and f1dErr read only `gi.ff[0]`
 /// (implicit.zig:366/424), which the direct fluid-frame expression below
 /// overwrites regardless, and `gi.lab` (boost-independent). Bit-identical to
 /// calcGiFromStateG on `ff[0]` and all of `lab` (simd_tests.zig).
@@ -427,8 +427,8 @@ pub fn calcGiFromStateG(
     return calcGiFromStateCoreG(T, st, vprim, gg, GG, par, true);
 }
 
-/// The shared core. `full` (comptime): when false, `gi.ff[1..3]` — read only
-/// by the golden/opacity tests — are left zero and the boost is skipped.
+/// The shared core. `full` (comptime): when false, `gi.ff[1..3]`; read only
+/// by the golden/opacity tests; are left zero and the boost is skipped.
 fn calcGiFromStateCoreG(
     comptime T: type,
     st: *const RadStateOf(T),
@@ -494,7 +494,7 @@ fn calcGiFromStateCoreG(
 }
 
 /// C: calc_Gi (rad.c:2588). The C return value is uninitialized garbage
-/// discarded by all callers — not reproduced.
+/// discarded by all callers; not reproduced.
 pub fn calcGi(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
@@ -509,7 +509,7 @@ pub fn calcGi(
     }, geom, par);
 }
 
-/// C: calc_kappa (opacities.c:22) — state fill + default opacity code.
+/// C: calc_kappa (opacities.c:22). State fill + default opacity code.
 pub fn calcKappa(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
@@ -521,7 +521,7 @@ pub fn calcKappa(
     return st.kappa;
 }
 
-/// C: calc_kappaes (opacities.c:126) — the standalone flavor with
+/// C: calc_kappaes (opacities.c:126). The standalone flavor with
 /// Trad = Te (NOT TradBB).
 pub fn calcKappaes(
     comptime cfg: config.Config,
@@ -535,7 +535,7 @@ pub fn calcKappaes(
     return par.kappaesAt(pp[L.index(.rho)], trad);
 }
 
-/// C: calc_chi (opacities.c:148) — κ + κ_es for the wavespeed τ-limiter.
+/// C: calc_chi (opacities.c:148); κ + κ_es for the wavespeed τ-limiter.
 pub fn calcChi(
     comptime cfg: config.Config,
     pp: [layout.VarLayout(cfg).count]f64,
@@ -548,7 +548,7 @@ pub fn calcChi(
 }
 
 /// Slim calc_chi for the wavespeed τ-limiter (sim.zig) and the radviscosity
-/// mean-free-path (sim/rijvisc.zig) — finding #5. χ = κ + κ_es needs neither the
+/// mean-free-path (sim/rijvisc.zig); finding #5. χ = κ + κ_es needs neither the
 /// radiation frame (Rij / Ê / TradBB) nor the four Trad-dependent opacity
 /// channels: κ = opac.gas_abs depends only on (ρ, Te, ne, b²) and the
 /// standalone κ_es uses Trad = Te. So this skips calcRij, the Ehat

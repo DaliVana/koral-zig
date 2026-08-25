@@ -4,7 +4,7 @@
 //!
 //! Design (and why the result stays bit-identical to serial):
 //!  * `Team` spawns nthreads−1 helper OS threads once (at Sim.init) and
-//!    parks them on a futex'd region counter between regions — no per-pass
+//!    parks them on a futex'd region counter between regions; no per-pass
 //!    spawn/join. The main thread participates in every region and then
 //!    waits (futex again) for the helpers' completion count. (Zig 0.16
 //!    moved Mutex/Condition behind the std.Io event-loop interface, so the
@@ -19,7 +19,7 @@
 //!    the pre-pass fields), so *which* worker runs a tile cannot change any
 //!    written value.
 //!  * The only cross-band results are the `ChunkResult` reductions: integer
-//!    sums (implicit counters) and f64 max/min (the CFL denominator) — all
+//!    sums (implicit counters) and f64 max/min (the CFL denominator); all
 //!    order-insensitive, merged once per region in a fixed order. Each
 //!    worker accumulates into a stack-local ChunkResult across its tiles
 //!    and publishes once at region end (no false sharing on hot counters).
@@ -38,7 +38,7 @@ const Error = @import("relele.zig").Error || error{OutOfMemory};
 
 /// Minimal cross-platform futex on a u32 word (std's own moved behind
 /// std.Io in 0.16). `wait` returns when *ptr != expect, on a wake, or
-/// spuriously — callers always re-check their condition in a loop.
+/// spuriously: callers always re-check their condition in a loop.
 const futex = struct {
     fn wait(ptr: *const std.atomic.Value(u32), expect: u32) void {
         switch (builtin.os.tag) {
@@ -130,7 +130,7 @@ fn pinSelf(cpu: u32) void {
 
 /// Per-worker scratch merged after each region. Passes use what they need:
 /// the implicit solver its counters, the wavespeed pass its CFL-denominator
-/// partials; everything else only the error slot. All merges are
+/// partials: everything else only the error slot. All merges are
 /// order-insensitive, so the merged result is independent of the tile
 /// schedule (and identical to serial).
 pub const ChunkResult = struct {
@@ -155,7 +155,7 @@ pub const ChunkResult = struct {
     }
 };
 
-/// Aim for this many tiles per worker per region — enough granularity for
+/// Aim for this many tiles per worker per region; enough granularity for
 /// the ticket counter to absorb per-tile cost imbalance, few enough that
 /// ticket traffic stays negligible (§3.2 "dynamic tiling").
 const tiles_per_worker = 8;
@@ -188,9 +188,9 @@ pub const Team = struct {
     n_running: std.atomic.Value(u32) = .init(0),
 
     /// Spawn `nthreads − 1` helpers (the main thread is worker 0). If some
-    /// spawns fail the team just runs narrower — never an error. `pin`
+    /// spawns fail the team just runs narrower; never an error. `pin`
     /// binds each thread (main included) to one cpu of the process's
-    /// affinity mask (Linux; no-op elsewhere — see allowedCpus above).
+    /// affinity mask (Linux; no-op elsewhere. See allowedCpus above).
     pub fn init(allocator: std.mem.Allocator, nthreads: usize, pin: bool) !*Team {
         const n_helpers = @max(nthreads, 1) - 1;
         const team = try allocator.create(Team);
@@ -301,7 +301,7 @@ pub const Team = struct {
 };
 
 /// Run `worker` over [lo, hi): inline when `team` is null (the serial /
-/// nthreads=1 path — the golden-tested reference), else as one team region
+/// nthreads=1 path; the golden-tested reference), else as one team region
 /// with dynamic tiles. Returns the merged ChunkResult; the caller checks
 /// `.err` and consumes whatever reductions the pass produces.
 pub fn parallelRange(
@@ -327,7 +327,7 @@ pub fn parallelRange(
 }
 
 /// `parallelRange` for the passes whose only `ChunkResult` use is the error
-/// slot — the great majority. The worker returns `Error!void` directly and the
+/// slot: the great majority. The worker returns `Error!void` directly and the
 /// first failing band's error is propagated (`merge` keeps the first), so each
 /// call site drops both its hand-written `catch |e| { res.err = e; }` shim and
 /// its `if (res.err) |e| return e;` tail. Passes that also *reduce* keep the

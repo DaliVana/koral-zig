@@ -1,13 +1,13 @@
 //! M10 theory gates for the polar-axis special treatment
-//! (CORRECT_POLARAXIS, NCCORRECTPOLAR = 2 — PUFFY define.h:107-109):
+//! (CORRECT_POLARAXIS, NCCORRECTPOLAR = 2; PUFFY define.h:107-109):
 //!
-//!   correct_polaraxis (finite.c:5525)  — most-polar rows overwritten from
+//!   correct_polaraxis (finite.c:5525): most-polar rows overwritten from
 //!                                        row nc, θ-velocities scaled, B
 //!                                        untouched (no CORRECTMAGNFIELD)
-//!   calc_u2p (u2p.c:57/80/92)          — polar cells get u2p_solver_Bonly
+//!   calc_u2p (u2p.c:57/80/92): polar cells get u2p_solver_Bonly
 //!                                        and skip both floor checks
-//!   op_implicit (finite.c:1427)        — polar cells skipped entirely
-//!   cell_fixup (finite.c:5042)         — polar cells never fixup targets
+//!   op_implicit (finite.c:1427): polar cells skipped entirely
+//!   cell_fixup (finite.c:5042): polar cells never fixup targets
 //!
 //! Pure-Zig pins of the transcription; the C-diff of the whole pipeline on
 //! a spherical grid arrives with the PUFFY t=0 + step goldens (M11/M13).

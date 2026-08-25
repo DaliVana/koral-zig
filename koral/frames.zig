@@ -10,7 +10,7 @@
 //! Faithful C quirks (verified against frames.c and mirrored exactly):
 //! - lab2ff boosts multiply the 0-row/column of the *output* by α
 //!   ("orthonormality correction", frames.c:396); T[0][0] gets α twice.
-//! - ff2lab's corresponding α *division* is dead code — C divides the input
+//! - ff2lab's corresponding α *division* is dead code; C divides the input
 //!   array only after the working copy was taken (frames.c:435-445), so the
 //!   output carries no α. The two directions are therefore NOT mutual
 //!   inverses of each other (the bare L matrices are).
@@ -75,7 +75,7 @@ fn normalObsConCovG(comptime T: type, GG: relele.MetricConOf(T)) relele.ConCovOf
     return .{ .con = relele.raiseVecG(T, wcov, GG), .cov = wcov };
 }
 
-/// C: calc_Lorentz_lab2ff — u = fluid (from VELPRIM prims), w = normal observer.
+/// C: calc_Lorentz_lab2ff. U = fluid (from VELPRIM prims), w = normal observer.
 pub fn lorentzLab2Ff(vprim: [3]f64, geom: *const Geometry) relele.Error![4][4]f64 {
     return lorentzLab2FfG(f64, vprim, geom.cov(), geom.con());
 }
@@ -87,7 +87,7 @@ pub fn lorentzLab2FfG(comptime T: type, vprim: [3]T, gg: relele.MetricCovOf(T), 
     return lorentzFromPairG(T, u.con, u.cov, w.con, w.cov);
 }
 
-/// C: calc_Lorentz_ff2lab — u = normal observer, w = fluid.
+/// C: calc_Lorentz_ff2lab. U = normal observer, w = fluid.
 pub fn lorentzFf2Lab(vprim: [3]f64, geom: *const Geometry) relele.Error![4][4]f64 {
     const w = try relele.convertBoth(.{ 0, vprim[0], vprim[1], vprim[2] }, .velr, geom);
     const u = normalObsConCov(geom);
@@ -151,7 +151,7 @@ pub fn boost22Lab2Ff(t1: [4][4]f64, vprim: [3]f64, geom: *const Geometry) relele
     return t2;
 }
 
-/// T2 = L L T1 — no α correction reaches the output in C (dead code, see top).
+/// T2 = L L T1; no α correction reaches the output in C (dead code, see top).
 pub fn boost22Ff2Lab(t1: [4][4]f64, vprim: [3]f64, geom: *const Geometry) relele.Error![4][4]f64 {
     const l = try lorentzFf2Lab(vprim, geom);
     return boostTensor(t1, l);

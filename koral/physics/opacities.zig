@@ -1,11 +1,11 @@
-//! Opacities (C: opacities.c) — the channels the PUFFY build compiles:
+//! Opacities (C: opacities.c); the channels the PUFFY build compiles:
 //! BREMSSTRAHLUNG + SYNCHROTRON absorption (calc_opacities_from_state) and
 //! the PUFFY scattering hook (PROBLEMS/PUFFY/kappaes.c) with its
 //! KLEINNISHINA correction. Everything here is scalar-in/scalar-out; the
 //! pp/geometry-level wrappers live in physics/radforce.zig.
 //!
 //! Physics: with gas (T_e) and radiation (T_rad) temperatures decoupled, a
-//! single grey opacity is not enough — the code carries a family of means:
+//! single grey opacity is not enough; the code carries a family of means:
 //! gas_abs (Planck at T_e) sets emission j = κ·4πB(T_e); rad_abs (Planck
 //! weighted by the radiation spectrum) sets absorption, the ζ = T_rad/T_e
 //! factors interpolating between the two; gas/rad_ross (Rosseland) govern
@@ -15,24 +15,24 @@
 //! and a mild relativistic correction, turned into an opacity via
 //! Kirchhoff's law (divide by the blackbody energy density). Thermal
 //! synchrotron absorption is a fitted function of zbr = kT_rad/(hν_crit),
-//! ν_crit ∝ T_e²B — typical photon energy over the synchrotron critical
-//! frequency — suppressed for nonrelativistic electrons by Θ²/(1+Θ²),
+//! ν_crit ∝ T_e²B; typical photon energy over the synchrotron critical
+//! frequency: suppressed for nonrelativistic electrons by Θ²/(1+Θ²),
 //! Θ = kT_e/m_ec² (thermal synchrotron dies for cold electrons). Electron
-//! scattering is Thomson κ_es = 0.2(1+X) cm²/g with a Klein–Nishina
+//! scattering is Thomson κ_es = 0.2(1+X) cm²/g with a Klein-Nishina
 //! reduction once T_rad approaches m_ec²/k. τ = χ·dx are the per-cell
 //! optical depths.
 //!
 //! C-fidelity notes:
-//!  * PUFFY does NOT wire PR_KAPPA — PROBLEMS/PUFFY/kappa.c is dead code;
+//!  * PUFFY does NOT wire PR_KAPPA; PROBLEMS/PUFFY/kappa.c is dead code;
 //!    absorption comes from the default calc_opacities_from_state.
 //!  * USE_SYNCHROTRON_BRIDGE_FUNCTIONS is commented out of choices.h
 //!    entirely (PUFFY's NO_SYNCHROTRON_BRIDGE_FUNCTIONS is vestigial), so
 //!    the bridge blocks are off and the Terelfactor suppression is active.
 //!  * The C body computes Trad_lim/nph_lim from pp[NF] even without
-//!    EVOLVEPHOTONNUMBER — unused locals reading a stale slot; skipped.
+//!    EVOLVEPHOTONNUMBER: unused locals reading a stale slot; skipped.
 //!  * calc_opacities_from_state uses the misc.c *globals* (kappacgs2gu,
 //!    rhogu2cgs, numdensgu2cgs) while the PR_KAPPAES hook uses the ko.h
-//!    *macros* (kappaCGS2GU) — both shapes preserved via thermo.Consts
+//!    *macros* (kappaCGS2GU); both shapes preserved via thermo.Consts
 //!    vs units.Units.
 //!  * BOUNDELECTRON / BOUNDFREE / DOUBLECOMPTON / SUTHERLAND-DOPITA /
 //!    CHIANTI are off in every target build and are not implemented.
@@ -43,7 +43,7 @@ const thermo = @import("thermo.zig");
 const units_mod = @import("../units.zig");
 const mesa = @import("mesa.zig");
 
-/// C: struct opacities (the fields the M8 path fills), over lane type T —
+/// C: struct opacities (the fields the M8 path fills), over lane type T;
 /// the `<name>G` functions below are the comptime-T-generic cores of the
 /// opacity chain (parallelization plan §2.2); the plain `<name>` scalar
 /// API delegates to T = f64.
@@ -60,19 +60,19 @@ pub fn OpacOf(comptime T: type) type {
 }
 pub const Opac = OpacOf(f64);
 
-/// Channel switches (comptime macros in C; runtime here — they only gate
+/// Channel switches (comptime macros in C; runtime here; they only gate
 /// whole terms). Defaults = the PUFFY build.
 pub const Channels = struct {
     bremsstrahlung: bool = true,
     synchrotron: bool = true,
     kleinnishina: bool = true,
     comptonization: bool = true, // used by radforce.calcGi
-    /// C: USE_SYNCHROTRON_BRIDGE_FUNCTIONS — the Ramesh NR bridge. Off = the
+    /// C: USE_SYNCHROTRON_BRIDGE_FUNCTIONS. The Ramesh NR bridge. Off = the
     /// Terelfactor suppression (the validated build); on = clamp Trad, add the
     /// NR synchrotron component, apply the number-opacity crossover, and drop
     /// the Terelfactor entirely (koral_lite_puffy).
     synchrotron_bridge: bool = false,
-    /// C: MESA_KAPPA — when non-null, the free-free *Rosseland* opacity is
+    /// C: MESA_KAPPA. When non-null, the free-free *Rosseland* opacity is
     /// replaced by this table's lookup (minus electron scattering); the
     /// free-free *Planck* absorption is still computed (as bremsstrahlung),
     /// regardless of the `bremsstrahlung` toggle, exactly as C's MESA branch.
@@ -95,14 +95,14 @@ pub fn StateInOf(comptime T: type) type {
 }
 pub const StateIn = StateInOf(f64);
 
-/// How many opacity channels a caller needs — a comptime channel-subset flag
+/// How many opacity channels a caller needs; a comptime channel-subset flag
 /// so one formula body serves every path with bit-identical expression shapes
 /// (finding #5). Every *consumed* channel keeps its exact expression, so the
 /// narrower levels are bit-identical to `.full` on the fields they populate.
-///   .full     — every channel (golden/opacity tests, calc_kappa, tot_emissivity)
-///   .residual — gas_abs + rad_abs + rad_ross (implicit residual / calcGiFromState);
+///   .full: every channel (golden/opacity tests, calc_kappa, tot_emissivity)
+///   .residual; gas_abs + rad_abs + rad_ross (implicit residual / calcGiFromState);
 ///               drops rad_num, gas_ross, gas_ffross (two cbrt + two pow + one exp)
-///   .chi      — gas_abs only (wavespeed τ-limiter, radviscosity); additionally
+///   .chi: gas_abs only (wavespeed τ-limiter, radviscosity); also
 ///               drops every Trad-dependent channel (rad_abs/rad_ross and their
 ///               zeta/zbr machinery), since χ needs only κ = gas_abs
 pub const OpacLevel = enum { full, residual, chi };
@@ -110,7 +110,7 @@ pub const OpacLevel = enum { full, residual, chi };
 /// C: calc_opacities_from_state (opacities.c:186), BREMSSTRAHLUNG +
 /// SYNCHROTRON channels, no SKIPFANCYOPACITIES. Returns kappa=kappaGasAbs
 /// with all six opacity fields (tot_emissivity is filled by the caller,
-/// calc_kappa_from_state — see calcKappaFromState).
+/// calc_kappa_from_state: see calcKappaFromState).
 pub fn calcOpacitiesFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) Opac {
     return calcOpacitiesFromStateG(f64, c, ch, s, .full);
 }
@@ -121,8 +121,8 @@ pub fn calcOpacitiesFromState(c: *const thermo.Consts, ch: Channels, s: StateIn)
 /// computed-and-discarded on the guarded lanes.
 ///
 /// `level` (comptime, see OpacLevel) selects the channel subset. `.residual`
-/// drops rad_num / gas_ross / gas_ffross (two cbrt + two pow + one exp — the
-/// implicit-residual hot path, radforce.zig:264); `.chi` additionally drops
+/// drops rad_num / gas_ross / gas_ffross (two cbrt + two pow + one exp; the
+/// implicit-residual hot path, radforce.zig:264); `.chi` also drops
 /// every Trad-dependent channel (rad_abs / rad_ross and their zeta / zbr
 /// machinery), leaving only κ = gas_abs for the wavespeed τ-limiter and the
 /// radviscosity mfp (finding #5). Every *consumed* channel keeps its exact
@@ -319,14 +319,14 @@ pub fn KappaResultOf(comptime T: type) type {
 }
 pub const KappaResult = KappaResultOf(f64);
 
-/// C: calc_kappa_from_state (opacities.c:37) — the default (no PR_KAPPA)
+/// C: calc_kappa_from_state (opacities.c:37). The default (no PR_KAPPA)
 /// path plus the totEmissivity bookkeeping. Returns kappa = kappaGasAbs.
 pub fn calcKappaFromState(c: *const thermo.Consts, ch: Channels, s: StateIn) KappaResult {
     return calcKappaFromStateG(f64, c, ch, s, .full);
 }
 
 /// calcKappaFromState over lane type T. `level` (comptime) forwards to
-/// calcOpacitiesFromStateG and, at `.full`, additionally fills
+/// calcOpacitiesFromStateG and, at `.full`, also fills
 /// `tot_emissivity`, which no implicit-residual / χ consumer reads.
 pub fn calcKappaFromStateG(comptime T: type, c: *const thermo.Consts, ch: Channels, s: StateInOf(T), comptime level: OpacLevel) KappaResultOf(T) {
     const sp = simd.splat;
@@ -340,7 +340,7 @@ pub fn calcKappaFromStateG(comptime T: type, c: *const thermo.Consts, ch: Channe
     return .{ .kappa = opac.gas_abs, .opac = opac };
 }
 
-/// C: PROBLEMS/PUFFY/kappaes.c via calc_kappaes_with_temperatures — the
+/// C: PROBLEMS/PUFFY/kappaes.c via calc_kappaes_with_temperatures. The
 /// KLEINNISHINA correction uses Tkn = Trad (which is Te on the standalone
 /// calc_kappaes path and TradBB on the struct_of_state path). Uses the
 /// ko.h kappaCGS2GU *macro* shape.
@@ -359,7 +359,7 @@ pub fn kappaEsPuffyG(comptime T: type, c: *const thermo.Consts, ch: Channels, rh
     return c.units.kappaCgs2GuG(T, sp(T, 0.2 * (1.0 + c.comp.hfrac)) * opac_correction) * rho;
 }
 
-/// C: calc_tautot (opacities.c:159) — τ = χ·dx per direction.
+/// C: calc_tautot (opacities.c:159); τ = χ·dx per direction.
 pub fn tautot(chi: f64, dx: [3]f64) [3]f64 {
     return .{ chi * dx[0], chi * dx[1], chi * dx[2] };
 }

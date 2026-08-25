@@ -11,13 +11,13 @@
 //! of an observer at inclination i the curve appears at
 //!     α = −ξ/sin i,   β = ±√(η + a²cos²i − ξ²cot²i).
 //!
-//! Everything here is fluid-free — it validates the optics stack
+//! Everything here is fluid-free; it validates the optics stack
 //! (camera + tetrad + geodesics + capture logic) end to end.
 
 const std = @import("std");
 
 /// Prograde/retrograde equatorial photon-orbit radii,
-/// r_ph = 2(1 + cos((2/3)·arccos(∓a))) — the r_p range of the shell.
+/// r_ph = 2(1 + cos((2/3)·arccos(∓a))); the r_p range of the shell.
 pub fn photonShell(a: f64) struct { r_pro: f64, r_retro: f64 } {
     return .{
         .r_pro = 2.0 * (1.0 + @cos((2.0 / 3.0) * std.math.acos(-a))),
@@ -40,7 +40,7 @@ pub fn xiEta(rp: f64, a: f64) XiEta {
 
 /// η on the critical curve at the given ξ, by bisection over the photon
 /// shell (ξ(r_p) is monotone decreasing from prograde to retrograde).
-/// null when ξ lies outside the shell's ξ-range — no critical orbit
+/// null when ξ lies outside the shell's ξ-range; no critical orbit
 /// exists there and such rays always escape.
 pub fn etaCritForXi(xi: f64, a: f64) ?f64 {
     const shell = photonShell(a);
@@ -69,7 +69,7 @@ pub const CurvePoint = struct { alpha: f64, beta: f64 };
 
 /// Image-plane point of the critical curve for the orbit at r_p, seen from
 /// inclination incl (radians from the spin axis). null where the orbit is
-/// invisible from this inclination (β² < 0). β ≥ 0 — mirror for the lower
+/// invisible from this inclination (β² < 0). β ≥ 0; mirror for the lower
 /// half.
 pub fn curvePoint(rp: f64, a: f64, incl: f64) ?CurvePoint {
     const ce = xiEta(rp, a);

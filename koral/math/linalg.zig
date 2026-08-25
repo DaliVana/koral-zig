@@ -1,6 +1,6 @@
 //! Dense 4×4 determinant and inverse by cofactor expansion, generic over any
-//! `Dual(N)` scalar. There is exactly one arithmetic implementation — the
-//! dual methods — so every instantiation shares the same floating-point
+//! `Dual(N)` scalar. All arithmetic goes through the dual methods, so every
+//! instantiation shares the same floating-point
 //! chain by construction: `det4(Dual(0), m).v` is bit-identical to the value
 //! slot of the `Dual(3)` metric path.
 //!
@@ -8,8 +8,8 @@
 //! are `[0]f64`, so all derivative work compiles away and only the value
 //! chain remains.
 //!
-//! Cofactor expansion has no pivoting — fine for well-conditioned matrices
-//! like metric tensors; use an LU route for anything near-singular.
+//! Cofactor expansion has no pivoting. It is suitable for well-conditioned
+//! matrices such as metric tensors; use LU for anything near-singular.
 
 const std = @import("std");
 

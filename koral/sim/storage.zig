@@ -1,4 +1,4 @@
-//! Generic per-cell storage and bookkeeping for the evolution driver — the
+//! Generic per-cell storage and bookkeeping for the evolution driver; the
 //! face-centered buffer and the integer-flag / scalar-slot enums. These are
 //! plain storage utilities, not evolution logic; `sim.zig` re-exports the
 //! enums so external code keeps referencing them as `sim.Flag` / `sim.Scal`.
@@ -6,7 +6,7 @@
 const std = @import("std");
 const Grid = @import("../grid.zig").Grid;
 
-/// Per-cell integer flags (C: cellflag; only the ones this path uses —
+/// Per-cell integer flags (C: cellflag; only the ones this path uses;
 /// RADSOURCETYPEFLAG is a constant under IMPLICIT_LAB_RAD_SOURCE, skipped).
 pub const Flag = enum(usize) {
     entropy, // ENTROPYFLAG — entropy inversion used this step
@@ -79,7 +79,7 @@ pub fn FaceStore(comptime NV: usize) type {
             return self;
         }
 
-        /// init without the zero-fill — see Field.initUninitialized (NUMA
+        /// init without the zero-fill. See Field.initUninitialized (NUMA
         /// first-touch): Sim.init zeroes via the team instead.
         pub fn initUninitialized(allocator: std.mem.Allocator, g: Grid, dim: usize) !Self {
             const nx_s = g.sx() + @intFromBool(dim == 0);

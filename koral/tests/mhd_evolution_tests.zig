@@ -1,12 +1,12 @@
-//! M6 theory gates — MHD evolution with flux-CT constrained transport.
+//! M6 theory gates; MHD evolution with flux-CT constrained transport.
 //!
 //! Gates (plan M6):
 //!  * calc_BfromA produces a divergence-free field (corner divB ≤ 1e-14·B/Δx)
-//!  * Orszag–Tang: corner divB stays at machine zero over 200 steps
+//!  * Orszag-Tang: corner divB stays at machine zero over 200 steps
 //!  * uniform magnetized state stays static
 //!  * circularly polarized Alfvén wave: phase order ≥ 1.9 (exact nonlinear
 //!    solution, Del Zanna et al. 2007)
-//!  * Balsara-1 / SR Brio–Wu tube: B^x exactly constant, self-convergent L1,
+//!  * Balsara-1 / SR Brio-Wu tube: B^x exactly constant, self-convergent L1,
 //!    plateau structure sane
 
 const std = @import("std");
@@ -255,7 +255,7 @@ test "M6: Orszag-Tang keeps corner divB at machine zero over 200 steps" {
 //
 
 /// Exact relativistic CP Alfvén speed (Del Zanna, Zanotti & Bucciantini 2007,
-/// eq. 56): B_x=B0, B_⊥=ηB0(cos,sin), v_⊥=−v_A B_⊥/B0 — exact for any η.
+/// eq. 56): B_x=B0, B_⊥=ηB0(cos,sin), v_⊥=−v_A B_⊥/B0; exact for any η.
 fn cpAlfvenSpeed(gam: f64, rho: f64, p: f64, b0: f64, eta: f64) f64 {
     const w = rho + gam / (gam - 1.0) * p; // ρh
     const den = w + b0 * b0 * (1.0 + eta * eta);
@@ -407,7 +407,7 @@ test "M6: Balsara-1 tube — Bx exactly constant, self-convergent" {
 /// One forced-dt step on a smooth periodic MHD state; returns a copy of the
 /// conserveds. `poison` negates one cell's conserved density so the u2p pass
 /// that runs inside step() BEFORE the explicit sweep fails there, flags
-/// hd_fixup and neighbour-averages the cell — after which the sweep sees the
+/// hd_fixup and neighbour-averages the cell; after which the sweep sees the
 /// flag (setting a flag by hand is useless: that same u2p pass overwrites
 /// every cell's flag first).
 fn runReduceStep(a: std.mem.Allocator, reduce_after_fixup: bool, poison: bool) ![]f64 {

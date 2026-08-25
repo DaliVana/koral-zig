@@ -1,33 +1,33 @@
 //! M13 C-comparison keystones for the full PUFFY pipeline.
 //!
 //! (A) Scalar diagnostics (io/scalars.zig) on the PUFFY t=0 state. Zig loads
-//!     C's exact post-init primitives (the committed puffy_t0_p.kini.gz — the
+//!     C's exact post-init primitives (the committed puffy_t0_p.kini.gz; the
 //!     M11 keystone snapshot) into its field, then computes totalMass, mdot
 //!     through the horizon, radiative + total luminosity at the outer shell,
 //!     and the density-weighted scale height, comparing to C's own
 //!     calc_scalars on the identical state (scalars/puffy_scalars.kgld). Both
 //!     sides read the same bit-for-bit primitives, so the only slack is Zig's
-//!     recomputed MKS2 √−g (the two-π spread, ~1e-8) and libm — hence a ~1e-6
+//!     recomputed MKS2 √−g (the two-π spread, ~1e-8) and libm. Hence a ~1e-6
 //!     gate, not machine. This is the deterministic physics-plausibility gate:
 //!     the H/R the run reports is C's H/R.
 //!
-//! (B) Full-pipeline forced-dt step test. The whole M0–M12 stack — PPM+LAXF,
+//! (B) Full-pipeline forced-dt step test. The whole M0-M12 stack; PPM+LAXF,
 //!     flux-CT, the implicit radiation solver, radiative viscosity, the
-//!     dynamo, polar-axis correction, the PUFFY outflow/reflective BCs —
+//!     dynamo, polar-axis correction, the PUFFY outflow/reflective BCs;
 //!     driven for a few RK2IMEX steps against C on a reduced 64×60 MKS2 grid
 //!     (the coordinate extents stay PUFFY's; a smaller grid keeps the golden
 //!     committable and still exercises torus + atmosphere + both axes + both
 //!     radial BCs). Zig loads C's post-init state bit-for-bit and forces C's
 //!     dt sequence, so the init quadrature discrepancy is out of the picture
 //!     and this isolates the STEP arithmetic. What it certifies: the flag maps
-//!     (entropy / hd-fixup / rad-fixup / radimp-fixup) agree cell-for-cell —
-//!     identical solver branches, limiters and fixups — and the bulk of the
+//!     (entropy / hd-fixup / rad-fixup / radimp-fixup) agree cell-for-cell;
+//!     identical solver branches, limiters and fixups, and the bulk of the
 //!     grid tracks C to <1e-3 field-scale. Only a small fraction of cells drift
 //!     more: the plunging region (r<2, inside the horizon) and the polar-axis
 //!     rim, where the FX/FY radiation velocities are tiny and the implicit
 //!     solve is worst-conditioned (the M9 τ≫1 floor). That residual spread is
 //!     the chaotic amplification of FP-level seeds in the stiff radiation-
-//!     dominated torus — bounded and plateauing, not a formula error (which
+//!     dominated torus; bounded and plateauing, not a formula error (which
 //!     would grow monotonically at fixed cells and break the flag maps). It is
 //!     exactly the divergence that makes end-to-end tests untenable, which is
 //!     why this stops at a few steps and gates on structure + bulk tracking.

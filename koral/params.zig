@@ -1,10 +1,10 @@
-//! Runtime parameters — the numbers a physicist tweaks between runs
+//! Runtime parameters; the numbers a physicist tweaks between runs
 //! (C: the numeric `#define`s of PROBLEMS/*/define.h that do not change
 //! generated code: MASS, BHSPIN, GAMMA, resolution, floors, cadences).
 //!
 //! Loaded from a flat TOML-subset file: `key = value` lines, `#` comments,
 //! `[section]` headers ignored (sections are cosmetic grouping). Keys match
-//! field names. Unknown keys are an error — catches typos, the config file
+//! field names. Unknown keys are an error; catches typos, the config file
 //! is the run record.
 
 const std = @import("std");
@@ -75,24 +75,24 @@ pub const Params = struct {
     // implicit rad–gas solver (C: RADIMP*)
     radimpeps: ?f64 = null,
     radimpmaxiter: ?usize = null,
-    /// C: OPDAMPINIMPLICIT / OPDAMPMAXLEVELS — opacity-damping ladder. If a whole
+    /// C: OPDAMPINIMPLICIT / OPDAMPMAXLEVELS. Opacity-damping ladder. If a whole
     /// implicit solve (all rungs) fails, retry with the radiation four-force
     /// scaled by opdamp_factor⁻ˡᵉᵛᵉˡ (level = 1..opdamp_maxlevels). null/0 = off
     /// (single pass, the validated behavior). koral_lite_puffy: 3.
     opdamp_maxlevels: ?usize = null,
-    /// C: OPDAMPFACTOR — per-level opacity/four-force damping divisor.
+    /// C: OPDAMPFACTOR. Per-level opacity/four-force damping divisor.
     /// koral_lite_puffy: 10. Only used when opdamp_maxlevels > 0.
     opdamp_factor: ?f64 = null,
-    /// C: DORADIMPFIXUPS — neighbour-average failed-implicit cells (both MHD and
+    /// C: DORADIMPFIXUPS. Neighbour-average failed-implicit cells (both MHD and
     /// radiation prims, never ρ/B). The pass exists; this toggles it on.
     /// null = keep the built-in (off). koral_lite_puffy: on.
     doradimpfixups: ?bool = null,
 
     // reconstruction / wavespeed near-boundary tweaks (C: define.h)
-    /// C: REDUCEORDERATBH — drop the reconstruction order by one inside the BH
+    /// C: REDUCEORDERATBH. Drop the reconstruction order by one inside the BH
     /// horizon (PPM→linear there). null = keep the built-in (off).
     reduceorderatbh: ?bool = null,
-    /// C: DAMPRADWAVESPEEDNEARAXIS + …NCELLS — within this many cells of each
+    /// C: DAMPRADWAVESPEEDNEARAXIS + …NCELLS. Within this many cells of each
     /// pole, force the radiative wavespeed back to the undamped value 1/3
     /// (raises numerical diffusion near the axis for stability). null/0 = off.
     /// koral_lite_puffy: 2.
@@ -101,15 +101,15 @@ pub const Params = struct {
     // opacity channels (C: BREMSSTRAHLUNG / KLEINNISHINA on/off)
     bremsstrahlung: ?bool = null,
     kleinnishina: ?bool = null,
-    /// C: USE_SYNCHROTRON_BRIDGE_FUNCTIONS — replace the Ramesh Terelfactor
+    /// C: USE_SYNCHROTRON_BRIDGE_FUNCTIONS. Replace the Ramesh Terelfactor
     /// non-relativistic suppression with the Ramesh NR bridge (a Trad clamp, an
     /// NR component added to the synchrotron absorption opacity, and a crossover
     /// factor on the number opacity). null = keep the built-in (off).
     synchrotron_bridge: ?bool = null,
     /// Electron scattering opacity on/off. koral_lite_puffy (PROBLEM 147) leaves
-    /// PR_KAPPAES undefined, so `calc_kappaes` returns 0 — scattering AND the
+    /// PR_KAPPAES undefined, so `calc_kappaes` returns 0; scattering AND the
     /// Comptonization four-force term (∝ κ_es) both vanish. Set `false` to match
-    /// that (kappaes → .none). null = keep the built-in PUFFY Klein–Nishina hook.
+    /// that (kappaes → .none). null = keep the built-in PUFFY Klein-Nishina hook.
     scattering: ?bool = null,
     /// Path to a MESA Rosseland opacity table (`a09_z<Z>_x<X>.data`). Non-empty
     /// enables C's MESA_KAPPA: the free-free *Rosseland* opacity is replaced by
@@ -126,7 +126,7 @@ pub const Params = struct {
     zamo_floor_frame: ?bool = null,
     /// koral_lite_puffy ISENTROPIC_B2RHOFLOORS on the DRIFT path: the b²/ρ
     /// floor scales u by the same factor as ρ (injected mass carries the
-    /// pre-floor u/ρ). null = keep the built-in (off — u scales by the
+    /// pre-floor u/ρ). null = keep the built-in (off; u scales by the
     /// separate b²/u factor, the validated baseline).
     isentropic_b2rhofloors: ?bool = null,
     /// The b² > b2uuratiomax·u internal-energy floor (drift frame). false =
@@ -135,7 +135,7 @@ pub const Params = struct {
     b2uufloor: ?bool = null,
     /// koral_lite_puffy (u2p.c, 2026-08-11): inside the BH horizon the b²/ρ
     /// floor skips the drift-frame velocity algebra and floors in the fluid
-    /// frame (velocity untouched) — the drift algebra is cancellation-prone
+    /// frame (velocity untouched); the drift algebra is cancellation-prone
     /// exactly there. null = keep the built-in (off).
     fluid_floor_inside_horizon: ?bool = null,
     /// koral_lite_puffy REDUCEORDERAFTERFIXUP: cells that needed a u2p /
@@ -144,22 +144,22 @@ pub const Params = struct {
     reduceorderafterfixup: ?bool = null,
     /// koral_lite_puffy copy_state_opac: freeze opacities at the pre-solve
     /// state across the whole implicit Newton solve (kappa's T-dependence
-    /// stays out of the iteration/Jacobian — needed for non-monotonic
+    /// stays out of the iteration/Jacobian; needed for non-monotonic
     /// tabulated opacities, e.g. mesa_table's iron bump). null = keep the
-    /// built-in (off — per-iteration recompute, the validated behavior).
+    /// built-in (off; per-iteration recompute, the validated behavior).
     radimp_lag_opac: ?bool = null,
-    /// C: SCALE_JACOBIAN — row/column-scale the implicit Jacobian by the
+    /// C: SCALE_JACOBIAN. Row/column-scale the implicit Jacobian by the
     /// iterated energy density. On in the validated build; koral_lite_puffy
     /// 2026-08-11 turns it OFF. null = keep the built-in.
     scale_jacobian: ?bool = null,
-    /// C: RADIMPLICITMAXENCHANGEDOWN — max factor the iterated energy may
+    /// C: RADIMPLICITMAXENCHANGEDOWN. Max factor the iterated energy may
     /// DROP per Newton trial step. koral_lite_puffy 2026-08-11: 50.
     radimp_max_en_change_down: ?f64 = null,
-    /// C: RADIMPLICITMAXENCHANGEUP — max factor the iterated energy may RISE
+    /// C: RADIMPLICITMAXENCHANGEUP. Max factor the iterated energy may RISE
     /// per Newton trial step. (koral_lite_puffy's define.h writes 50 to a
     /// TYPO'd macro name, so its effective value stays the default 10.)
     radimp_max_en_change_up: ?f64 = null,
-    /// C: MAXRADIMPDAMPING — smallest Newton damping factor before a rung
+    /// C: MAXRADIMPDAMPING. Smallest Newton damping factor before a rung
     /// gives up. Validated build 1e-3; koral_lite_puffy 2026-08-11 reverts
     /// to the choices.h default 1e-5.
     radimp_max_damping: ?f64 = null,
@@ -189,7 +189,7 @@ pub const Params = struct {
     /// u → u·(1 + perturb·ξ), ξ ∈ [−1,1) hashed from the cell-center
     /// coordinates, so the noise is bit-identical at any thread count or MPI
     /// decomposition. Applied BEFORE the gas/radiation pressure split (the
-    /// split stays LTE-consistent). Seeds nonaxisymmetric MRI onset in 3D —
+    /// split stays LTE-consistent). Seeds nonaxisymmetric MRI onset in 3D ;
     /// a perfectly axisymmetric start grows 3D structure only from float
     /// roundoff, wasting orbits of burn-in. Omitted/0 = off: the validated,
     /// golden-pinned init is bit-identical.
@@ -203,13 +203,13 @@ pub const Params = struct {
     deterministic: bool = false,
     nthreads: usize = 1,
     /// Bind each team thread to one cpu of the process affinity mask (the
-    /// cgroup cpuset under Slurm — MPI plan P4b node-width hardening).
+    /// cgroup cpuset under Slurm; MPI plan P4b node-width hardening).
     /// Linux only, inert elsewhere; no effect on any FP result. Cluster
     /// presets turn this on; default off so laptop runs schedule freely.
     pin_threads: bool = false,
     /// MPI φ-ring size (MPI plan §5: 1 rank per node, φ-only decomposition;
     /// nx/ny/nz above are GLOBAL dims). 0 = auto (take the launched world
-    /// size); a nonzero value must match it — the double entry makes the
+    /// size); a nonzero value must match it; the double entry makes the
     /// params file a complete run record. Serial builds require ntz ∈ {0, 1}.
     /// 3D only: decompose() rejects ntz > 1 when nz == 1.
     ntz: usize = 0,
@@ -222,7 +222,7 @@ pub const Params = struct {
 
     /// Free the allocator-owned string fields. Every []const u8 field is
     /// heap-owned (parse dupes the defaults too), so this frees them all
-    /// unconditionally — no literal-vs-heap guessing at the call site.
+    /// unconditionally: no literal-vs-heap guessing at the call site.
     pub fn deinit(self: *Params, allocator: std.mem.Allocator) void {
         inline for (std.meta.fields(Params)) |f| {
             if (f.type == []const u8) allocator.free(@field(self, f.name));

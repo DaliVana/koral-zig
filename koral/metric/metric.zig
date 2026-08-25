@@ -1,5 +1,5 @@
 //! Metric assembly: from the Dual3 covariant metric of `forms.zig`, produce
-//! everything the solver caches per point — g_μν, g^μν, √−g, d(ln√−g)/dx^i,
+//! everything the solver caches per point; g_μν, g^μν, √−g, d(ln√−g)/dx^i,
 //! Christoffels Γ^λ_μν, and the g_tt perturbation (C: calc_g/calc_G/
 //! calc_gdet/calc_dlgdet/calc_Krzysie/calc_gttpert in metric.c).
 //!
@@ -15,13 +15,13 @@ const config = @import("../config.zig");
 pub const Coords = config.Coords;
 pub const MetricParams = forms.MetricParams;
 
-/// C: r_horizon_BL (metric.c:245) — the outer Kerr event horizon in
-/// Boyer–Lindquist radius, 1 + √(1−a²) (→ 2 for a = 0).
+/// C: r_horizon_BL (metric.c:245). The outer Kerr event horizon in
+/// Boyer-Lindquist radius, 1 + √(1−a²) (→ 2 for a = 0).
 pub fn rHorizonBL(a: f64) f64 {
     return 1.0 + @sqrt(1.0 - a * a);
 }
 
-/// C: r_ISCO_BL (metric.c:252) — the prograde ISCO in Boyer–Lindquist
+/// C: r_ISCO_BL (metric.c:252). The prograde ISCO in Boyer-Lindquist
 /// radius, in the literal pow(·,1/3) shape (→ 6 for a = 0).
 pub fn rIscoBL(ac: f64) f64 {
     const c3 = 1.0 / 3.0;
@@ -101,7 +101,7 @@ pub fn compute(coords: Coords, mp: MetricParams, x: [4]f64) CoordData {
 /// inversion and the Christoffel assembly that compute() also performs. The FP
 /// operations are exactly compute()'s gdet path (`@sqrt(-det4(gcovDual).v)`),
 /// so the result is bitwise-identical to `compute(...).gdet`. Used where only
-/// gdet is needed — the face samples in applyKrisCorrection, which discarded
+/// gdet is needed; the face samples in applyKrisCorrection, which discarded
 /// everything else compute() built (P2 #9).
 pub fn gdetAt(coords: Coords, mp: MetricParams, x: [4]f64) f64 {
     const g = gcovDual(coords, mp, x);

@@ -1,18 +1,18 @@
 //! Minimal FITS image writer for the EHT-comparison pipeline.
 //!
 //! One primary HDU: BITPIX = -64 (big-endian f64), NAXIS = 2, with the
-//! AIPS-style radio keywords the eht-imaging loader reads — CDELT1/2 in
+//! AIPS-style radio keywords the eht-imaging loader reads; CDELT1/2 in
 //! degrees (CDELT1 negative: RA grows east = LEFT), OBSRA/OBSDEC + CRVAL1/2
 //! (both spellings, different loaders read different ones), FREQ [Hz],
 //! MJD, OBJECT, BUNIT = 'JY/PIXEL'. Pixel values are flux density per
-//! pixel [Jy] — I_ν · Ω_pix · 10²³ — the unit ehtim images carry, so
+//! pixel [Jy]; I_ν · Ω_pix · 10²³; the unit ehtim images carry, so
 //! `eh.image.load_fits(...)` → `im.observe(...)` works directly.
 //!
 //! The renderer's image buffer is row-major with row 0 at the TOP and +x
 //! toward +α (the camera's azimuthal impact direction); FITS stores row 0
 //! at the BOTTOM with RA increasing left. The writer flips rows and keeps
 //! +x → −RA, so the projected spin axis points to +DEC (up) and +α maps to
-//! east. The absolute sky position angle of a simulation is arbitrary —
+//! east. The absolute sky position angle of a simulation is arbitrary;
 //! rotate in post (ehtim `im.rotate`) when comparing to a source with a
 //! known jet/spin PA.
 //!

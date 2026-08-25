@@ -15,7 +15,7 @@
 //!  * Every constant is computed with the C global's exact expression shape
 //!    (initialize_constants uses left-to-right chains like
 //!    `1./GGG*CCC*CCC/MASSCM/MASSCM`, while the ko.h *macros* parenthesize
-//!    differently — both shapes exist in the same C build and they differ
+//!    differently: both shapes exist in the same C build and they differ
 //!    by ulps; opacities use the globals, the PR_KAPPAES hook the macros).
 //!  * Single-temperature gas (no EVOLVEELECTRONS): Te = Ti = Tgas, floored
 //!    at TEMPEMINIMAL = TEMPIMINIMAL = 1e2 (Tgas itself is NOT floored).
@@ -34,7 +34,7 @@ pub const tempiminimal: f64 = 1.0e2;
 
 /// Mass fractions and mean weights (C: choices.h:14-51). Defaults are
 /// choices.h's (HFRAC=1, pure hydrogen). Problems may #define MU_GAS /
-/// MU_I / MU_E directly, bypassing the composition formulas — PUFFY does
+/// MU_I / MU_E directly, bypassing the composition formulas; PUFFY does
 /// (define.h:2-4: 1, 2, 2) while keeping HFRAC=1 for the opacity formulas.
 pub const Composition = struct {
     hfrac: f64 = 1.0,
@@ -143,7 +143,7 @@ pub const Consts = struct {
         };
     }
 
-    /// C: calc_LTE_EfromT (rad.c:3140) — E = 4σT⁴ in GU.
+    /// C: calc_LTE_EfromT (rad.c:3140); E = 4σT⁴ in GU.
     pub fn lteEfromT(c: *const Consts, t: f64) f64 {
         return c.four_sigmarad * t * t * t * t;
     }
@@ -157,7 +157,7 @@ pub const Consts = struct {
     }
 };
 
-/// C: calc_PEQ_Tfromurho (physics.c) — Tgas from u and ρ.
+/// C: calc_PEQ_Tfromurho (physics.c); Tgas from u and ρ.
 pub fn tFromUrho(c: *const Consts, uint: f64, rho: f64, gamma_adiab: f64) f64 {
     return tFromUrhoG(f64, c, uint, rho, gamma_adiab);
 }
@@ -168,7 +168,7 @@ pub fn tFromUrhoG(comptime T: type, c: *const Consts, uint: T, rho: T, gamma_adi
     return simd.splat(T, c.mugas_mp_over_kb) * p / rho;
 }
 
-/// C: calc_PEQ_ufromTrho (physics.c:1912) — u from T and ρ
+/// C: calc_PEQ_ufromTrho (physics.c:1912). U from T and ρ
 /// (no CONSISTENTGAMMA).
 pub fn uFromTrho(c: *const Consts, t: f64, rho: f64, gamma_adiab: f64) f64 {
     const p = c.kb_over_mugas_mp * rho * t;
@@ -187,7 +187,7 @@ pub fn tempsFromUrho(c: *const Consts, uint: f64, rho: f64, gamma_adiab: f64) Ga
 }
 
 /// tempsFromUrho over lane type T (the scalar `if`s become selects of
-/// both-sides-computed values — identical results per lane).
+/// both-sides-computed values; identical results per lane).
 pub fn tempsFromUrhoG(comptime T: type, c: *const Consts, uint: T, rho: T, gamma_adiab: f64) GasTempsOf(T) {
     const sp = simd.splat;
     const tgas = tFromUrhoG(T, c, uint, rho, gamma_adiab);

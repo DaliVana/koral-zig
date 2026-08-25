@@ -1,7 +1,7 @@
 //! C-oracle golden comparisons (M2/M3: relele, frames, p2u, u2p, floors).
 //!
 //! Every record carries C's *own* geometry (gg, GG, gdet, alpha, gttpert),
-//! so these tests compare pure state algebra — the MKS2 two-π metric spread
+//! so these tests compare pure state algebra; the MKS2 two-π metric spread
 //! never enters, and gates stay at 1e-13 for closed-form code and 1e-8 for
 //! the iterative inversion (both sides stop at U2PCONV = 1e-10).
 //!

@@ -1,10 +1,10 @@
 //! Image backend for the GRRT renderer: intensity-map post-processing
 //! (normalization, gamma stretch, Gaussian beam blur), the `afmhot`
-//! black–red–orange–yellow–white colormap (the EHT palette), and a
+//! black-red-orange-yellow-white colormap (the EHT palette), and a
 //! dependency-free PNG encoder.
 //!
 //! The PNG writer emits *stored* (uncompressed) deflate blocks inside a
-//! valid zlib stream — no compressor needed, byte-exact on every Zig
+//! valid zlib stream; no compressor needed, byte-exact on every Zig
 //! version, and a 512×512 RGB frame is still under 1 MB. Serialization is
 //! pure (returns a caller-owned byte buffer); the executable does the IO,
 //! matching io/dump.zig's convention.
@@ -32,7 +32,7 @@ fn quant(v: f64) u8 {
 // ---- intensity post-processing ---------------------------------------------
 
 /// White point for normalization: the `pct` percentile (e.g. 99.8) of the
-/// *positive* intensities — a lone hot pixel must not dim the whole disk.
+/// *positive* intensities; a lone hot pixel must not dim the whole disk.
 /// Returns 0 when the image is entirely dark.
 pub fn whitePoint(allocator: std.mem.Allocator, img: []const f64, pct: f64) !f64 {
     var pos: std.ArrayList(f64) = .empty;
@@ -62,7 +62,7 @@ pub fn stretch(img: []f64, wp: f64, gamma: f64) void {
 }
 
 /// Separable Gaussian blur of the intensity map (σ in pixels, radius 3σ),
-/// clamped at the edges. Models the instrument beam — the EHT's ~20 μas
+/// clamped at the edges. Models the instrument beam; the EHT's ~20 μas
 /// resolution is what gives the published images their soft look.
 /// No-op for sigma <= 0.
 pub fn gaussianBlur(allocator: std.mem.Allocator, img: []f64, w: usize, h: usize, sigma: f64) !void {

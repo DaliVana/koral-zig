@@ -1,5 +1,5 @@
 //! Runtime grid geometry: dimensions, ghost depth, spacing, cell-center /
-//! face coordinates in *internal* coordinates (uniform by construction —
+//! face coordinates in *internal* coordinates (uniform by construction;
 //! curvature lives entirely in the metric; C: set_grid, finite.c:1910).
 //!
 //! Dimension collapse follows C exactly (ko.h:249-327): a dimension of
@@ -8,7 +8,7 @@
 const std = @import("std");
 
 pub const Grid = struct {
-    /// Active cells per dimension (C: NX, NY, NZ — serial, so == TNX…).
+    /// Active cells per dimension (C: NX, NY, NZ; serial, so == TNX…).
     nx: usize,
     ny: usize,
     nz: usize,
@@ -32,7 +32,7 @@ pub const Grid = struct {
     /// Global z-index of this grid's first active z-cell (C: TOK). 0 for a
     /// serial/global grid. An MPI φ-slab grid keeps the GLOBAL extents and
     /// spacing and offsets only the *index* inside zl(), so every rank
-    /// computes bit-identical coordinates for the same physical cell — the
+    /// computes bit-identical coordinates for the same physical cell; the
     /// C approach (calc_xb works on i+TOI/TOJ/TOK). Storing a shifted minz
     /// instead would differ in ulps: minz + (tok+iz)·dz ≠ (minz + tok·dz) + iz·dz.
     /// x/y are never decomposed (φ-only MPI plan §5), so no ixoff/iyoff exist.
@@ -73,7 +73,7 @@ pub const Grid = struct {
 
     /// The local grid of one MPI φ-slab: `nz_local` z-cells starting at
     /// global z-index `tok`. Extents and spacing are COPIED from the global
-    /// grid (never recomputed — MPI plan §5.2 trap 1); only nz, ngz and the
+    /// grid (never recomputed; MPI plan §5.2 trap 1); only nz, ngz and the
     /// z-index offset change. x/y stay whole by construction (φ-only plan).
     pub fn initLocal(global: Grid, tok: usize, nz_local: usize) Grid {
         std.debug.assert(tok + nz_local <= global.nz);
@@ -103,7 +103,7 @@ pub const Grid = struct {
 
     /// Flat storage index of signed cell (ix,iy,iz): ghosts map into
     /// [0,sx)×[0,sy)×[0,sz), iz slowest. The single source of the
-    /// signed→padded-storage mapping — Field.cellOffset (×NV),
+    /// signed→padded-storage mapping; Field.cellOffset (×NV),
     /// MetricCache.cellIndex, and the per-cell flag index all route through
     /// here so an AoSoA relayout has one place to change. `inline`: hit
     /// O(cells × passes)/step; no FP → golden-safe.
@@ -117,7 +117,7 @@ pub const Grid = struct {
 
     /// Cell-center internal coordinate. Signed index: ghosts are negative /
     /// ≥ n. Computed exactly as C does (set_grid, finite.c:1930):
-    /// x(i) = ½(xb(i) + xb(i+1)) — for irrational bounds this differs from
+    /// x(i) = ½(xb(i) + xb(i+1)); for irrational bounds this differs from
     /// min + (i+½)dx by an ulp, and everything downstream (metric cache,
     /// sweeps) must see C's bits.
     // xc/yc/zc/xl/yl/zl/cellSize are leaf coordinate helpers hit
@@ -145,7 +145,7 @@ pub const Grid = struct {
         return g.minz + @as(f64, @floatFromInt(iz + g.izoff)) * g.dz;
     }
 
-    /// Cell size as C computes it — get_size_x(i,dim) = xb(i+1) − xb(i)
+    /// Cell size as C computes it; get_size_x(i,dim) = xb(i+1) − xb(i)
     /// (finite.c:2457). For irrational bounds this can differ from the
     /// nominal spacing by an ulp *per cell*, and the C evolution uses this
     /// per-cell value everywhere, so step-level diffing requires it.

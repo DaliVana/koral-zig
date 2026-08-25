@@ -1,7 +1,7 @@
 //! Comptime ABI-family selection (MPI plan §3.2): `build.zig` probes the
 //! system MPI (or honors `-Dmpi-family`) and bakes the choice into
 //! `build_options.mpi_family`. The family types/constants never leak past
-//! `comm/mpi/` — the backend exposes only wrapper methods. `abi_std.zig`
+//! `comm/mpi/`; the backend exposes only wrapper methods. `abi_std.zig`
 //! (the MPI-5 standard ABI) joins as a third family once facility modules
 //! ship it (plan §11.1-5).
 
@@ -50,7 +50,7 @@ pub const thread_serialized: c_int = 2;
 pub const thread_multiple: c_int = 3;
 
 /// MPI_Offset is `long long` in both families (OMPI mpi.h:433 verified;
-/// MPICH via ROMIO's ADIO_Offset) — file offsets are plain i64.
+/// MPICH via ROMIO's ADIO_Offset); file offsets are plain i64.
 pub const Offset = i64;
 
 // MPI_MODE_* file-open amodes: both families inherit ROMIO's values

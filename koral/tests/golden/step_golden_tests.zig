@@ -6,7 +6,7 @@
 //! The Zig side loads C's post-init state bit-for-bit, forces C's recorded
 //! dt sequence, and diffs the domain each step against a growing Budget:
 //! explicit-only problems (1e-13 → 1e-10 over 10 steps), radiative problems
-//! (2e-10 → 8e-7 — the implicit Newton stops at RADIMPCONV = 1e-10
+//! (2e-10 → 8e-7; the implicit Newton stops at RADIMPCONV = 1e-10
 //! residuals, so razor-edge iteration differences legitimately move
 //! converged cells at the ~1e-10 level; measured plateaus ~2e-9). Zig's own
 //! CFL dt must match C's within the same budget (it reflects the previous
@@ -48,7 +48,7 @@ const cfg_mhd = config.Config{
 
 /// Per-step deviation budget: `base` at step 1, growing one decade per
 /// `steps_per_decade` steps. Explicit-only problems gate at (1e-13, 3);
-/// radiative problems at (1e-11, 2) — the implicit Newton stops at
+/// radiative problems at (1e-11, 2); the implicit Newton stops at
 /// RADIMPCONV = 1e-10 residuals, so a razor-edge extra iteration on either
 /// side legitimately moves converged cells at the ~1e-10 level (plan M10:
 /// 1e-11 → 1e-6 over 10 steps).
@@ -242,7 +242,7 @@ test "golden step: ot32 (SR Orszag-Tang 32², periodic, 10 forced-dt steps) vs C
 
 const SimRad = sim_mod.Sim(tubes.cfg_rad);
 
-/// ZIGRADTUBE/bc.c — Dirichlet: ghosts pinned to the tube-2 states.
+/// ZIGRADTUBE/bc.c: Dirichlet: ghosts pinned to the tube-2 states.
 fn radtubeBc(
     ctx: ?*const anyopaque,
     s: *const SimRad,

@@ -7,8 +7,8 @@
 //! What the numbers say (field-scale = max|C−z| / max|C| over the class):
 //!
 //!  * σ^ij (calc_rad_shearviscosity) depends only on the radiation-frame
-//!    velocities — which are analytic (ℓ(λ) + metric, LTE F̂=0) and match C
-//!    to ~1e-13 — plus the FD stencil and the Christoffels. It matches to
+//!    velocities: which are analytic (ℓ(λ) + metric, LTE F̂=0) and match C
+//!    to ~1e-13; plus the FD stencil and the Christoffels. It matches to
 //!    ~1e-8, the MKS2 near-axis metric spread (the M1 "two-π" floor) that the
 //!    Christoffel/velocity-lowering chain inherits. This isolates the *new*
 //!    M12 shear code from the quadrature story.
@@ -16,7 +16,7 @@
 //!    ρ,T,bsq, which carry C's ~1e-3 qags error (M11 keystone), so ν matches
 //!    at field-scale ~1e-3.
 //!  * R^i_j = indices_2221(−2 ν Ê σ^ij): ν and Ê both carry the qags ~1e-3,
-//!    so the assembled tensor matches at ~1e-3 — the same C-qags-limited
+//!    so the assembled tensor matches at ~1e-3; the same C-qags-limited
 //!    story as the M11 keystone, NOT a Zig error (a shear bug would show far
 //!    above this floor).
 

@@ -1,4 +1,4 @@
-//! M1 theory gates — analytic identities for the metric layer.
+//! M1 theory gates; analytic identities for the metric layer.
 //! No C comparison here (that's tests/golden); everything below is checked
 //! against mathematics: inverse identity, zero/symmetric Christoffels,
 //! metric compatibility, known determinants, transform round-trips,

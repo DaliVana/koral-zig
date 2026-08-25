@@ -1,7 +1,7 @@
-//! PUFFY — radiative MHD limotorus around a Schwarzschild BH (a = 0)
+//! PUFFY: radiative MHD limotorus around a Schwarzschild BH (a = 0)
 //! (port of koral_lite/PROBLEMS/PUFFY). MASS defaults to 10 M☉ but is set
 //! from the params file, so presets can retarget the scale (e.g. the
-//! Sagittarius A* preset at ~4.3e6 M☉ — see koral/problems/puffy/puffy3d_sgra.toml).
+//! Sagittarius A* preset at ~4.3e6 M☉. See koral/problems/puffy/puffy3d_sgra.toml).
 //!
 //! Thin driver: parse CLI → puffy.setup → Sim → RK2IMEX loop → I/O.
 //! Physics lives in `puffy.Physics`; checkpoints go through `koral.io.dump`.

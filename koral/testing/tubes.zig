@@ -1,5 +1,5 @@
 //! The Farris et al. (2008) radiative shock tube battery, in the form used
-//! by Sądowski et al. (2013, MNRAS 429, 3533) Table 3 — tests 1, 2, 3a, 3b,
+//! by Sądowski et al. (2013, MNRAS 429, 3533) Table 3; tests 1, 2, 3a, 3b,
 //! 4a, 4b (3b/4b are the higher-opacity variants of Roedig et al. 2012).
 //! Shared between the M10 theory battery and the C step tests.
 //!
@@ -9,7 +9,7 @@
 //! T = mugas_mp_over_kb·(p/ρ) and Ê_LTE = 4σ_gu·T⁴, with 4σ_gu ∝ MASSCM².
 //! So a_code(MASS) = four_sigmarad·mugas_mp_over_kb⁴ ∝ MASS², and choosing
 //!   MASS = √(a_paper / a_code(1 M☉))
-//! makes KORAL's LTE exactly the paper's — identically on the C side, which
+//! makes KORAL's LTE exactly the paper's; identically on the C side, which
 //! shares the same constant shapes (ZIGRADTUBE's define.h carries the MASS
 //! printed by the `tube MASS values` test below).
 
@@ -21,7 +21,7 @@ const thermo = @import("../physics/thermo.zig");
 const hydro = @import("../physics/hydro.zig");
 const radforce = @import("../physics/radforce.zig");
 
-/// Hydro + M1 radiation, no B — C: RADIATION without MAGNFIELD, NV = 10.
+/// Hydro + M1 radiation, no B; C: RADIATION without MAGNFIELD, NV = 10.
 pub const cfg_rad = config.Config{
     .modules = &.{ .hydro, .radiation },
     .reconstruction = .ppm,
@@ -100,7 +100,7 @@ pub const tubes = [_]Tube{
 };
 
 /// ZIGRADPULSE: an optically thick LTE temperature bump (gas and radiation
-/// consistent everywhere — a cold pulse on a non-LTE background collapses:
+/// consistent everywhere; a cold pulse on a non-LTE background collapses:
 /// wing cells go M1-inconsistent and pin the γ_rad ceiling) diffusing under
 /// grey absorption. Paper units: T = p/ρ, E = a·T⁴ with a via MASS.
 pub const pulse = struct {

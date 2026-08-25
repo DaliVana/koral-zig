@@ -4,13 +4,13 @@
 //! C golden in golden_dynamo_test.zig carries the formula-exactness):
 //!
 //!  * DAMPBETA (dampBphi): dB^φ opposes B^φ, is zero below β_sat, grows with
-//!    β above it, and is clamped against overshoot — so |B^φ| never grows and
+//!    β above it, and is clamped against overshoot, so |B^φ| never grows and
 //!    its sign never flips (saturation + monotonicity toward 0). Tested
 //!    directly on the pure formula (the t=0 torus starts at β=1/20 with the
-//!    b²/ρ floor capping β<β_sat, so it does not itself trigger damping —
+//!    b²/ρ floor capping β<β_sat, so it does not itself trigger damping;
 //!    physically correct: the dynamo saturates MRI-amplified fields *later*).
 //!  * ALPHAFLIPSSIGN: ΔA_φ ∝ effalpha·B^φ with effalpha = −(π/2−θ)·(…>0), so
-//!    sign(ΔA_φ) = sign(−(π/2−θ)·B^φ) — the α-effect flips across the equator.
+//!    sign(ΔA_φ) = sign(−(π/2−θ)·B^φ); the α-effect flips across the equator.
 //!  * The dynamo acts through a vector potential, so the added poloidal field
 //!    is div-free: divB stays at its (≈0) initial level.
 //!  * calcScaleHeight reproduces a density-weighted RMS on a known profile.
@@ -56,7 +56,7 @@ fn dynamoOptions(nthreads: usize) SimP.Options {
 }
 
 /// inject B³ = inject_factor·B² into the domain (u kept consistent) so the
-/// dynamo has a toroidal field to act on — shared by the sign-flip and
+/// dynamo has a toroidal field to act on; shared by the sign-flip and
 /// threading tests; deterministic, so both sims get identical states.
 fn injectB3(s: *SimP) !void {
     const b2 = LP.index(.b2);

@@ -1,11 +1,11 @@
-//! M5 theory gates — hydro evolution (op_explicit + RK2IMEX).
+//! M5 theory gates; hydro evolution (op_explicit + RK2IMEX).
 //!
 //! Gates (plan M5):
 //!  * uniform MINK state (at rest and boosted) static over 100 steps @1e-14
 //!  * total conserveds exactly conserved with periodic BCs @1e-13
 //!  * symmetric tube stays mirror-symmetric (bitwise for linear recon,
 //!    1e-12 for PPM whose L/R formulas are only ulp-mirror-symmetric)
-//!  * Sod vs the exact SR Riemann solution (test-local Martí–Müller solver):
+//!  * Sod vs the exact SR Riemann solution (test-local Martí-Müller solver):
 //!    L1 few %, converging with N, shock position within 2 cells
 //!  * small-amplitude acoustic wave: combined space-time order ≥ 1.9
 //!  * Bondi/Michel stationarity in KS coordinates: L1 drift ~ 2nd order in N
@@ -264,7 +264,7 @@ fn invG(cs: f64) f64 {
 }
 
 /// Post-state velocity behind a left rarefaction connecting L (p_L, at rest
-/// or moving) down to pressure p — along the isentrope of L.
+/// or moving) down to pressure p; along the isentrope of L.
 fn rarefactionV(left: RiemannState, p: f64) f64 {
     const k = left.p / std.math.pow(f64, left.rho, gam);
     const rho = std.math.pow(f64, p / k, 1.0 / gam);
@@ -583,7 +583,7 @@ const Michel = struct {
     /// u(r): supersonic branch inside rc, subsonic outside. The Bernoulli
     /// residual f(u) at fixed r dips negative between its two roots; scan
     /// log-spaced u for sign changes and pick the branch (note u = |u^r|
-    /// exceeds 1 near the horizon — it is not a three-velocity).
+    /// exceeds 1 near the horizon; it is not a three-velocity).
     fn solve(self: *const Michel, r: f64, rc: f64) struct { rho: f64, u: f64 } {
         const nscan = 4000;
         var brackets: [8][2]f64 = undefined;

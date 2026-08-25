@@ -7,7 +7,7 @@
 //! `BcKind`/`BcFace` so problems and tests keep referencing `sim.BcFace`.
 //!
 //! P1: the three ghost-face fills run band-parallel (x faces over iy rows,
-//! y/z faces over ix columns) — each ghost cell is written exactly once and
+//! y/z faces over ix columns); each ghost cell is written exactly once and
 //! reads only domain cells (or the user BC), so banding is bit-identical to
 //! serial. The corner fill stays serial: it is ~4·(2·NG−1) cells and reads
 //! the just-filled face surfaces (a natural barrier).
@@ -23,16 +23,16 @@ pub const BcKind = enum { periodic, copy, specific };
 /// Which boundary a ghost cell belongs to (C: XBCLO..ZBCHI).
 pub const BcFace = enum { xlo, xhi, ylo, yhi, zlo, zhi };
 
-/// C: set_bc (finite.c:2805) — ghost cells (no corners), then for MHD
+/// C: set_bc (finite.c:2805). Ghost cells (no corners), then for MHD
 /// ("MPI4CORNERS") builds the 2D corner surfaces + diagonals
 /// (finite.c:3203-3403; serial, so mpi_isitBC ≡ 1).
 ///
-/// MPI (plan §5.2, φ-only decomposition — x/y faces are ALWAYS physical):
+/// MPI (plan §5.2, φ-only decomposition; x/y faces are ALWAYS physical):
 /// when ntz>1 the z faces are interior. Mirroring C's gating exactly:
 ///  * z-ghost faces: p2u only, from the exchanged primitives
 ///    (finite.c:2862-2870, the `mpi_isitBC(BCtype)==0` branch);
 ///  * corner fill: x-y edge tubes still run over the FULL z-span
-///    (finite.c:3865+ — both their faces are physical), x-z/y-z tubes and
+///    (finite.c:3865+; both their faces are physical), x-z/y-z tubes and
 ///    the 8 corner cubes are skipped (forcorners(ZBC*)==0, perz==1);
 ///  * then C's "corners in the middle" pass (finite.c:4463+/4569+): the
 ///    x-BC and y-BC are applied INTO the z-ghost slices, overwriting the
@@ -157,7 +157,7 @@ fn zFacesBand(comptime SimT: type, c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!vo
 /// MPI z-interior variant of the z-face pass (C finite.c:2862-2870, the
 /// `mpi_isitBC(BCtype)==0` branch): the exchange already deposited fresh
 /// primitives in the z-ghost planes; recompute only the conserveds there.
-/// Same cell set as zFacesBand (domain ix/iy — corners are treated later).
+/// Same cell set as zFacesBand (domain ix/iy; corners are treated later).
 fn zGhostP2uFn(comptime SimT: type) fn (*BcCtx(SimT), i64, i64) Error!void {
     return struct {
         fn w(c: *BcCtx(SimT), ix0: i64, ix1: i64) Error!void {
@@ -280,7 +280,7 @@ fn avgCellP(comptime SimT: type, sim: *SimT, dix: i64, diy: i64, ax: i64, ay: i6
     sim.p.store(dix, diy, 0, &pp);
 }
 
-/// finite.c:3203-3403 — 2D (TNZ==1) total-corner filling: NG−1 deep
+/// finite.c:3203-3403; 2D (TNZ==1) total-corner filling: NG−1 deep
 /// one-cell surfaces copied from the adjacent domain row/column, then
 /// two diagonal cells averaged (periodic runs wrap the diagonals).
 fn fillCorners2d(comptime SimT: type, sim: *SimT) Error!void {
@@ -506,10 +506,10 @@ fn fillCornerCube(comptime SimT: type, sim: *SimT, x_hi: bool, y_hi: bool, z_hi:
     }
 }
 
-/// finite.c:3673-4228 — full-3D (TNY>1 && TNZ>1) total-corner filling.
+/// finite.c:3673-4228; full-3D (TNY>1 && TNZ>1) total-corner filling.
 /// `z_physical` mirrors C's mpi_isitBC_forcorners(ZBC*) gating: with z
-/// interior (ntz>1, periodic ring) only the x-y tubes run — still over the
-/// FULL z ghost span, on the exchange-delivered z-ghost planes — while the
+/// interior (ntz>1, periodic ring) only the x-y tubes run; still over the
+/// FULL z ghost span, on the exchange-delivered z-ghost planes; while the
 /// x-z/y-z tubes and all 8 cubes are skipped (their z face is exchanged,
 /// finite.c:3956+/4046+/4134+ gates are false).
 fn fillCorners3d(comptime SimT: type, sim: *SimT, z_physical: bool) Error!void {
@@ -543,19 +543,19 @@ fn fillCorners3d(comptime SimT: type, sim: *SimT, z_physical: bool) Error!void {
 /// C's 3D "corners in the middle" pass for a physical x/y face meeting the
 /// exchanged z faces (finite.c:4463-4556 / 4569-4662): the x-BC is applied
 /// at every (x-ghost, domain-y, z-ghost) cell and the y-BC at every
-/// (domain-x, y-ghost, z-ghost) cell — overwriting the neighbor's stale
+/// (domain-x, y-ghost, z-ghost) cell; overwriting the neighbor's stale
 /// transverse ghost columns delivered by the exchange with a fresh local
 /// fill. C's block order (all four XBC±/ZBC± first, then YBC±/ZBC±) is
-/// kept; setBcCell routes to the same specific/copy/periodic logic as
+/// kept: setBcCell routes to the same specific/copy/periodic logic as
 /// set_bc_core with the face's BCtype.
 /// Band-parallel like every other face pass: the x-blocks band over iy and
 /// the y-blocks over ix, so each band writes only ghost cells carrying its
-/// own index and reads only domain cells (which this pass never writes) —
+/// own index and reads only domain cells (which this pass never writes);
 /// bit-identical to serial at any thread count.
 ///
 /// Threading this is not a micro-optimization. Its cost is
 /// O((nx+ny)·ng²) per call × ~13 calls/step and, unlike every other pass,
-/// does NOT shrink as φ-slabs get thinner — so left serial it becomes the
+/// does NOT shrink as φ-slabs get thinner, so left serial it becomes the
 /// dominant Amdahl term of an MPI run (measured: 74 ms of a 317 ms step at
 /// 3 ranks, i.e. 23%, on a 64×60×24 wedge).
 fn fillMiddleCornersZ(comptime SimT: type, sim: *SimT, t: f64, ifinit: bool) Error!void {

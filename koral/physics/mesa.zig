@@ -1,24 +1,24 @@
-//! MESA Rosseland opacity tables (C: MESA_KAPPA — opacities.c read_MESA_table
+//! MESA Rosseland opacity tables (C: MESA_KAPPA; opacities.c read_MESA_table
 //! :978, return_MESA_kappa :1026, mybilinear macro ko.h:659).
 //!
 //! A `a09_z<Z>_x<X>.data` table gives log₁₀(κ_Rosseland [cm²/g]) on a
 //! (logT, logR) grid, where logR = logρ − 3·logT + 18. The logT axis is
 //! non-uniform (binary search); the logR axis is uniform (direct index). The
 //! lookup is plain bilinear in log-log space, returning 10^(interpolated
-//! log₁₀κ) in cm²/g — transcribed literally from C so the AGN run matches
+//! log₁₀κ) in cm²/g; transcribed literally from C so the AGN run matches
 //! koral_lite_puffy.
 //!
 //! Physics: at AGN temperatures the analytic free-free opacity misses
 //! bound-free, bound-bound, H⁻ and line contributions, so the Rosseland
-//! mean — the harmonic, dB/dT-weighted frequency average appropriate for
-//! optically-thick diffusive transport — comes from stellar-evolution
+//! mean: the harmonic, dB/dT-weighted frequency average appropriate for
+//! optically-thick diffusive transport; comes from stellar-evolution
 //! tables instead. R ≡ ρ/T₆³ is the standard opacity-table coordinate
 //! because κ varies smoothly along it. Clamping to the grid edge (no
 //! extrapolation) bounds every lookup by the table's κ range.
 //!
 //! In C the file is picked automatically from (Z = MFRAC, X = HFRAC) by an
 //! exact-match table (get_MESA_opacity_filename, opacities.c:1070). koral-zig
-//! takes the path explicitly (params `mesa_table`) — the caller is responsible
+//! takes the path explicitly (params `mesa_table`); the caller is responsible
 //! for choosing the file that matches the run's composition. MESA enters ONLY
 //! the Rosseland opacity channels (see physics/opacities.zig); the free-free
 //! Planck absorption is unchanged.
@@ -27,7 +27,7 @@ const std = @import("std");
 const simd = @import("../math/simd.zig");
 
 pub const MesaTable = struct {
-    /// number of logT rows / logR columns (C: NLOGT / NLOGRHO — the latter is
+    /// number of logT rows / logR columns (C: NLOGT / NLOGRHO; the latter is
     /// misnamed in C; it is the logR axis).
     nlogt: usize,
     nlogr: usize,
@@ -52,7 +52,7 @@ pub const MesaTable = struct {
     /// skips the rest of that line plus a blank and the "logT … logR =" label
     /// line, then reads NlogR column headers (the logR grid) and NlogT rows of
     /// (logT, NlogR κ values). fscanf skips all whitespace, so blank separator
-    /// lines are harmless — we mirror that by tokenising every float after the
+    /// lines are harmless; we mirror that by tokenising every float after the
     /// fixed five-line header.
     pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !MesaTable {
         const text = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(4 << 20));
@@ -129,9 +129,9 @@ pub const MesaTable = struct {
         };
     }
 
-    /// C: return_MESA_kappa (opacities.c:1026) — Rosseland κ in cm²/g for
+    /// C: return_MESA_kappa (opacities.c:1026); Rosseland κ in cm²/g for
     /// log₁₀T and log₁₀ρ (cgs). logR = logρ − 3·logT + 18; clamp both to the
-    /// grid; bracket logT by binary search (non-uniform) and logR by division
+    /// grid: bracket logT by binary search (non-uniform) and logR by division
     /// (uniform); bilinear in log-log (mybilinear); return 10^result.
     pub fn lookup(self: *const MesaTable, logt_in: f64, logrho: f64) f64 {
         var lt = logt_in;
@@ -195,7 +195,7 @@ pub const MesaTable = struct {
 
     /// Per-lane MESA lookup over lane type T (f64 or @Vector(n, f64)), linear
     /// inputs. The table bracket/interpolation is inherently scalar, so vector
-    /// lanes are resolved one at a time and reassembled — the opacity chain is
+    /// lanes are resolved one at a time and reassembled; the opacity chain is
     /// comptime-T-generic (implicit-solver Jacobian batch), and every lane
     /// matches the scalar path.
     pub fn lookupG(self: *const MesaTable, comptime T: type, temp_k: T, rhocgs: T) T {

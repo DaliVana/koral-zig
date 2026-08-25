@@ -1,4 +1,4 @@
-//! kdmp2png — GRRT-render a PUFFY KDMP snapshot into a PNG image: null
+//! kdmp2png: GRRT-render a PUFFY KDMP snapshot into a PNG image: null
 //! geodesics through the run's own Kerr/MKS2 metric + frequency-integrated
 //! radiative transfer using the run's own opacities and M1 radiation field
 //! (see koral/render/render.zig for the method).
@@ -12,7 +12,7 @@
 //!
 //!   --slow DIR     SLOW-LIGHT mode: sample the KDMP series in DIR at each
 //!                  photon's own retarded coordinate time x⁰ (the geodesic
-//!                  integrator carries it exactly — gravitational time
+//!                  integrator carries it exactly; gravitational time
 //!                  delay, Shapiro delay and photon-ring lags included),
 //!                  interpolating linearly between bracketing frames. The
 //!                  sweep streams the series once, newest→oldest, keeping
@@ -25,14 +25,14 @@
 //!                  latest T whose near side needs no extrapolation)
 //!   --stride N     use every Nth series frame, counted from the newest
 //!                  (default 1; the sgra_spin cadence of 0.3-0.8 M is much
-//!                  finer than the flow evolves — 4-8 is plenty)
+//!                  finer than the flow evolves; 4-8 is plenty)
 //!   --rslow R      treat the flow as static outside this radius [M]
 //!                  (default 40; the sampled time range inside spans about
 //!                  [T − R − windings, T + R])
 //!   --adapt D      adaptive photon-ring refinement: a vacuum pre-pass
 //!                  (geodesics only, no transfer) finds pixels straddling
-//!                  the critical curve — capture flips or corner flight
-//!                  times differing by > --adapt-dt — and subdivides them
+//!                  the critical curve; capture flips or corner flight
+//!                  times differing by > --adapt-dt, and subdivides them
 //!                  as a quadtree to depth D (default 0 = off; 6-10 gives
 //!                  sub-pixel photon-ring sampling; works in both modes)
 //!   --adapt-dt M   corner flight-time disagreement that triggers
@@ -40,13 +40,13 @@
 //!
 //!   --fits PATH    also write the UNPROCESSED image (no blur/stretch) as
 //!                  a FITS file in Jy/pixel with ehtim-compatible headers
-//!                  (render/fits.zig) — the entry point to the EHT
+//!                  (render/fits.zig); the entry point to the EHT
 //!                  synthetic-observation pipeline (eht-imaging, SYMBA).
 //!                  Requires --nu and --dist (physical units).
 //!   --ra DEG       source RA for the FITS header  (default Sgr A*)
 //!   --dec DEG      source Dec for the FITS header (default Sgr A*)
 //!   --mjd D        observation MJD for the FITS header (default 57850,
-//!                  2017 Apr 7 — the EHT Sgr A* campaign)
+//!                  2017 Apr 7; the EHT Sgr A* campaign)
 //!
 //!   --size N       image width and height in pixels   (default 512)
 //!   --fov M        field of view at the hole, in GM/c² (default 100)
@@ -56,12 +56,12 @@
 //!   --nu GHZ       observed frequency: monochromatic synthetic image at
 //!                  ν_obs (thermal synchrotron + free-free + scattering,
 //!                  emission.zig) with I_ν reported in CGS and brightness
-//!                  temperature; 0 = gray bolometric      (default 0)
-//!   --dist KPC     source distance — with --nu, also print the integrated
+//!                  temperature: 0 = gray bolometric      (default 0)
+//!   --dist KPC     source distance; with --nu, also print the integrated
 //!                  flux density in Jy (0 = skip)         (default 0)
 //!   --screen       VALIDATION mode: ignore the fluid, render a bright
 //!                  celestial sphere (captured rays dark) and overlay the
-//!                  analytic Bardeen shadow curve in green — the dark
+//!                  analytic Bardeen shadow curve in green; the dark
 //!                  boundary must hug the curve (render/shadow.zig)
 //!   --ss N         antialiasing, N×N rays per pixel    (default 2; 1 = off)
 //!   --sigma-cut S  zero emission where b²/ρ > S        (default 1; 0 = off)

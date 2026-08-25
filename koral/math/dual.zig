@@ -9,7 +9,7 @@
 //! `Dual3` is the (x1,x2,x3) instantiation used by the metric: the metric is
 //! stationary (∂_t g = 0), so a scalar carries its value and three spatial
 //! partials. Evaluating the analytic metric in `Dual3` arithmetic yields
-//! ∂g/∂x^i exact to roundoff — the same mathematics as KORAL's
+//! ∂g/∂x^i exact to roundoff; the same mathematics as KORAL's
 //! Mathematica-exported closed forms (metric.c `*_ana`), without
 //! transcribing them. Christoffels, d(ln√−g)/dx^i, and Jacobian pushforwards
 //! all fall out of the chain rule.

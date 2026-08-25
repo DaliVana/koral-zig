@@ -6,7 +6,7 @@
 //! - coco BL↔KS shifts *t* only; the φ shift is omitted (C leaves it as a
 //!   TODO), while dxdx_BL2KS *does* carry the a/Δ φ-column. Tensors are
 //!   unaffected (axisymmetric stationary metric).
-//! - The t-shift is undefined (NaN) between the horizons where Δ < 0 —
+//! - The t-shift is undefined (NaN) between the horizons where Δ < 0;
 //!   same as C; spatial components are valid everywhere.
 
 const std = @import("std");
@@ -85,7 +85,7 @@ fn eye() [4][4]f64 {
     return m;
 }
 
-/// C: dxdx_BL2KS (metric.c:3435) — includes the a/Δ φ-column.
+/// C: dxdx_BL2KS (metric.c:3435). Includes the a/Δ φ-column.
 pub fn dxdxBlToKs(x: [4]f64, mp: MetricParams) [4][4]f64 {
     const r = x[1];
     const delta = r * r - 2.0 * r + mp.a * mp.a;
@@ -105,7 +105,7 @@ pub fn dxdxKsToBl(x: [4]f64, mp: MetricParams) [4][4]f64 {
     return m;
 }
 
-/// C: dxdx_MKS22KS (metric.c:3689) — metric flavor using the same exact π
+/// C: dxdx_MKS22KS (metric.c:3689). Metric flavor using the same exact π
 /// as the coco transform. Input x in MKS2.
 pub fn dxdxMks2ToKs(x: [4]f64, mp: MetricParams) [4][4]f64 {
     const Dual3 = @import("../math/dual.zig").Dual3;
@@ -115,7 +115,7 @@ pub fn dxdxMks2ToKs(x: [4]f64, mp: MetricParams) [4][4]f64 {
     return m;
 }
 
-/// C: dxdx_KS2MKS2 (metric.c:3638) — unified exact π in both the transform
+/// C: dxdx_KS2MKS2 (metric.c:3638). Unified exact π in both the transform
 /// and its Jacobian. Input x in KS.
 pub fn dxdxKsToMks2(x: [4]f64, mp: MetricParams) [4][4]f64 {
     const h0 = mp.mksh0;

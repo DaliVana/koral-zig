@@ -2,12 +2,12 @@
 //! (C: avg2point, finite.c:97).
 //!
 //! Schemes:
-//!   donor  — piecewise-constant (donor cell)
-//!   linear — piecewise-linear with the minmod-θ limiter (θ = 1 is MinMod,
+//!   donor: piecewise-constant (donor cell)
+//!   linear: piecewise-linear with the minmod-θ limiter (θ = 1 is MinMod,
 //!            θ = 2 is MC; PUFFY runs θ = 1.5). The MC/Superbee variants of
 //!            C's FLUXLIMITER are not used by any current problem and are
 //!            not implemented.
-//!   ppm    — piecewise-parabolic (Colella & Woodward 1984, eqs 1.6–1.10)
+//!   ppm: piecewise-parabolic (Colella & Woodward 1984, eqs 1.6-1.10)
 //!            on a five-point stencil with per-cell widths.
 //!
 //! The kernel is `comptime T`-generic in the math/simd.zig style: `T` is
@@ -90,12 +90,12 @@ fn linearMinmod(comptime T: type, u: [5]T, theta: f64) FacesOf(T) {
     return .{ .left = u[2] - half * slope, .right = u[2] + half * slope };
 }
 
-/// C: my_sign — returns ±1 (0 → +1 is never hit: guarded by monotonicity).
+/// C: my_sign. Returns ±1 (0 → +1 is never hit: guarded by monotonicity).
 fn sign(comptime T: type, x: T) T {
     return simd.select(T, x >= simd.splat(T, 0.0), simd.splat(T, 1.0), simd.splat(T, -1.0));
 }
 
-/// C: finite.c:210-332 — PPM with non-uniform cell widths.
+/// C: finite.c:210-332; PPM with non-uniform cell widths.
 fn ppm(comptime T: type, u: [5]T, dx: [5]T) FacesOf(T) {
     const zero = simd.splat(T, 0.0);
     const one = simd.splat(T, 1.0);

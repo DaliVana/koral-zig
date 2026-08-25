@@ -12,7 +12,7 @@
 //! B¹,B² take the curl of ΔA_φ (∝ the injected B³), and every ΔA_φ factor
 //! (scaleth, the field angle, Ê in β) runs through ρ/u/Ê, which carry C's
 //! ~1e-3 qags kink error (the M11 keystone). So the golden matches at
-//! field-scale ~1e-3 — the same C-qags-limited story, NOT a Zig error; a
+//! field-scale ~1e-3; the same C-qags-limited story, NOT a Zig error; a
 //! dynamo bug would show far above this floor.
 
 const std = @import("std");

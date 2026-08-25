@@ -1,13 +1,13 @@
-//! MPI validation-ladder harness (MPI plan §10, gates 2–6). Gate 1 (the
+//! MPI validation-ladder harness (MPI plan §10, gates 2-6). Gate 1 (the
 //! decompose()/Grid arithmetic) lives in the unit test suite; this binary
 //! covers everything that needs live ranks. Each rank recomputes the serial
-//! reference IN-PROCESS (serial Zig is the oracle — there are no C-MPI
+//! reference IN-PROCESS (serial Zig is the oracle; there are no C-MPI
 //! goldens and there will be none) and compares its own slab, so the gates
 //! involve no files and no rank-0 gathering.
 //!
 //!   zig build mpi-gates -Dmpi -Doptimize=ReleaseSafe
 //!   mpiexec -n 1 zig-out/bin/mpi-gates            # gate 2 (1-rank ≡ serial, bitwise)
-//!   mpiexec -n 2 zig-out/bin/mpi-gates            # gates 3–5 at 1×1×2
+//!   mpiexec -n 2 zig-out/bin/mpi-gates            # gates 3-5 at 1×1×2
 //!   mpiexec -n 3 ... ; mpiexec -n 4 ...           # 1×1×3, 1×1×4
 //!
 //! Exit 0 = all gates green on every rank (any failure exits nonzero, so a
@@ -16,7 +16,7 @@
 //! What is (and isn't) bitwise, by design (plan §1.1-8): interior z-face
 //! ghost planes are exchanged bit-identically, so cells away from the x/y
 //! boundaries stay BITWISE equal to serial across φ seams for the first
-//! steps; x/y-ghost × z-ghost corner regions are constructed differently
+//! steps: x/y-ghost × z-ghost corner regions are constructed differently
 //! (serial corner machinery vs exchange + C's middle-corner BC pass), so
 //! cells near the x/y edges are compared at field-scale tolerance only.
 //! The PUFFY gate is tolerance-only everywhere: the dynamo's ring-reduced
@@ -298,7 +298,7 @@ fn compareDomainTolerance(
     /// 13-var layout) get only the plain `rtol_loose` bound instead of the
     /// fraction gate: F is a stiff, nearly force-balanced SMALL field whose
     /// seam response legitimately reaches ~0.1 of its own (already tiny)
-    /// field scale — a genuine-decomposition effect, not a bug signal. Pass
+    /// field scale; a genuine-decomposition effect, not a bug signal. Pass
     /// SimT.nv to disable.
     loose_iv_start: usize,
     rtol_loose: f64,

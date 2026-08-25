@@ -5,13 +5,13 @@
 //! band writes only its own cells/columns/faces, reads only region-frozen
 //! state (geometry reads are `*const`), and the only cross-band reductions
 //! are order-insensitive (max/min, integer sums), the parallel result must
-//! be BIT-IDENTICAL to the serial one — anything else is a data race. Two
+//! be BIT-IDENTICAL to the serial one; anything else is a data race. Two
 //! gates certify this from the same deterministic initial states:
 //!
-//!  * a 2D Minkowski radiation-MHD box (the original M13 gate — implicit,
+//!  * a 2D Minkowski radiation-MHD box (the original M13 gate; implicit,
 //!    u2p, sweep/fluxes/fluxct, wavespeed dt-reduce, stage arithmetic, copy
 //!    BCs, fixups) after several steps at nthreads 1 vs 4;
-//!  * a full PUFFY 48×44 torus step ×2 — adds radviscosity, the dynamo
+//!  * a full PUFFY 48×44 torus step ×2; adds radviscosity, the dynamo
 //!    (scale-height columns + ΔA_φ + superpose), polar-axis correction and
 //!    the specific MKS2 boundary conditions.
 //!
@@ -132,7 +132,7 @@ test "M13 threading: nthreads=4 is bit-identical to nthreads=1 (2D radiation)" {
 
 const SimP = sim_mod.Sim(config.puffy);
 
-/// The production PUFFY option set (PROBLEMS/puffy/main.zig) at test scale —
+/// The production PUFFY option set (PROBLEMS/puffy/main.zig) at test scale;
 /// every threaded pass is active: radviscosity, dynamo, polar correction,
 /// specific MKS2 BCs.
 fn puffyOpts(nthreads: usize) SimP.Options {

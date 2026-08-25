@@ -1,23 +1,23 @@
-//! Diagnostic scalar reductions (C: postproc.c calc_scalars + its helpers) —
+//! Diagnostic scalar reductions (C: postproc.c calc_scalars + its helpers);
 //! the physically central accretion/luminosity/geometry diagnostics for a
 //! BH-disk run. These are the quantities written to `scalars.dat` and used to
 //! judge a run's health (Ṁ tracking, luminosity, disk thickness, dynamo-held
 //! magnetization).
 //!
 //! Only the reductions PUFFY's `calc_scalars` actually selects are ported:
-//!   * totalMass       — Σ ρ √−g dV over the domain      (calc_totalmass)
-//!   * mdot(shell)      — Σ √−g ρ uʳ dθ dφ through a radial shell (calc_mdot,
+//!   * totalMass: Σ ρ √−g dV over the domain      (calc_totalmass)
+//!   * mdot(shell): Σ √−g ρ uʳ dθ dφ through a radial shell (calc_mdot,
 //!                        type 0 net; MYCOORDS, dφ→2π for TNZ==1)
-//!   * lum(shell)       — radiative + total energy flux through a shell in the
+//!   * lum(shell): radiative + total energy flux through a shell in the
 //!                        OUTCOORDS (BL) frame                (calc_lum type 1)
-//!   * scaleHeightAt    — density-weighted RMS |π/2−θ| at a radius
+//!   * scaleHeightAt: density-weighted RMS |π/2−θ| at a radius
 //!                        (calc_scaleheight → dynamo.calcScaleHeight)
-//!   * maxPmagPtot      — max pmag/ptot over the domain (the BETANORMFULL
+//!   * maxPmagPtot: max pmag/ptot over the domain (the BETANORMFULL
 //!                        quantity, so "dynamo sustains pmag/ptot" is readable)
 //!
 //! MYCOORDS reductions (mass, mdot) use the sim's cached metric; the BL-frame
 //! luminosity rebuilds the OUTCOORDS geometry on the fly via coco (C: OUTCOORDS
-//! == BLCOORDS for every BHDISK problem). Everything is in code (GU) units —
+//! == BLCOORDS for every BHDISK problem). Everything is in code (GU) units;
 //! the executable converts to CGS/Eddington only at print time, matching C's
 //! fileop.c which keeps scalars[] in GU and scales in the fprintf.
 
@@ -55,7 +55,7 @@ pub fn radiusBL(comptime SimT: type, sim: *const SimT, ix: i64) f64 {
 /// First domain radial index whose BL radius exceeds `radius` (C's
 /// `for(ix..) if(xxBL[1]>radius) break;`). Clamped to the last domain cell if
 /// the whole grid is inside `radius` (C: calc_lum resets ix=NX-2; calc_mdot
-/// would read NX — we clamp to nx-1, the outermost shell, which is what the
+/// would read NX; we clamp to nx-1, the outermost shell, which is what the
 /// luminosity radius 5000 > RMAX means physically: the outer boundary).
 pub fn radialShellIndex(comptime SimT: type, sim: *const SimT, radius: f64) i64 {
     const nx = sim.nxi();
@@ -66,11 +66,11 @@ pub fn radialShellIndex(comptime SimT: type, sim: *const SimT, radius: f64) i64 
     return nx - 1;
 }
 
-/// C: calc_totalmass (postproc.c:1723) — Σ ρ dx dy dz √−g over the domain,
+/// C: calc_totalmass (postproc.c:1723); Σ ρ dx dy dz √−g over the domain,
 /// MYCOORDS. NOTE: unlike calc_mdot / calc_lum (which override dz → 2π for
 /// TNZ==1), the *snapshot* branch of calc_totalmass uses the raw cell dz
 /// (= the φ-wedge width, PHIWEDGE, for an axisymmetric slice) with only a
-/// `dz *= 2π/PHIWEDGE` scaling when TNZ>1 (postproc.c:1767-1769) — a C
+/// `dz *= 2π/PHIWEDGE` scaling when TNZ>1 (postproc.c:1767-1769); a C
 /// inconsistency, transcribed as-is. So for PUFFY 2D (TNZ==1) the wedge is
 /// NOT expanded to 2π here; a 3D wedge run IS (so the reported mass is the
 /// full-torus mass, not the π/2 slice).
@@ -205,7 +205,7 @@ fn blPhiWidth(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64) 
     return @abs(b - a);
 }
 
-/// C: calc_scaleheight (postproc.c:2645) — the density-weighted RMS |π/2−θ|
+/// C: calc_scaleheight (postproc.c:2645). The density-weighted RMS |π/2−θ|
 /// at the radial shell nearest `radius`. Fills sim.scaleth first (C's
 /// scaleth_otg is populated by calc_avgs_throughout during the step).
 pub fn scaleHeightAt(comptime SimT: type, sim: *const SimT, radius: f64) f64 {
@@ -229,7 +229,7 @@ pub const GlobalScalars = struct {
 
 /// All the calc_scalars reductions with the MPI folds applied (plan §8.3):
 /// each rank sums its slab, then ONE Allreduce(SUM) of [mass, mdot, radlum,
-/// totallum, Σρ√g, Σρ√gΔθ²] ++ `extra_sums` (folded in place — the driver's
+/// totallum, Σρ√g, Σρ√gΔθ²] ++ `extra_sums` (folded in place; the driver's
 /// diagnostic counters ride along, so an output cadence costs exactly two
 /// collectives) and one Allreduce(MAX) for pmag/ptot. Serially / at 1 rank
 /// the folds are identity, so the values are BITWISE the serial ones (the
@@ -274,7 +274,7 @@ pub fn globalScalars(
     };
 }
 
-/// max pmag/ptot over the domain — the BETANORMFULL quantity. Reports
+/// max pmag/ptot over the domain; the BETANORMFULL quantity. Reports
 /// whether the (initially 1/20) pmag/ptot ratio is being held; 0 if no B field.
 pub fn maxPmagPtot(comptime SimT: type, sim: *const SimT) relele.Error!f64 {
     const cfg = SimT.Cfg;

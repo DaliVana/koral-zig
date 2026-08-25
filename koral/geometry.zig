@@ -1,7 +1,7 @@
 //! Per-point geometry handed to kernels (C: struct geometry, ko.h:418).
 //!
 //! The 4×5 layout is C's: columns 0..3 are the metric, column 4 carries
-//! extras — gg[0..2][4] = d(ln√−g)/dx^i, gg[3][4] = √−g, GG[3][4] = gttpert.
+//! extras: gg[0..2][4] = d(ln√−g)/dx^i, gg[3][4] = √−g, GG[3][4] = gttpert.
 
 const config = @import("config.zig");
 
@@ -12,7 +12,7 @@ const config = @import("config.zig");
 ///
 /// The guarantee covers values obtained from `cov()`/`con()`; it does NOT
 /// cover an anonymous literal, which coerces to whichever view the parameter
-/// asks for — `wantsCon(.{ .m = &g.gg })` compiles. Build views with the
+/// asks for; `wantsCon(.{ .m = &g.gg })` compiles. Build views with the
 /// accessors, never with a bare `.{ .m = ... }` at an argument position.
 pub fn MetricCovOf(comptime T: type) type {
     return struct { m: *const [4][5]T };

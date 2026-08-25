@@ -1,8 +1,8 @@
-//! M8 theory gates — opacities and the radiative four-force.
+//! M8 theory gates; opacities and the radiative four-force.
 //!
 //! Gates (plan M8):
 //!  * κ_es hand values: 0.4·ρ cm²/g at cold Trad, exactly halved at
-//!    Trad = 4.5e8 K (Klein–Nishina), correction → 1 as Trad → 0
+//!    Trad = 4.5e8 K (Klein-Nishina), correction → 1 as Trad → 0
 //!  * scaling exponents: bremsstrahlung ∝ ρ², ∝ Te^−3.5 (modulo the
 //!    relativistic correction); synchrotron emission ∝ B²; Terelfactor
 //!    = 1/2 at θe = 1

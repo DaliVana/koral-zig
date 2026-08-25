@@ -5,7 +5,7 @@
 //!
 //! Physics: the induction equation evolves the lab-frame field B^i, but the
 //! dynamics (stress tensor, wavespeeds) need the field as the comoving
-//! observer measures it — the four-vector b^μ, purely spatial in the fluid
+//! observer measures it; the four-vector b^μ, purely spatial in the fluid
 //! frame (b·u = 0). The dictionary both ways is
 //!   b^t = B^i u_i,   b^i = (B^i + b^t u^i)/u^t,   B^i = b^i u^t − b^t u^i,
 //! and b² = b_μb^μ is twice the fluid-frame magnetic pressure (P_mag = b²/2).

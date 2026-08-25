@@ -2,7 +2,7 @@
 //!
 //! Writes every scenario in `koral/testing/selfscenarios.zig` to
 //! `tests/selfgolden/`, overwriting what is there. Run this ONLY when you have
-//! decided that a numerical change is intended — the committed files are the
+//! decided that a numerical change is intended; the committed files are the
 //! record of what this repository used to compute, and regenerating without
 //! reviewing the diff throws that record away silently. The failing test names
 //! the deviation so you can judge it first.

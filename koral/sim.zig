@@ -1,4 +1,4 @@
-//! The evolution driver — grid state, boundary conditions, the explicit
+//! The evolution driver; grid state, boundary conditions, the explicit
 //! operator and the RK2IMEX step, transcribed from KORAL's serial path:
 //!
 //!   problem.c:141-402   RK2IMEX stage arithmetic (γ = 1 − 1/√2)
@@ -13,7 +13,7 @@
 //!
 //! C-fidelity notes:
 //!  * "wide" sweep bounds mirror MPI4CORNERS, which choices.h:790 force-
-//!    defines whenever MAGNFIELD is on — even in serial builds. So MHD
+//!    defines whenever MAGNFIELD is on; even in serial builds. So MHD
 //!    configs sweep ±1 ghost rows and fill 2D ghost corners; hydro configs
 //!    skip corners entirely (`if_outsidegc` continue).
 //!  * All cell sizes/centers use C's per-cell FP forms (Grid.cellSize/xc), and
@@ -24,7 +24,7 @@
 //!  * op_implicit (M9) is a structural no-op when opt.opac is null
 //!    (≡ SKIPRADSOURCE); do_correct → correct_polaraxis (M10) is enabled
 //!    by opt.correct_polaraxis (CORRECT_POLARAXIS, on for PUFFY in M11).
-//!  * upreexplicit/ppreexplicit copies (finite.c:644) are skipped — nothing
+//!  * upreexplicit/ppreexplicit copies (finite.c:644) are skipped; nothing
 //!    reads them before M12 (radviscosity / entropy mixing).
 
 const std = @import("std");
@@ -77,7 +77,7 @@ pub const FaceStore = storage.FaceStore;
 pub const Flag = storage.Flag;
 pub const PassTimers = timers_mod.PassTimers;
 pub const Pass = timers_mod.Pass;
-/// Monotonic wall clock in ns (sim/timers.zig) — re-exported so the run
+/// Monotonic wall clock in ns (sim/timers.zig); re-exported so the run
 /// driver can time steps / throttle the heartbeat with the same clock.
 pub const nowNs = timers_mod.nowNs;
 const n_flags = storage.n_flags;
@@ -111,7 +111,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub const FaceT = FaceStore(NV);
 
         /// A problem's boundary-condition hook. Returns the ghost-cell
-        /// primitives, or an Error — the fallible frame/velocity conversions a
+        /// primitives, or an Error; the fallible frame/velocity conversions a
         /// boundary-adjacent cell can reach (SpacelikeVelocity,
         /// VelocityConversionFailed) propagate instead of being swallowed by
         /// `catch unreachable` (panic in safe builds, UB in ReleaseFast). The
@@ -144,32 +144,32 @@ pub fn Sim(comptime cfg: config.Config) type {
             do_fixups: bool = true, // C: DOFIXUPS && DOU2PMHDFIXUPS
             do_u2prad_fixups: bool = false, // C: DOU2PRADFIXUPS (0 everywhere)
             do_radimp_fixups: bool = false, // C: DORADIMPFIXUPS (off in the validated build; on in koral_lite_puffy)
-            /// C: REDUCEORDERATBH — drop the reconstruction order by one for
+            /// C: REDUCEORDERATBH. Drop the reconstruction order by one for
             /// cells whose center is inside the BL horizon (PPM→linear there).
             reduceorderatbh: bool = false,
             /// koral_lite_puffy REDUCEORDERAFTERFIXUP (finite.c:26-40,
             /// 2026-08-11): a cell whose most recent u2p / rad / implicit
-            /// pass demanded a fixup reconstructs one order lower — its
+            /// pass demanded a fixup reconstructs one order lower; its
             /// primitives are synthetic neighbour averages, and a high-order
             /// stencil over them tends to make the same cell fail again. One
             /// diffusive sweep lets it relax, then full order resumes.
             reduceorderafterfixup: bool = false,
-            /// C: DAMPRADWAVESPEEDNEARAXIS + …NCELLS — within this many cells of
+            /// C: DAMPRADWAVESPEEDNEARAXIS + …NCELLS. Within this many cells of
             /// each pole, force the radiative wavespeed to the undamped 1/3.
             /// 0 = off.
             dampradwavespeednearaxis: usize = 0,
-            /// C: CORRECT_POLARAXIS (PUFFY define.h:107) — do_correct
+            /// C: CORRECT_POLARAXIS (PUFFY define.h:107). Do_correct
             /// overwrites the most-polar rows and u2p/implicit/fixups skip
             /// them. Only meaningful on spherical-like coordinates.
             correct_polaraxis: bool = false,
             /// C: NCCORRECTPOLAR (PUFFY: 2).
             nccorrectpolar: i64 = 2,
-            /// C: RADVISCOSITY==SHEARVISCOSITY (PUFFY define.h:96) — the
+            /// C: RADVISCOSITY==SHEARVISCOSITY (PUFFY define.h:96). The
             /// radiative shear-viscosity contribution to R^ij, computed once
             /// per step (calc_Rij_visc_total) and added at the faces.
             radviscosity: bool = false,
             radvisc: radvisc_mod.Params = .{},
-            /// C: MIMICDYNAMO (PUFFY define.h:66) — the mean-field dynamo run
+            /// C: MIMICDYNAMO (PUFFY define.h:66). The mean-field dynamo run
             /// after each explicit sub-step (problem.c:210,326).
             dynamo: bool = false,
             dynamo_params: dynamo_mod.Params = .{},
@@ -180,21 +180,21 @@ pub fn Sim(comptime cfg: config.Config) type {
             /// Opaque user context threaded verbatim to `specific_bc` on every
             /// ghost fill (e.g. which shock tube / which Michel solution the BC
             /// samples). Lets a runtime-parameterized BC avoid module-level
-            /// state; the comptime-bound BCs (puffy) ignore it.
+            /// state: the comptime-bound BCs (puffy) ignore it.
             bc_ctx: ?*const anyopaque = null,
             /// Worker threads for the per-step passes (P1: all of them run
             /// on the persistent team). 1 ≡ the serial path (bit-identical;
             /// the golden tests run here).
             nthreads: usize = 1,
             /// P4b node-width hardening: bind each team thread (main
-            /// included) to one cpu of the process affinity mask — the
+            /// included) to one cpu of the process affinity mask; the
             /// cgroup cpuset under Slurm, so the binding stays inside the
             /// allocation. Linux only; inert elsewhere. No FP effect
             /// (scheduling never changes any written value).
             pin_threads: bool = false,
-            /// MPI plan P4a: the communication backend (comm/comm.zig —
+            /// MPI plan P4a: the communication backend (comm/comm.zig ;
             /// Serial no-ops by default, Mpi under -Dmpi). null ≡ serial
-            /// semantics; when set, Sim binds the zero-copy exchange
+            /// semantics: when set, Sim binds the zero-copy exchange
             /// channels into `p` at init and runs the exchange episodes +
             /// end-of-step collective. Must outlive the Sim.
             comm: ?*comm_mod.Backend = null,
@@ -212,7 +212,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         team: ?*threading.Team,
         /// The resolved decomposition (opt.decomp orelse trivial). x/y faces
         /// are always physical; z faces stop being boundaries when ntz > 1
-        /// (their ghosts come from the exchange — sim/bc.zig gates on this).
+        /// (their ghosts come from the exchange; sim/bc.zig gates on this).
         decomp: comm_mod.Decomp,
 
         // state
@@ -265,7 +265,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         scaleth_sth: []f64,
 
         t: f64 = 0,
-        /// C: global_time — frozen at step start, used by set_bc.
+        /// C: global_time. Frozen at step start, used by set_bc.
         time: f64 = 0,
         dt: f64 = 0,
         /// dt the CFL logic would have chosen this step (before forcing).
@@ -276,14 +276,14 @@ pub fn Sim(comptime cfg: config.Config) type {
         min_dy: f64 = 0,
         min_dz: f64 = 0,
         nstep: u64 = 0,
-        /// C: REDUCEORDERATBH — the largest radial cell index whose center is
+        /// C: REDUCEORDERATBH. The largest radial cell index whose center is
         /// inside the BL horizon (reconstruction order is dropped by one for
         /// cell[0] ≤ this). std.math.minInt when disabled / no cell is inside,
         /// so the `cell[0] <= …` test is always false. Set once in init (r is
         /// monotonic in the radial index, so a single threshold suffices).
         reduce_order_ix_max: i64 = std.math.minInt(i64),
         /// implicit-solver diagnostics (C: global_int_slot counters), all
-        /// run-cumulative — the driver deltas them for the per-step heartbeat.
+        /// run-cumulative; the driver deltas them for the per-step heartbeat.
         n_radimp_failures: u64 = 0,
         /// This step's implicit-failure count, MAXed across ranks by the
         /// end-of-step collective (the C abort path's load-bearing signal;
@@ -291,13 +291,13 @@ pub fn Sim(comptime cfg: config.Config) type {
         n_radimp_fail_step: u64 = 0,
         n_radimp_iters: u64 = 0,
         n_radimp_solves: u64 = 0,
-        /// P0 per-pass wall-clock instrumentation (sim/timers.zig) — always
-        /// accumulating; the driver prints/resets it at its output cadence.
+        /// P0 per-pass wall-clock instrumentation (sim/timers.zig); always
+        /// accumulating: the driver prints/resets it at its output cadence.
         timers: timers_mod.PassTimers = .{},
 
         /// The full-Field members allocated in init and freed in deinit, in one
         /// place so the two lists cannot drift (P5). Startup allocation failure
-        /// is treated as fatal — Sim.init has no per-alloc errdefer; a driver
+        /// is treated as fatal; Sim.init has no per-alloc errdefer; a driver
         /// exits and the OS reclaims, and the test suite runs under the leak-
         /// checking allocator only after a *successful* init.
         const heap_field_names = .{
@@ -584,7 +584,7 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         // ---- MPI seam (plan §5–§7) ----------------------------------------
 
-        /// C: mpi_isitBC — is this face a physical boundary of this rank's
+        /// C: mpi_isitBC. Is this face a physical boundary of this rank's
         /// slab? Always true serially; only z faces can be interior (φ-only
         /// decomposition). sim/bc.zig gates every face fill on this.
         pub fn isPhysicalBoundary(self: *const Self, face: BcFace) bool {
@@ -645,7 +645,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             }
         }
 
-        /// C: is_cell_corrected_polaraxis (finite.c:6132) — the other half of
+        /// C: is_cell_corrected_polaraxis (finite.c:6132). The other half of
         /// doCorrect's contract: these rows are not evolved, they are
         /// overwritten. Derived from the same `polaraxis.band()`, so the
         /// predicate and the overwrite cannot claim different rows.
@@ -654,7 +654,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             return b.owns(iy);
         }
 
-        /// C: if_outsidegc — true for ghost *corner* cells (≥2 dims outside).
+        /// C: if_outsidegc. True for ghost *corner* cells (≥2 dims outside).
         /// `pub` so the sim/-side passes (sim/rijvisc.zig) share the one
         /// definition of the corner convention with wavespeedRows.
         pub fn isCorner(self: *const Self, ix: i64, iy: i64, iz: i64) bool {
@@ -668,7 +668,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         // ---- initialization -------------------------------------------------
 
         /// Set one domain cell's primitives and derived conserveds
-        /// (C: PR_INIT body — pp then p2u).
+        /// (C: PR_INIT body; pp then p2u).
         pub fn initCell(self: *Self, ix: i64, iy: i64, iz: i64, pp_in: [NV]f64) Error!void {
             var pp = pp_in;
             const geom = self.cache.fillGeometry(ix, iy, iz);
@@ -689,7 +689,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.initTimestepGuess();
         }
 
-        /// problem.c:59-82 — initial dt guess from max_ws = 10⁴.
+        /// problem.c:59-82; initial dt guess from max_ws = 10⁴.
         pub fn initTimestepGuess(self: *Self) void {
             const ws: f64 = 10000.0;
             var tsd: f64 = undefined;
@@ -719,7 +719,7 @@ pub fn Sim(comptime cfg: config.Config) type {
 
         /// The CFL timestep from the last-computed wavespeeds: 1/tstepdenmax
         /// (C: 1/tstepdenmax). Single source of truth for the dt that step()
-        /// uses and the driver recomputes — call it in both so they cannot
+        /// uses and the driver recomputes; call it in both so they cannot
         /// drift. Requires the denominator to have been seeded
         /// (initTimestepGuess or a prior step); returns +inf if tstepdenmax is
         /// still 0, which the driver's pre-step guard rejects.
@@ -830,7 +830,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             }
         }
 
-        /// C: save_wavespeeds (finite.c:394) — store per-cell speeds and,
+        /// C: save_wavespeeds (finite.c:394). Store per-cell speeds and,
         /// for domain cells, the CFL denominator (feeding the next dt).
         /// rad0 (unlimited by τ) only enters the timestep; radl (τ-limited)
         /// is what the flux combination reads. The dt max/min go into the
@@ -914,7 +914,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         // merged `ChunkResult` themselves, and the infallible ones (the
         // stage arithmetic, sim/ct.zig) discard it.
 
-        /// C: calc_u2p (finite.c:546) — per-cell inversion + floors, then
+        /// C: calc_u2p (finite.c:546). Per-cell inversion + floors, then
         /// fixup averaging and a boundary refresh.
         /// `t` is the simulation time the refreshed ghosts are evaluated at
         /// (C: global_time). Every caller passes the current step's t, which
@@ -1004,7 +1004,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// U2PMHD never averages rho or the magnetic field (iv != RHO &&
         /// iv < B1); U2PRAD averages only the radiative block (EE..FZ).
         /// True if any domain cell carries flag `which`. Early-out scan for
-        /// cellFixup — reads one i32/cell (getFlag is inline) and returns on the
+        /// cellFixup: reads one i32/cell (getFlag is inline) and returns on the
         /// first hit. Serial: the scan is ~NV× cheaper than the copies it may
         /// save, and short-circuits (P2 #3).
         fn anyFlagSet(self: *const Self, comptime which: Flag) bool {
@@ -1192,7 +1192,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
 
         /// The two cross directions of a sweep/face pass in dimension `dim`.
-        /// Band-parallelism runs over cross[0] — the largest transverse axis
+        /// Band-parallelism runs over cross[0]; the largest transverse axis
         /// in 2D (y for the x-sweep, x for the y-sweep).
         fn crossDims(comptime dim: usize) [2]usize {
             return switch (dim) {
@@ -1226,7 +1226,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// One direction of the interpolation sweep for cross[0] ∈
         /// [c0_lo, c0_hi): every (c0, c1) line's faces are written only by its
         /// own band, so the banding is bit-identical to serial. Loop order keeps
-        /// the contiguous x index innermost — for dim==0 that is the sweep
+        /// the contiguous x index innermost; for dim==0 that is the sweep
         /// direction itself; for dim!=0 x is cross[0] (the band range this
         /// worker owns), so we iterate it innermost with the sweep direction in
         /// the middle, turning the five-point stencil into contiguous x streams
@@ -1373,7 +1373,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             if (dor) self.fl_l[dim].store(cp[0], cp[1], cp[2], &ffr);
         }
 
-        /// C: f_calc_fluxes_at_faces (finite.c:1461) — for every face,
+        /// C: f_calc_fluxes_at_faces (finite.c:1461). For every face,
         /// combine the one-sided fluxes with LAXF or HLL using the saved
         /// cell wavespeeds. Hydro and radiation rows use separate speeds.
         /// Band-parallel over cross[0] per dimension, like the sweep.
@@ -1538,7 +1538,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
 
         /// The conserved update (flux divergence + metric source) for
-        /// iy ∈ [iy0, iy1) — writes only its own cells' u.
+        /// iy ∈ [iy0, iy1); writes only its own cells' u.
         fn updateRows(self: *Self, dtin: f64, iy0: i64, iy1: i64) Error!void {
             var iz: i64 = 0;
             while (iz < self.nzi()) : (iz += 1) {
@@ -1590,7 +1590,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
 
         /// Worker context for the two stage-arithmetic shapes: deriv uses
-        /// (dst, a, b, f1, f2); combine additionally uses c.
+        /// (dst, a, b, f1, f2); combine also uses c.
         const StageCtx = struct {
             sim: *Self,
             dst: *FieldT,
@@ -1602,7 +1602,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         };
 
         /// dst = (1/Δ)·a + (−1/Δ)·b over the domain (problem.c:181/230/…).
-        /// Band-parallel over iy — pure per-cell assignments.
+        /// Band-parallel over iy; pure per-cell assignments.
         fn stageDeriv(self: *Self, dst: *FieldT, a_f: *const FieldT, b_f: *const FieldT, delta: f64) void {
             self.timers.begin(.stage);
             defer self.timers.end();
@@ -1678,7 +1678,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             }
         }
 
-        /// C: update_entropy (u2p.c:2257) — recompute S(ρ,u) and refresh the
+        /// C: update_entropy (u2p.c:2257). Recompute S(ρ,u) and refresh the
         /// MHD conserveds. Band-parallel over iy (cell-local).
         pub fn updateEntropy(self: *Self) Error!void {
             self.timers.begin(.entropy);
@@ -1708,7 +1708,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             }
         }
 
-        /// C: op_implicit (finite.c:1400) — the implicit radiative source
+        /// C: op_implicit (finite.c:1400). The implicit radiative source
         /// operator: per-cell solve_implicit_lab, RADIMPFIXUPFLAG, then
         /// cell_fixup(FIXUP_RADIMP). Structural no-op without radiation or
         /// when opt.opac is null (≡ SKIPRADSOURCE).
@@ -1775,7 +1775,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             }
         }
 
-        /// C: do_correct (finite.c:594) — CORRECT_POLARAXIS only; the 3D /
+        /// C: do_correct (finite.c:594); CORRECT_POLARAXIS only; the 3D /
         /// smoothing / NS-surface variants are not PUFFY machinery. The
         /// overwrite, the band predicate and (later) the polar-axis EMF
         /// zeroing live in sim/polaraxis.zig; this is the stable method entry

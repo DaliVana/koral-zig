@@ -1,15 +1,15 @@
 //! Velocity conversions and index gymnastics (C: relele.c, frames.c tail).
 //!
 //! KORAL threads three velocity representations through the code
-//! (mnemonics.h): VEL4 — lab-frame four-velocity u^μ; VEL3 — lab
-//! three-velocity u^i/u^t; VELR — relative velocity ũ^i measured by the
+//! (mnemonics.h): VEL4; lab-frame four-velocity u^μ; VEL3; lab
+//! three-velocity u^i/u^t; VELR; relative velocity ũ^i measured by the
 //! normal observer. Primitives store VELPRIM = VELR (choices.h:103).
 //!
 //! Scalar entry points take the whole per-point `Geometry` and pick the
 //! metric block the operation needs, so no caller can hand g_μν where g^μν
 //! belongs. The lane-generic `<name>G` functions have no `Geometry` to
 //! select from, so they take the nominally distinct `MetricCovOf(T)` /
-//! `MetricConOf(T)` views (geometry.zig) instead — build those with
+//! `MetricConOf(T)` views (geometry.zig) instead; build those with
 //! `geom.cov()` / `geom.con()`, since a bare `.{ .m = ... }` literal
 //! coerces to either view and defeats the distinction.
 //!
@@ -42,7 +42,7 @@ pub const VelType = enum(u8) {
 };
 
 /// Whether `convert` may trust the input's u^t. C exposes the choice as two
-/// functions — conv_vels (recompute) and conv_vels_ut (trust).
+/// functions: conv_vels (recompute) and conv_vels_ut (trust).
 pub const UtMode = enum {
     recompute_ut,
     trust_ut,
@@ -55,7 +55,7 @@ pub const Error = error{
     /// into sqrt(<0) = NaN (relele.c:394); we refuse instead.
     SpacelikeVelocity,
     /// A NaN reached the assembled face flux (physics/flux.zig). Same spirit
-    /// as the two above — we refuse to propagate an unphysical state rather
+    /// as the two above; we refuse to propagate an unphysical state rather
     /// than let it flow into the conserved update, where cell_fixup could
     /// silently neighbour-average it away and finish the run with quietly
     /// wrong physics. C: f_flux_prime's isnan → my_err + exit(-1)
@@ -159,7 +159,7 @@ pub fn lowerSecond(t1: [4][4]f64, geom: *const Geometry) [4][4]f64 {
 
 /// A single row of lowerSecond: T^row_j = Σ_k T^{row k} g_{kj}, for j=0..3.
 /// Same inner k-summation as lowerSecond, so the result is bitwise-identical
-/// to `lowerSecond(t1, geom)[row]` — 16 madds instead of 64 when a caller
+/// to `lowerSecond(t1, geom)[row]`; 16 madds instead of 64 when a caller
 /// reads only one lowered row (flux.fFluxPrime consumes row idim+1 of both
 /// stress tensors, P2 #7).
 pub fn lowerSecondRow(t1: [4][4]f64, geom: *const Geometry, row: usize) [4]f64 {
@@ -242,7 +242,7 @@ pub fn utFromSpatialUcon(u: [4]f64, geom: *const Geometry) Error!f64 {
 }
 
 /// α·γ for a VELR vector (C: calc_alpgam, relele.c:309). On alpgam² < 0
-/// C prints and returns 1 — mirrored.
+/// C prints and returns 1; mirrored.
 pub fn alphaGamma(u: [4]f64, geom: *const Geometry) f64 {
     return alphaGammaG(f64, u, geom.cov(), geom.con());
 }
@@ -259,7 +259,7 @@ pub fn alphaGammaG(comptime T: type, u: [4]T, gg: MetricCovOf(T), GG: MetricConO
     return simd.select(T, alpgam2 < sp(T, 0), sp(T, 1.0), @sqrt(alpgam2));
 }
 
-/// The VELR → VEL4 conversion (convert's velr branch) — infallible:
+/// The VELR → VEL4 conversion (convert's velr branch); infallible:
 /// alphaGamma absorbs alpgam² < 0 by returning 1, C-faithfully. This is
 /// the only conv_vels direction the T-generic radiative chain needs.
 pub fn velrToVel4G(comptime T: type, uin: [4]T, gg: MetricCovOf(T), GG: MetricConOf(T)) [4]T {
@@ -352,7 +352,7 @@ pub fn ConCovOf(comptime T: type) type {
 }
 pub const ConCov = ConCovOf(f64);
 
-/// C: conv_vels_both — only to == VEL4 is supported; u^t is recomputed.
+/// C: conv_vels_both. Only to == VEL4 is supported; u^t is recomputed.
 pub fn convertBoth(uin: [4]f64, from: VelType, geom: *const Geometry) Error!ConCov {
     const con = try convert(uin, from, .vel4, geom, .recompute_ut);
     return .{ .con = con, .cov = lowerVec(con, geom) };
@@ -382,7 +382,7 @@ pub fn uconUcovFromPrimsG(comptime T: type, v: [3]T, gg: MetricCovOf(T), GG: Met
 
 /// n^μ = -α g^{μ0} with the precomputed lapse (C: calc_normalobs_ncon).
 /// Kept separate from normalObs4vel: Geometry.alpha is @sqrt(-1.0/g^tt)
-/// while normalObs4vel derives 1.0/@sqrt(-g^tt) — the two round differently.
+/// while normalObs4vel derives 1.0/@sqrt(-g^tt); the two round differently.
 pub fn normalObsCon(geom: *const Geometry) [4]f64 {
     var ncon: [4]f64 = undefined;
     for (0..4) |i| ncon[i] = -geom.alpha * geom.GG[i][0];
@@ -395,7 +395,7 @@ pub fn normalObs4vel(geom: *const Geometry) [4]f64 {
     return raiseVec(.{ -alp, 0, 0, 0 }, geom);
 }
 
-/// VELR of the normal observer (C: calc_normalobs_relvel) — identically 0
+/// VELR of the normal observer (C: calc_normalobs_relvel); identically 0
 /// in exact arithmetic; kept for parity.
 pub fn normalObsVelr(geom: *const Geometry) [4]f64 {
     const GG = &geom.GG;

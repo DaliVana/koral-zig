@@ -2,34 +2,34 @@
 //!
 //! Every backward-traced ray's coordinate time x⁰ is STRICTLY DECREASING:
 //! in (M)KS coordinates g^tt < 0 everywhere outside the horizon, so t is a
-//! global time function and any future-directed null vector has k⁰ > 0 —
+//! global time function and any future-directed null vector has k⁰ > 0;
 //! integrating with Δλ < 0 therefore runs monotonically into the past, with
 //! no exceptions in the ergosphere or near the horizon (KS time is
-//! horizon-regular; this is exactly why slow light is clean in these
-//! coordinates and pathological in Boyer–Lindquist). Monotonicity turns
+//! horizon-regular: this is exactly why slow light is clean in these
+//! coordinates and pathological in Boyer-Lindquist). Monotonicity turns
 //! slow light into a single streaming pass over the dump series:
 //!
-//!  A. FREE FLIGHT — all rays advance from the camera through the static
+//!  A. FREE FLIGHT; all rays advance from the camera through the static
 //!     outer region (r > r_slow), sampling the reference frame (Scene.data),
 //!     until they first cross into r < r_slow or finish outright. Outside
-//!     r_slow the flow is treated as stationary — for PUFFY that region is
+//!     r_slow the flow is treated as stationary; for PUFFY that region is
 //!     floor atmosphere with orbital times ≫ the series span.
-//!  B. SWEEP — a window of two consecutive frames [t_lo, t_hi] slides from
+//!  B. SWEEP; a window of two consecutive frames [t_lo, t_hi] slides from
 //!     the latest useful pair toward the past. Each round, every active ray
 //!     advances (WindowSampler interpolating at its own retarded time x⁰)
-//!     until x⁰ < t_lo — then it parks, and the window slides once all are
+//!     until x⁰ < t_lo; then it parks, and the window slides once all are
 //!     parked. Each frame is read from disk EXACTLY ONCE, and at most two
 //!     frames (+ the reference) are resident: an 18 GB series renders in a
 //!     ~600 MB footprint. A ray that leaves r_slow spatially is done with
-//!     the time-varying zone FOR GOOD — a Kerr null geodesic has at most
+//!     the time-varying zone FOR GOOD; a Kerr null geodesic has at most
 //!     one radial turning point outside the photon shell, so it can never
-//!     re-enter — and joins the tail list. If the series runs out while
+//!     re-enter: and joins the tail list. If the series runs out while
 //!     rays are still inside (their x⁰ predates the first frame), a final
 //!     round holds the first frame (clamp, counted in Stats).
-//!  C. TAILS — rays that exited r_slow finish through the static outer
+//!  C. TAILS; rays that exited r_slow finish through the static outer
 //!     region on the reference frame, to escape/capture/τ_max.
 //!
-//! Pause/resume never touches the arithmetic inside a step — with a static
+//! Pause/resume never touches the arithmetic inside a step; with a static
 //! series the sweep is BIT-IDENTICAL to plain fast-light tracing (gated in
 //! render_tests.zig), and the result is deterministic at any thread count
 //! (rays are independent; reductions are per-ray, in spec order).
@@ -87,12 +87,12 @@ pub const SlowOpts = struct {
     /// DIFFERENCES across the image are physical).
     t_cam: f64,
     /// radius outside which the flow is sampled from the static reference
-    /// frame; inside, from the time-interpolated series
+    /// frame: inside, from the time-interpolated series
     r_slow: f64 = 40.0,
     /// per-spec arrival times (parallel to `specs`), overriding t_cam ray
     /// by ray. This is how ONE sweep serves MANY observation epochs (a
-    /// light curve or movie): specs of all epochs — each epoch aimed at
-    /// its own pixel range — advance through the same sliding window, so
+    /// light curve or movie): specs of all epochs; each epoch aimed at
+    /// its own pixel range; advance through the same sliding window, so
     /// the series still streams exactly once. x⁰ stays monotone per ray;
     /// the window logic never assumed a shared arrival time.
     t_cam_of: ?[]const f64 = null,
@@ -147,7 +147,7 @@ const ExitSlow = struct {
 const chunk = 64;
 
 /// Render `specs` through the frame series into `out` (overwritten; must
-/// cover every spec's pix — one width×height image normally, epochs×that
+/// cover every spec's pix; one width×height image normally, epochs×that
 /// for a batched light curve/movie via SlowOpts.t_cam_of). `source` must
 /// provide times()/acquire()/release() (see series.FileSource /
 /// SliceSource); times ascend. Scene.data must be the REFERENCE frame

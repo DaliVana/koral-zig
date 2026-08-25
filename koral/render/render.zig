@@ -7,7 +7,7 @@
 //!  * Rays are launched from a distant static observer's orthonormal
 //!    tetrad, one per pixel, and integrated BACKWARD (Δλ < 0, into the
 //!    past) as null geodesics dk^μ/dλ = −Γ^μ_αβ k^α k^β, directly in the
-//!    grid's MKS2 coordinates — Christoffels come exact-to-roundoff from
+//!    grid's MKS2 coordinates; Christoffels come exact-to-roundoff from
 //!    metric.compute's dual numbers, and the log-r/concentrated-θ
 //!    coordinates give near-horizon step refinement for free.
 //!  * Along the ray the frequency-integrated transfer equation is
@@ -18,7 +18,7 @@
 //!    the frequency-integrated intensity).
 //!  * Emission and extinction come from the SAME microphysics the sim
 //!    evolved (physics/opacities.zig): thermal emission κ_abs·B(T_e),
-//!    plus scattering source κ_es·Ê/4π — the M1 radiation field the code
+//!    plus scattering source κ_es·Ê/4π; the M1 radiation field the code
 //!    solved for IS the local mean intensity, so the formal solution needs
 //!    no iteration. Extinction χ = κ_abs(T_rad) + κ_es. All in GU; the
 //!    image is normalized for display, so only ratios matter.
@@ -34,7 +34,7 @@
 //! sampler: the fast-light path binds the single snapshot (SnapshotSampler,
 //! bit-identical to the old traceRay loop), while SLOW LIGHT binds a
 //! time-interpolating sampler over a KDMP series and drives rays through a
-//! streaming time window — see series.zig / sweep.zig, and adaptive.zig for
+//! streaming time window. See series.zig / sweep.zig, and adaptive.zig for
 //! photon-ring image-plane refinement (docs/RENDER.md).
 
 const std = @import("std");
@@ -71,7 +71,7 @@ pub const LooseHeader = struct { h: dump.DumpHeader, body_off: usize };
 
 /// Parse a KDMP header, accepting v2 (the restart contract) AND the legacy
 /// v1 (32-byte header, no nstep/out_idx): rendering is read-only, so the
-/// strict version gate of io/dump.zig — which protects restart bookkeeping —
+/// strict version gate of io/dump.zig, which protects restart bookkeeping;
 /// does not apply here. Shared by DumpData.fromBytes and the slow-light
 /// series scanner (series.zig), which reads headers without bodies.
 pub fn parseHeaderLoose(bytes: []const u8) !LooseHeader {
@@ -96,7 +96,7 @@ pub fn parseHeaderLoose(bytes: []const u8) !LooseHeader {
 }
 
 /// A KDMP snapshot held as a flat primitive array p[iz][iy][ix][iv]
-/// (iv fastest — io/dump.zig's body order), decoupled from Sim so the
+/// (iv fastest; io/dump.zig's body order), decoupled from Sim so the
 /// renderer needs no ghosts, comm or solver state.
 pub const DumpData = struct {
     header: dump.DumpHeader,
@@ -131,7 +131,7 @@ pub const DumpData = struct {
 // ---- scene -----------------------------------------------------------------
 
 /// Mask parameters for floor-dominated cells: emission is zeroed where
-/// ρ < factor·rho0·(r/r0)^power — the problem's floor-atmosphere density
+/// ρ < factor·rho0·(r/r0)^power; the problem's floor-atmosphere density
 /// profile scaled by `factor` (for PUFFY: rho0 = RHOATMMIN, r0 = 2,
 /// power = −1.5, see setHdAtmosphere).
 pub const FloorCut = struct {
@@ -155,7 +155,7 @@ pub const Scene = struct {
     r_capture: f64,
     /// rays beyond this KS radius are done (past the camera, out of matter)
     r_escape: f64,
-    /// electron scattering on/off — mirror of the problem's `scattering`
+    /// electron scattering on/off; mirror of the problem's `scattering`
     /// flag (C: PR_KAPPAES). The AGN preset runs with κ_es ≡ 0; rendering
     /// its dumps with Thomson extinction would overcount χ relative to the
     /// sim's own physics.
@@ -164,7 +164,7 @@ pub const Scene = struct {
     /// Floor-dominated funnel material has unreliable thermodynamics.
     sigma_cut: f64 = 0,
     /// zero emission from cells within `factor`× of the floor-atmosphere
-    /// density profile (null = off). Extinction is kept either way — masked
+    /// density profile (null = off). Extinction is kept either way; masked
     /// material still occults, only its (unphysical) glow is dropped.
     floor: ?FloorCut = null,
 
@@ -184,7 +184,7 @@ pub const Scene = struct {
 
 // ---- geometry helpers ------------------------------------------------------
 
-/// Assemble the kernel-facing Geometry (C's 4×5 layout — geometry.zig) from
+/// Assemble the kernel-facing Geometry (C's 4×5 layout; geometry.zig) from
 /// one metric.compute result. The renderer's coordinates are always MKS2.
 pub fn geomFromCoordData(x: [4]f64, cd: *const metric.CoordData) Geometry {
     var gg: [4][5]f64 = undefined;
@@ -221,14 +221,14 @@ inline fn dotg(gcov: [4][4]f64, u: [4]f64, v: [4]f64) f64 {
 }
 
 /// Orthonormal tetrad e[a][μ]: e[0] the static observer's 4-velocity,
-/// e[1] outward radial, e[2] +θ (equatorward), e[3] +φ. Gram–Schmidt runs
+/// e[1] outward radial, e[2] +θ (equatorward), e[3] +φ. Gram-Schmidt runs
 /// in the order (t, φ, r, θ): orthogonalizing the radial trial vector
-/// against ∂_φ is essential in Kerr–Schild coordinates, where
-/// g_rφ → −a·sin²θ stays O(a) at ANY radius — a (t, r, θ, φ) ordering
+/// against ∂_φ is essential in Kerr-Schild coordinates, where
+/// g_rφ → −a·sin²θ stays O(a) at ANY radius; a (t, r, θ, φ) ordering
 /// leaves the "radial" direction carrying azimuthal momentum, which shifts
 /// every launched ray's impact parameter by ~a·sinθ (caught by the Bardeen
 /// shadow-overlay validation). Valid outside the ergosphere (∂_t timelike)
-/// — always true for a distant camera.
+/// always true for a distant camera.
 pub fn tetradFromMetric(gcov: [4][4]f64) [4][4]f64 {
     // build order: t, φ, r, θ — indexed via the coordinate axis of each slot
     const axis = [4]usize{ 0, 3, 1, 2 };
@@ -260,7 +260,7 @@ pub fn sample(comptime cfg: config.Config, s: *const Scene, x: [4]f64, pp: *[lay
 
 /// The sampling kernel with the snapshot made explicit, so time-aware
 /// samplers (series.zig) can interpolate between two of them. x[0] is
-/// ignored here — one snapshot has no time axis.
+/// ignored here; one snapshot has no time axis.
 pub fn sampleData(comptime cfg: config.Config, g: *const Grid, data: *const DumpData, x: [4]f64, pp: *[layout.VarLayout(cfg).count]f64) bool {
     const L = layout.VarLayout(cfg);
     const nx = g.nx;
@@ -337,7 +337,7 @@ pub const LocalState = struct {
     /// electron number density [GU]
     ne: f64,
     bsq: f64,
-    /// magnetic 4-vector b^μ (⊥ u) for the photon–B pitch angle
+    /// magnetic 4-vector b^μ (⊥ u) for the photon-B pitch angle
     bcon: [4]f64,
 };
 
@@ -458,7 +458,7 @@ pub const TraceOpts = struct {
     /// [erg/s/cm²/sr/Hz], ready for brightness temperatures and fluxes.
     nu_obs: f64 = 0,
     /// Validation mode: ignore the fluid entirely and render a bright
-    /// celestial sphere — escaped rays return 1, captured rays 0. The
+    /// celestial sphere; escaped rays return 1, captured rays 0. The
     /// dark region's boundary is the analytic Kerr shadow (shadow.zig).
     screen: bool = false,
 };
@@ -491,7 +491,7 @@ pub const StepResult = struct { x: [4]f64, k: [4]f64, ok: bool };
 /// One RK4 step of the geodesic ODE, REJECTED (ok = false) if any stage
 /// or the endpoint leaves the MKS2 chart x2 ∈ (0,1). No reflection happens
 /// here: mixing stages from both sides of a pole in one RK4 combination is
-/// what produced the meridian artifact — a rejected step falls back to
+/// what produced the meridian artifact; a rejected step falls back to
 /// flatPoleStep, which crosses the axis in a regular chart.
 pub fn rk4Step(mp: MetricParams, cd1: *const metric.CoordData, x: [4]f64, k: [4]f64, dl: f64) StepResult {
     const a1 = accel(&cd1.kris, k);
@@ -548,7 +548,7 @@ const pole_floor = 2.0e-5;
 /// coordinates q = θ·(cos φ, sin φ). Kerr is elementarily flat on the
 /// axis (g_θθ = Σ, g_φφ = Σ sin²θ + O(θ⁴), g_tφ = O(θ²)), so over a
 /// short chord the geodesic is a straight line in q to O(θ²) and the
-/// crossing needs no reflection at all — θ, φ and their momenta re-emerge
+/// crossing needs no reflection at all; θ, φ and their momenta re-emerge
 /// from atan2 on the far side. This is a CROSSING device, not a regional
 /// integrator: the step controller keeps RK4 valid arbitrarily close to
 /// the pole (Δθ ≪ θ), and only the final tiny chord goes through here.
@@ -613,7 +613,7 @@ pub fn flatPoleStep(mp: MetricParams, cd: *const metric.CoordData, x: [4]f64, k:
 /// dimension. MKS2's log-r makes this an adaptive Δr automatically. The
 /// pole term keeps Δx2 ≲ 10% of the distance to the pole (down to
 /// pole_floor), so RK4 resolves the Γ ~ cot θ growth instead of stepping
-/// across it — the source of the old meridian artifact.
+/// across it; the source of the old meridian artifact.
 pub fn stepSize(g: *const Grid, x: [4]f64, k: [4]f64, eps: f64) f64 {
     const a1 = @abs(k[1]) / @max(g.dx, 0.02);
     const a2 = @abs(k[2]) / @max(g.dy, 0.005);
@@ -637,7 +637,7 @@ pub const RayStatus = enum(u8) {
     exhausted,
 };
 
-/// One ray's full integration state — everything traceRay used to keep in
+/// One ray's full integration state; everything traceRay used to keep in
 /// locals, so a trace can be paused and resumed (the slow-light sweep parks
 /// rays at time-window boundaries and resumes them when the window slides).
 pub const RayState = struct {
@@ -663,11 +663,11 @@ pub const SnapshotSampler = struct {
     }
 };
 
-/// Advance one ray backward (Δλ < 0, into the past) until it terminates —
-/// capture, escape, τ > tau_max, step budget — or `ctl.pause(s, st, r)`
+/// Advance one ray backward (Δλ < 0, into the past) until it terminates;
+/// capture, escape, τ > tau_max, step budget, or `ctl.pause(s, st, r)`
 /// returns true (status stays .active; the caller may resume later, the
 /// state carries everything). `sampler.sample(cfg, s, x, pp)` supplies the
-/// primitives at the sampled EVENT — x includes the coordinate time x[0],
+/// primitives at the sampled EVENT; x includes the coordinate time x[0],
 /// which a time-aware sampler (series.WindowSampler) interpolates on and
 /// the fast-light SnapshotSampler ignores.
 ///
@@ -844,7 +844,7 @@ pub const Camera = struct {
     }
 
     /// Future-directed null k^μ of the photon ARRIVING at pixel center
-    /// (px,py) — see rayAt.
+    /// (px,py). See rayAt.
     pub fn ray(cam: *const Camera, px: usize, py: usize) [4]f64 {
         return cam.rayAt(@as(f64, @floatFromInt(px)) + 0.5, @as(f64, @floatFromInt(py)) + 0.5);
     }

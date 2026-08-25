@@ -82,7 +82,7 @@ pub fn VarLayout(comptime cfg: Config) type {
         /// Total number of evolved variables (C: NV).
         pub const count: usize = built.count;
 
-        /// Tags in state-vector order (relel bins excluded — see relelIndex).
+        /// Tags in state-vector order (relel bins excluded. See relelIndex).
         pub const tags: []const VarTag = built.tags;
 
         /// Comptime index lookup: `index(.b1)` == C's B1. Compile error if the

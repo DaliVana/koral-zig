@@ -1,16 +1,16 @@
-//! res2kdmp — convert a C KORAL *serial binary* restart dump into the Zig
+//! res2kdmp: convert a C KORAL *serial binary* restart dump into the Zig
 //! KDMP checkpoint format, so a run initialized/advanced by the C code can be
 //! continued by the Zig `puffy` executable (`puffy <toml> --restart out.kdmp`).
 //!
 //! The C serial restart is a pair (fileop.c fprint_restartfile_bin):
-//!   * res####.head — one ASCII line: `## nfout1 nfout2 t PROBLEM TNX TNY TNZ`
-//!   * res####.dat  — binary: TNX·TNY·TNZ index triples (int gix,giy,giz), then
+//!   * res####.head: one ASCII line: `## nfout1 nfout2 t PROBLEM TNX TNY TNZ`
+//!   * res####.dat: binary: TNX·TNY·TNZ index triples (int gix,giy,giz), then
 //!                    the same number of primitive blocks (NV doubles each), in
 //!                    the C write order (ix outer, iy, iz inner).
 //! NV is not in the header, so it is recovered from the .dat size. The two
 //! codes agree that `ldouble == double` and both store host-endian, so on a
 //! little-endian host (every KORAL target) the primitive bytes copy across
-//! verbatim; only the per-cell ordering is remapped to KDMP's iz-slow/ix-fast
+//! verbatim: only the per-cell ordering is remapped to KDMP's iz-slow/ix-fast
 //! layout using each record's stored global index.
 //!
 //! Usage:  zig build res2kdmp -- <path/res####.head> [out.kdmp]

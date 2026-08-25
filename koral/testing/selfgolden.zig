@@ -1,6 +1,6 @@
 //! Self-goldens: a Zig-generated end-to-end regression baseline.
 //!
-//! **Provenance — read this before treating a mismatch as a bug.** These are
+//! **Provenance: read this before treating a mismatch as a bug.** These are
 //! NOT the C-oracle goldens under `tests/golden/`. Those record what *KORAL C*
 //! computes and are the authority on whether the transcription is faithful.
 //! These record what *this repository* computed at the moment they were
@@ -13,12 +13,12 @@
 //! the Zig side stops matching koral_lite bit-for-bit: `tools/gen_golden.sh`
 //! needs a sibling koral_lite checkout that, after a deliberate divergence, no
 //! longer describes this code. Self-goldens are the replacement end-to-end net
-//! for everything downstream of that point — they cover the assembled pipeline
+//! for everything downstream of that point; they cover the assembled pipeline
 //! (init → CFL → RK2IMEX → BCs → fixups), which the analytic theory tests do
 //! not: those check identities and known solutions, not the composition.
 //!
 //! Format ("KSLF" v1, gzipped on disk). All values f64 little-endian, laid out
-//! exactly as `Field.data` / `Sim.flags` are in memory — domain AND ghosts, so
+//! exactly as `Field.data` / `Sim.flags` are in memory; domain AND ghosts, so
 //! a boundary-condition change is caught in the t=0 snapshot rather than after
 //! it has propagated inward.
 //!
@@ -30,14 +30,14 @@
 //!   fields:      n_field_recs × (u[ncell·nv], p[ncell·nv], flags[ncell·nflags])
 //!
 //! Two granularities on purpose. A full field snapshot costs ~350 KiB gzipped,
-//! so they are kept only at the endpoints — post-init and post-run — which is
+//! so they are kept only at the endpoints; post-init and post-run, which is
 //! enough to catch any change, since a perturbation at step k is still present
 //! at step n. The per-step *scalars* (t, dt, the CFL denominators, the implicit
 //! counters) are seven f64 each, so every step keeps them: they cost nothing
 //! and are what tells you *when* a run started to diverge. Flags are widened to
 //! f64 so the payload stays one homogeneous array.
 //!
-//! The dt sequence is the sim's own CFL choice, not a forced one — unlike the C
+//! The dt sequence is the sim's own CFL choice, not a forced one; unlike the C
 //! step goldens, which force C's dt to isolate the step arithmetic. Here there
 //! is no other side to agree with, so the timestep machinery is pinned too.
 
@@ -48,7 +48,7 @@ pub const magic = "KSLF";
 pub const version: u32 = 1;
 
 /// Per-record scalars, in file order. Widening the two counters to f64 is
-/// exact — both are far below 2^53.
+/// exact: both are far below 2^53.
 pub const Scalars = struct {
     t: f64,
     dt: f64,
@@ -101,7 +101,7 @@ pub const File = struct {
     label: []u8,
     /// n_scalar_recs × Scalars.count
     scalars: []f64,
-    /// n_field_recs — the step index each snapshot came from
+    /// n_field_recs: the step index each snapshot came from
     field_steps: []f64,
     /// n_field_recs × fieldLen
     fields: []f64,
@@ -333,7 +333,7 @@ pub fn read(allocator: std.mem.Allocator, comptime relpath: []const u8) !File {
 // ---- comparison -----------------------------------------------------------
 
 /// Worst field-scale deviation over one array, normalized per variable by that
-/// variable's own baseline magnitude — so a near-zero slot (FY on the axis)
+/// variable's own baseline magnitude, so a near-zero slot (FY on the axis)
 /// cannot inflate the result the way a plain relative error would.
 pub const Cmp = struct {
     max_dev: f64 = 0,
@@ -385,8 +385,8 @@ pub const Cmp = struct {
     ///
     /// `bound` is therefore not the pass/fail line but the *diagnosis* line: it
     /// separates "the numbers actually changed" from "only the last bits moved,
-    /// which is what a toolchain or -Doptimize change looks like". Both fail —
-    /// the author decides — but they get told which one they are looking at.
+    /// which is what a toolchain or -Doptimize change looks like". Both fail ;
+    /// the author decides, but they get told which one they are looking at.
     pub fn check(self: *const Cmp, bound: f64, what: []const u8) !void {
         std.debug.print(
             "self-golden [{s}]: max dev {e:.3}, {d}/{d} slots differ in bits{s}\n",

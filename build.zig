@@ -2,7 +2,7 @@ const std = @import("std");
 
 /// What `-Dmpi` resolved to at configure time (MPI plan §3.3): the comptime
 /// ABI family baked into build_options, and the lib dirs to link/rpath.
-/// No include paths are ever fed to the compiler — the bindings are
+/// No include paths are ever fed to the compiler; the bindings are
 /// hand-written externs (comm/mpi/core.zig); mpi.h is only *read* here to
 /// detect the family.
 const MpiConfig = struct {

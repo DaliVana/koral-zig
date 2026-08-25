@@ -1,29 +1,29 @@
-//! Radiative shear viscosity — the sim-coupled half, SimT-generic (the house
+//! Sim-coupled radiative shear viscosity, generic over SimT (the house
 //! `fn f(comptime SimT: type, sim: *SimT)` pattern, like sim/bc.zig):
 //!
-//!   calcShearLab          — FD gather of the velocity gradients over the ±1
+//!   calcShearLab: FD gather of the velocity gradients over the ±1
 //!                           stencil (prims from sim.p, metrics from the
 //!                           cache), fed to the pure shear algebra
 //!                           (C: calc_shear_lab, rad.c:3952).
-//!   calcRadViscCoeff      — gathers χ (calcChiSlim), the smallest proper
+//!   calcRadViscCoeff: gathers χ (calcChiSlim), the smallest proper
 //!                           cell size and the cached BL radius for the pure
 //!                           ν limiter (C: calc_rad_visccoeff, rad.c:4508).
-//!   calcRadShearViscosity — σ^ij (indices_1122) + ν (C: rad.c:3912).
-//!   calcRijVisc           — per-cell R^i_j via the pure kernel
+//!   calcRadShearViscosity: σ^ij (indices_1122) + ν (C: rad.c:3912).
+//!   calcRijVisc: per-cell R^i_j via the pure kernel
 //!                           (C: calc_Rij_visc, rad.c:4670).
-//!   calcRijViscTotal      — the once-per-step threaded domain pass filling
+//!   calcRijViscTotal: the once-per-step threaded domain pass filling
 //!                           sim.rijvisc (C: calc_Rij_visc_total, rad.c:4628).
-//!   faceAvg               — face-averaged R^i_j read from sim.rijvisc
+//!   faceAvg: face-averaged R^i_j read from sim.rijvisc
 //!                           (C: f_flux_prime_rad_total's ifacedim>−1 branch,
 //!                           rad.c:3782).
-//!   addRadViscFlux        — p2u of the face state + the pure velocity-damped
+//!   addRadViscFlux: p2u of the face state + the pure velocity-damped
 //!                           flux addition (C: the RADVISCMAXVELDAMP block of
 //!                           f_flux_prime_rad_total, rad.c:3799).
 //!
-//! The per-cell tensor algebra and limiter chains — and the PUFFY switch
-//! notes — live in physics/radvisc.zig. ACCELRADVISCOSITY is OFF (recompute
+//! The per-cell tensor algebra, limiter chains, and PUFFY switch notes live
+//! in physics/radvisc.zig. ACCELRADVISCOSITY is OFF (recompute
 //! every step, no radvisclasttime caching); derivatives are always centered
-//! (C's derdir option — see the branch comment in calcShearLab).
+//! (C's derdir option. See the branch comment in calcShearLab).
 
 const relele = @import("../relele.zig");
 const radvisc = @import("../physics/radvisc.zig");
@@ -33,7 +33,7 @@ const metric = @import("../metric/metric.zig");
 const threading = @import("../threading.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
-/// threading.Error's shape (the union parallelRangeErr workers return) — the
+/// threading.Error's shape (the union parallelRangeErr workers return); the
 /// same local alias sim/bc.zig uses.
 const Error = relele.Error || error{OutOfMemory};
 
@@ -168,7 +168,7 @@ pub fn calcShearLab(
     return radvisc.shearFromGradients(&du, &du2, ucon, ucov, gg, kr_blk);
 }
 
-/// C: calc_rad_visccoeff (rad.c:4508) — gathers χ (calcChiSlim), the
+/// C: calc_rad_visccoeff (rad.c:4508). Gathers χ (calcChiSlim), the
 /// smallest active proper cell size, and the cached BL radius, then applies
 /// the pure limiter chain (radvisc.viscCoeff). `global_dt` is the step's dt
 /// (C: global_dt, set before the RK stages).
@@ -223,7 +223,7 @@ pub fn calcRadViscCoeff(
     });
 }
 
-/// C: calc_rad_shearviscosity (rad.c:3912) — σ^ij (both indices raised) and ν.
+/// C: calc_rad_shearviscosity (rad.c:3912); σ^ij (both indices raised) and ν.
 pub fn calcRadShearViscosity(
     comptime SimT: type,
     sim: *const SimT,
@@ -241,7 +241,7 @@ pub fn calcRadShearViscosity(
     return .{ .shear = shear, .nu = nu };
 }
 
-/// C: calc_Rij_visc (rad.c:4670) — σ^ij + ν gathered here, the R^i_j tensor
+/// C: calc_Rij_visc (rad.c:4670); σ^ij + ν gathered here, the R^i_j tensor
 /// assembled by the pure kernel. ACCELRADVISCOSITY off ⇒ always recomputed.
 pub fn calcRijVisc(
     comptime SimT: type,
@@ -258,7 +258,7 @@ pub fn calcRijVisc(
     return radvisc.rijVisc(rv.nu, pp[L.index(.ee)], &rv.shear, geom);
 }
 
-/// C: calc_Rij_visc_total (rad.c:4628) — populate sim.rijvisc (R^i_j) over the
+/// C: calc_Rij_visc_total (rad.c:4628). Populate sim.rijvisc (R^i_j) over the
 /// domain plus a one-cell ghost ring, skipping corners (sim.isCorner). Called
 /// once per step (problem.c:127) with the step's global_dt. P1: band-parallel
 /// over iy rows (each cell writes only its own rijvisc block; the ±1-stencil
@@ -307,7 +307,7 @@ fn rijViscRows(comptime SimT: type, sim: *SimT, global_dt: f64, iy0: i64, iy1: i
     }
 }
 
-/// C: f_flux_prime_rad_total's ifacedim>−1 branch (rad.c:3782-3786) — the
+/// C: f_flux_prime_rad_total's ifacedim>−1 branch (rad.c:3782-3786). The
 /// face-averaged viscous R^i_j at the face (fx,fy,fz) in dimension `dim`
 /// (between that cell and its dim−1 neighbour), read from sim.rijvisc.
 pub fn faceAvg(comptime SimT: type, sim: *const SimT, dim: usize, fx: i64, fy: i64, fz: i64) [4][4]f64 {
@@ -325,7 +325,7 @@ pub fn faceAvg(comptime SimT: type, sim: *const SimT, dim: usize, fx: i64, fy: i
 }
 
 /// C: the RADVISCMAXVELDAMP block of f_flux_prime_rad_total (rad.c:3799-3845)
-/// — p2u of the face state, then the pure velocity-damped flux addition
+/// p2u of the face state, then the pure velocity-damped flux addition
 /// (radvisc.addViscFlux). `rijvisc` is the face-averaged R^i_j (undamped);
 /// `dim` == ifacedim.
 pub fn addRadViscFlux(

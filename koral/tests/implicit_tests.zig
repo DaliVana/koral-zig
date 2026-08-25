@@ -1,4 +1,4 @@
-//! M9 theory gates — the implicit radiation–gas solver.
+//! M9 theory gates; the implicit radiation-gas solver.
 //!
 //! Gates (plan M9):
 //!  * total gas+rad conserveds exactly preserved per converged cell on the
@@ -10,7 +10,7 @@
 //!    (rtol 1e-12) of dÊ/dτ = −Ĝ⁰(Ê) @1e-6
 //!  * L-stability: κΔτ ≫ 1 single step lands monotonically at equilibrium
 //!  * RAD- and MHD-primitive branches agree where both converge @1e-8
-//!  * fuzz: thousands of random states — never NaN/panic, failures only
+//!  * fuzz: thousands of random states; never NaN/panic, failures only
 //!    via the clean failure path
 
 const std = @import("std");
@@ -175,7 +175,7 @@ fn relaxRhs(ehat: f64, rho: f64, utot: f64, geo: *const Geometry, p: *const radf
     return -gi.ff[0];
 }
 
-/// Adaptive RK45 (Cash–Karp) at rtol for the scalar relaxation ODE.
+/// Adaptive RK45 (Cash-Karp) at rtol for the scalar relaxation ODE.
 fn rk45Relax(e0: f64, t_end: f64, rho: f64, utot: f64, geo: *const Geometry, p: *const radforce.Params, rtol: f64) f64 {
     const a2 = 0.2;
     const a3 = [2]f64{ 3.0 / 40.0, 9.0 / 40.0 };

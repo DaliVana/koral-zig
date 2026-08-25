@@ -3,7 +3,7 @@
 //! Uniform pixels undersample the photon ring badly: the n-th lensed
 //! subring is exponentially demagnified (width ∝ e^{−γn}, γ ≈ π at a = 0),
 //! so at typical fov/size the n ≥ 2 structure is far sub-pixel. Refining
-//! blindly is wasteful — the decisive observation is that geodesics are
+//! blindly is wasteful; the decisive observation is that geodesics are
 //! FLUID-INDEPENDENT: a vacuum pre-pass (opts.screen tracing, no sampling)
 //! maps exactly where the image needs work before any radiative transfer
 //! is spent.
@@ -11,7 +11,7 @@
 //! Per pre-pass ray we record (captured?, flight time). Two neighbors
 //! straddling the critical curve disagree in capture; two neighbors one
 //! subring apart differ in flight time by ~one photon half-orbit (~16 M at
-//! a = 0 — also precisely the delay structure slow light resolves, which
+//! a = 0; also precisely the delay structure slow light resolves, which
 //! is why the refinement criterion is a TIME threshold). Pixels whose four
 //! corners disagree are subdivided as a quadtree: cells whose own corners
 //! agree stop early, so the work concentrates in an O(2^d) band along the
@@ -19,7 +19,7 @@
 //!
 //! The output is a flat []RaySpec plan (weights are exact powers of 1/4
 //! summing to 1 per pixel) consumed either by the fast-light renderPlan
-//! below or by the slow-light sweep — the pre-pass is time-independent
+//! below or by the slow-light sweep; the pre-pass is time-independent
 //! (stationary metric), so one plan serves both.
 
 const std = @import("std");
@@ -38,7 +38,7 @@ pub const PlanOpts = struct {
     dt_thresh: f64 = 5.0,
     /// step budget for PRE-PASS probes only (RT rays keep opts.max_steps).
     /// A probe that cannot resolve capture-vs-escape within this budget is
-    /// pinned to the photon shell — it reports a huge flight time and no
+    /// pinned to the photon shell; it reports a huge flight time and no
     /// capture, which is precisely the "critical, refine here" signal, so
     /// letting it orbit for the full RT budget buys nothing.
     probe_max_steps: usize = 5_000,

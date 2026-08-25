@@ -1,5 +1,5 @@
 //! Implicit-solver benchmark: the scalar vs the SIMD (lane-batched) FD
-//! Jacobian over the C-oracle battery (tests/golden/rad_implicit.kgld —
+//! Jacobian over the C-oracle battery (tests/golden/rad_implicit.kgld;
 //! 336 PUFFY grid cells spanning ~10 decades of κΔt stiffness). The same
 //! battery drives the C timing companion oracle/harness_bench_implicit.c,
 //! so all three numbers (C, Zig scalar, Zig SIMD) measure the identical
@@ -36,9 +36,9 @@ const RadParams = koral.solve.invert_rad.RadParams;
 const Params = koral.physics.radforce.Params;
 
 /// Shared state for the threaded throughput measurement. The battery is
-/// embarrassingly parallel (each solveImplicitLab is pure — no shared mutable
+/// embarrassingly parallel (each solveImplicitLab is pure; no shared mutable
 /// state, the P1 thread-safety contract), so we hand out cell·round work items
-/// via a dynamic ticket (fetchAdd) — the ~17× floor/torus cost spread means a
+/// via a dynamic ticket (fetchAdd); the ~17× floor/torus cost spread means a
 /// static split would straggle, exactly as in the production tile scheduler.
 const Task = struct {
     recs: []const Rec,

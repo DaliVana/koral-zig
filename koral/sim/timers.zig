@@ -11,7 +11,7 @@
 //! copy_entropycount, inter-pass gaps) and prints as "(other)".
 //!
 //! Cost: one monotonic clock read per begin/end, ~60 pairs per RK2IMEX
-//! step — microseconds against millisecond-scale passes, and no effect on
+//! step: microseconds against millisecond-scale passes, and no effect on
 //! any FP result. Always on; printing/resetting is the driver's choice.
 
 const std = @import("std");
@@ -42,7 +42,7 @@ pub const Pass = enum {
 pub const n_passes = @typeInfo(Pass).@"enum".fields.len;
 
 /// Monotonic wall clock in nanoseconds. Linux goes through the syscall
-/// wrapper (no libc needed); everywhere else through std.c — fine on
+/// wrapper (no libc needed); everywhere else through std.c; fine on
 /// Darwin, which always links libSystem.
 pub fn nowNs() u64 {
     switch (builtin.os.tag) {

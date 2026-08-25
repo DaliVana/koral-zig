@@ -1,9 +1,9 @@
-//! M9 C-oracle golden comparison: solve_implicit_lab — the full implicit
+//! M9 C-oracle golden comparison: solve_implicit_lab; the full implicit
 //! rung ladder on PUFFY grid cells over ~10 decades of κΔt stiffness.
 //!
 //! Both sides stop at RADIMPCONV = 1e-10 residuals but walk different
 //! FD-Jacobian/LU floating-point paths, and the residual-to-root
-//! conditioning amplifies at τ ≫ 1 — converged primitives gate at 1e-6
+//! conditioning amplifies at τ ≫ 1; converged primitives gate at 1e-6
 //! (the plan's justified bound). Success/failure and the successful
 //! rung (whichprim/whicheq/whichframe) are compared exactly, with a
 //! small allowance for razor-edge records that converge on different

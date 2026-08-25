@@ -1,8 +1,9 @@
-//! The MPI communication backend (MPI plan §5–§7): a 1D periodic φ-ring of
-//! NTZ ranks (`MPI_Cart_create`), a single-stage ZERO-COPY halo exchange —
+//! The MPI communication backend (MPI plan §5-§7): a 1D periodic φ-ring of
+//! NTZ ranks (`MPI_Cart_create`) and a single-stage zero-copy halo exchange:
 //! four persistent channels (`Send_init`/`Recv_init`) bound directly into
-//! the primitives Field's contiguous z-slabs, an episode being exactly
-//! `Startall` + `Waitall` — and in-place f64 collectives. Thread level is
+//! the primitives Field's contiguous z-slabs. Each exchange is exactly
+//! `Startall` + `Waitall`. The backend also provides in-place f64 collectives.
+//! Thread level is
 //! FUNNELED: every call here happens on the main thread between team
 //! regions (threading.zig's existing contract).
 //!
@@ -36,7 +37,7 @@ pub const Mpi = struct {
     pub const enabled = true;
 
     /// The φ-ring communicator (with φ-only decomposition the world IS the
-    /// ring — no sub-communicators exist anywhere, plan §7.2).
+    /// ring: no sub-communicators exist anywhere, plan §7.2).
     cart: abi.RawComm,
     tk: usize,
     ntz: usize,
@@ -49,7 +50,7 @@ pub const Mpi = struct {
     reqs: [4]abi.RawRequest = @splat(abi.request_null),
     n_reqs: usize = 0,
 
-    /// MPI_Init_thread(FUNNELED) — call once, before Team spawn, before any
+    /// MPI_Init_thread(FUNNELED): call once, before Team spawn, before any
     /// other backend use. Idempotent (guards on MPI_Initialized).
     pub fn initWorld() !void {
         var inited: c_int = 0;
@@ -60,7 +61,7 @@ pub const Mpi = struct {
         if (provided < abi.thread_funneled) return error.MpiThreadLevelTooLow;
     }
 
-    /// Tear the job down before a communicator exists — the startup window
+    /// Tear the job down before a communicator exists; the startup window
     /// between `initWorld` and the driver's `errdefer abortJob`. A
     /// rank-local failure there (an unreadable params file or opacity
     /// table on this node, a bad allocation) would otherwise return
@@ -116,7 +117,7 @@ pub const Mpi = struct {
     /// Bind the four persistent zero-copy channels into a Field's storage
     /// (plan §6.2). `data` is the AoS array (iv fastest, z slowest), `nv`
     /// its per-cell variable count. Each slab is NG full ghost-extended
-    /// SX·SY planes — contiguous by layout, so receives land straight in
+    /// SX·SY planes; contiguous by layout, so receives land straight in
     /// the ghost planes and sends read the live domain edge planes. The
     /// storage must never move afterwards (Field.data never does).
     pub fn bindExchange(self: *Mpi, data: []f64, g: Grid, nv: usize) !void {
@@ -179,7 +180,7 @@ pub const Mpi = struct {
     pub const File = struct { fh: abi.RawFile };
 
     /// Collectively create (or truncate) `path` at exactly `total` bytes.
-    /// A failed open returns an error — it is uniform across ranks (the
+    /// A failed open returns an error; it is uniform across ranks (the
     /// open is collective), so normal propagation stays coordinated.
     pub fn fileCreate(self: *const Mpi, path: [*:0]const u8, total: u64) !File {
         var fh: abi.RawFile = undefined;
@@ -202,7 +203,7 @@ pub const Mpi = struct {
         check(core.MPI_File_close(&f.fh), "MPI_File_close");
     }
 
-    /// Force written data out to storage. COLLECTIVE — every rank calls it.
+    /// Force written data out to storage. COLLECTIVE; every rank calls it.
     /// Used to order a checkpoint's body before its header (see the driver's
     /// writePrimDumpMpi): without that ordering the header can reach disk
     /// while the body it describes does not.
@@ -218,7 +219,7 @@ pub const Mpi = struct {
     /// the same answer, so every rank reaches the same accept/reject decision
     /// and they stay collectively in step. A per-rank status count could have
     /// one rank error out of the sequence while its peers proceed into the
-    /// next collective — trading a corrupt restart for a job-wide hang.
+    /// next collective; trading a corrupt restart for a job-wide hang.
     pub fn fileSize(self: *const Mpi, f: *File) u64 {
         _ = self;
         var n: abi.Offset = 0;
@@ -264,7 +265,7 @@ pub const Mpi = struct {
         check(core.MPI_File_write_at(f.fh, @intCast(offset), bytes.ptr, c.count, c.dt, abi.statusIgnore()), "MPI_File_write_at");
     }
 
-    /// Collective read at a per-rank offset (identical offsets are legal —
+    /// Collective read at a per-rank offset (identical offsets are legal ;
     /// the header read passes offset 0 on every rank).
     pub fn fileReadAtAll(self: *const Mpi, f: *File, offset: u64, bytes: []u8) void {
         _ = self;
@@ -277,7 +278,7 @@ pub const Mpi = struct {
     /// This is the only safe way to leave a run from a RANK-LOCAL failure.
     /// Returning an error instead would unwind into the collective teardown
     /// (`MPI_Comm_free`, then `MPI_Finalize`'s job-wide fence) while the
-    /// peers are still blocked in `MPI_Waitall`/`MPI_Allreduce` — nobody
+    /// peers are still blocked in `MPI_Waitall`/`MPI_Allreduce`; nobody
     /// progresses and nobody exits, so a crash that should take seconds
     /// silently burns the entire wall-clock allocation.
     pub fn abortJob(self: *const Mpi, code: u8) noreturn {

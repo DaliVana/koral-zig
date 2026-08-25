@@ -3,20 +3,20 @@
 //!
 //! The full ko.c:140-263 init sequence runs on the production 384×360 MKS2
 //! grid, compared at three stages over the domain + ghost layers:
-//!   snapshot 0 (puffy_t0_A)      — A_φ in the B slots after set_bc
-//!   snapshot 1 (puffy_t0_p)      — all 13 primitives after calc_BfromA +
+//!   snapshot 0 (puffy_t0_A): A_φ in the B slots after set_bc
+//!   snapshot 1 (puffy_t0_p): all 13 primitives after calc_BfromA +
 //!                                  set_bc (THE keystone)
-//!   snapshot 2 (puffy_t0_pfinal) — β-normalized B slots after postinit
+//!   snapshot 2 (puffy_t0_pfinal); β-normalized B slots after postinit
 //!
 //! What the numbers say (field-scale = max|C−zig| / max|C| over the class):
 //!
 //!  * the velocities and radiation-frame velocities (VX..VZ, FX..FZ) come
-//!    from the analytic angular-momentum profile ℓ(λ) and the metric — no
-//!    integral — and match to ~1e-13 (machine). In an LTE torus F̂ = 0, so
+//!    from the analytic angular-momentum profile ℓ(λ) and the metric; no
+//!    integral: and match to ~1e-13 (machine). In an LTE torus F̂ = 0, so
 //!    prad_ff2lab returns the gas velocity, keeping FX..FZ analytic too.
 //!  * ρ/u/ENTR/Ê and the derived poloidal B (B1,B2, via A_φ ∝ ρ) inherit
 //!    the ln f quadrature. Against production C's gsl_qags at epsrel 1e-8
-//!    the field-scale deviation is ~1e-3 — NOT machine, and NOT Zig's
+//!    the field-scale deviation is ~1e-3; NOT machine, and NOT Zig's
 //!    error: C's qags is only ~1e-3-accurate near the ℓ(λ)-break kink
 //!    (its error estimate is unreliable at a C¹ discontinuity). Zig's GK21
 //!    matches an independent tanh-sinh to 1e-10 (puffy_tests.zig), so Zig
@@ -48,7 +48,7 @@ const SimP = sim_mod.Sim(config.puffy);
 const LP = SimP.Layout;
 
 /// Field-scale deviation: max|c−z| over a class of cells, normalized by the
-/// class field magnitude max|c|. The physically meaningful keystone metric —
+/// class field magnitude max|c|. The physically meaningful keystone metric;
 /// a per-cell *relative* deviation would amplify the razor-thin torus
 /// surface (ρ ∝ ε³ → 0) by 3/ε and drown the field-scale agreement.
 const FieldDev = golden.FieldDev;

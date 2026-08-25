@@ -57,7 +57,7 @@ pub fn readGolden(allocator: std.mem.Allocator, comptime relpath: []const u8, ni
 
 /// A forced-dt step file (oracle/harness_step.c):
 /// "KSTP" u32 version, u32 nx,ny,nz,nv, u64 nrec, then per record
-/// {t, dt, u[ncell·nv], p[ncell·nv], flags[nf·ncell]} — iv fastest, then
+/// {t, dt, u[ncell·nv], p[ncell·nv], flags[nf·ncell]}; iv fastest, then
 /// ix, iy, iz; record 0 is the post-init state. nf = 2 (ENTROPYFLAG,
 /// HDFIXUPFLAG) or 4 (+ RADFIXUPFLAG, RADIMPFIXUPFLAG for RADIATION
 /// builds), inferred from the file length.
@@ -165,7 +165,7 @@ pub fn readKstp(allocator: std.mem.Allocator, comptime relpath: []const u8) !Kst
 }
 
 /// Accumulates the worst normalized deviation per quantity class, then
-/// asserts a class-level bound — a failure reports the observed maximum
+/// asserts a class-level bound; a failure reports the observed maximum
 /// instead of dying on the first element.
 pub const DevTracker = struct {
     max_dev: f64 = 0,
@@ -193,10 +193,10 @@ pub const DevTracker = struct {
 };
 
 /// Field-scale deviation tracker: the worst |C−zig| over a whole-grid sweep,
-/// normalized by that field's own maximum |C| magnitude (not per element) —
+/// normalized by that field's own maximum |C| magnitude (not per element);
 /// so near-zero cells don't inflate a relative error. `add` tracks the value
-/// only; `addLoc` also records the (ix,iy) of the worst-diff cell for
-/// `report`. (Shared by the visc/dynamo/puffy golden tests — the puffy one
+/// only: `addLoc` also records the (ix,iy) of the worst-diff cell for
+/// `report`. (Shared by the visc/dynamo/puffy golden tests; the puffy one
 /// is the superset that keeps location; visc/dynamo use the location-less
 /// `add`.)
 pub const FieldDev = struct {

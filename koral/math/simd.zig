@@ -1,17 +1,17 @@
 //! Lane helpers for `comptime T`-generic numeric kernels (parallelization
 //! plan §2.2): kernels are written once over `T` = `f64` or
-//! `@Vector(W, f64)` — the scalar instantiation stays the golden-tested
+//! `@Vector(W, f64)`; the scalar instantiation stays the golden-tested
 //! reference, the vector instantiation is the production path.
 //!
 //! Bit-identity contract (what makes vector lanes reproduce the scalar
 //! chain bit-for-bit, gated in simd_tests.zig):
-//!  * +,−,×,÷, @sqrt, @abs vectorize losslessly — IEEE-exact per lane;
+//!  * +,−,×,÷, @sqrt, @abs vectorize losslessly; IEEE-exact per lane;
 //!  * transcendentals (pow/cbrt/log1p/log/exp) loop the lanes through the
 //!    SAME scalar routine the f64 instantiation calls;
 //!  * data-dependent branches become `select` of both-sides-computed
-//!    values — the selected value is what the scalar branch computes, the
+//!    values: the selected value is what the scalar branch computes, the
 //!    discarded side must be pure (NaN/inf lanes included);
-//!  * horizontal reductions are forbidden here (they reassociate) — the
+//!  * horizontal reductions are forbidden here (they reassociate); the
 //!    kernels keep per-lane accumulation in scalar order.
 
 const std = @import("std");
@@ -32,7 +32,7 @@ pub inline fn splat(comptime T: type, x: anytype) T {
 }
 
 /// `if (cond) a else b`, per lane. Both sides are evaluated at the call
-/// site — use only where the discarded side is side-effect-free.
+/// site: use only where the discarded side is side-effect-free.
 pub inline fn select(comptime T: type, cond: Mask(T), a: T, b: T) T {
     return if (comptime T == f64) (if (cond) a else b) else @select(f64, cond, a, b);
 }

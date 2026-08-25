@@ -1,4 +1,4 @@
-//! qmri — MRI quality factors of a PUFFY KDMP snapshot: how many grid
+//! qmri: MRI quality factors of a PUFFY KDMP snapshot: how many grid
 //! cells resolve the fastest-growing MRI wavelength λ_MRI = 2π v_A/Ω, per
 //! direction, over the disk body.
 //!
@@ -6,12 +6,12 @@
 //! the orthonormal factors √g_ii cancel between wavelength and cell size:
 //!     Q_i = 2π |b^i| / ( √(ρh + b²) · |Ω| · Δx^i )      (coordinate b^i, Δx^i)
 //! with Ω = u^φ/u^t. The inertia ρh includes the radiation enthalpy
-//! (ρ + γu + (4/3)Ê) — the honest choice for a radiation-supported disk;
+//! (ρ + γu + (4/3)Ê); the honest choice for a radiation-supported disk;
 //! the gas-only variant is bigger by the reported √(w_tot/w_gas) factor.
 //!
 //! Statistics are mass-weighted over the DISK mask (σ = b²/ρ < 1,
 //! ρ > 10³ × the atmosphere floor profile, r < 100) and sum-reducible on
-//! purpose — the same shapes can later stream into scalars.dat under MPI.
+//! purpose: the same shapes can later stream into scalars.dat under MPI.
 //! Thresholds: Q_θ ≳ 10, Q_φ ≳ 20 (Sano+04; Hawley+11,13; EHT comparison).
 //!
 //! usage: qmri <params.toml> <file.kdmp>...

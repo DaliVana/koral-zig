@@ -1,15 +1,15 @@
 //! Mean-field "mimic" dynamo (PUFFY's MIMICDYNAMO), transcribed from KORAL:
 //!
-//!   apply_dynamo    finite.c:1370  — calc_avgs_throughout (scale height) →
+//!   apply_dynamo    finite.c:1370: calc_avgs_throughout (scale height) →
 //!                                    set_bc → mimic_dynamo → calc_u2p.
-//!   mimic_dynamo    magn.c:1003    — per cell (domain + 1 ring incl. corners)
+//!   mimic_dynamo    magn.c:1003: per cell (domain + 1 ring incl. corners),
 //!                                    build an extra toroidal vector potential
 //!                                    ΔA_φ ∝ α_dyn · (dt/P_K) · B^φ, weighted
-//!                                    by radius / field-angle / height; the
-//!                                    DAMPBETA azimuthal-field damping;
-//!                                    calc_BfromA(ΔA_φ) → curl; superimpose the
+//!                                    weighted by radius, field angle, and height;
+//!                                    apply DAMPBETA azimuthal-field damping;
+//!                                    run calc_BfromA(ΔA_φ) → curl; superimpose the
 //!                                    new poloidal B on the domain + p2u.
-//!   calc_avgs_throughout  mpi.c:3163 — the CALCHRONTHEGO density-weighted RMS
+//!   calc_avgs_throughout  mpi.c:3163; the CALCHRONTHEGO density-weighted RMS
 //!                                    scale height scaleth_otg[radius].
 //!
 //! PUFFY switches (define.h:66-74): MIMICDYNAMO, CALCHRONTHEGO, THETAANGLE
@@ -20,13 +20,13 @@
 //!
 //! Fidelity notes:
 //!  * calc_ucon_ucov_from_prims at magn.c:1034 and the facmag1/facmag2 step
-//!    functions are dead (unused by the ΔA_φ / DAMPBETA expressions) — skipped.
+//!    functions are dead (unused by the ΔA_φ / DAMPBETA expressions); skipped.
 //!  * scaleth_otg[0] keeps the *unnormalized* raw sum (the sqrt loop skips
-//!    gix==0, mpi.c:3225) — a C quirk transcribed verbatim; the innermost
+//!    gix==0, mpi.c:3225); a C quirk transcribed verbatim; the innermost
 //!    column's faczH collapses to 0 there anyway.
 //!  * pow(1-zH², 1) == 1-zH² (libm special case) → written as a plain sub.
 //!  * P1: the three per-cell passes (scale-height columns, ΔA_φ ring,
-//!    superpose+p2u) run band-parallel via threading.zig — every band
+//!    superpose+p2u) run band-parallel via threading.zig; every band
 //!    writes only its own cells/columns, so the result is bit-identical to
 //!    serial at any nthreads (pinned by the dynamo threading test).
 
@@ -62,7 +62,7 @@ pub const Params = struct {
 };
 
 /// C: the DAMPBETA azimuthal-field damping (magn.c:1144-1151). dB^φ opposes
-/// B^φ, grows with (β−β_sat), and is clamped so it never overshoots zero — so
+/// B^φ, grows with (β−β_sat), and is clamped so it never overshoots zero, so
 /// |B^φ| is non-increasing and its sign is preserved (saturation toward 0
 /// once β exceeds BETASATURATED). Pure, so it can be unit-tested directly.
 pub fn dampBphi(alphabeta: f64, facradius: f64, faczh: f64, dt_over_pk: f64, beta: f64, betasat: f64, bphi: f64) f64 {
@@ -72,7 +72,7 @@ pub fn dampBphi(alphabeta: f64, facradius: f64, faczh: f64, dt_over_pk: f64, bet
     return dbphi;
 }
 
-/// The per-cell state mimic_dynamo consumes after the geometry / frame gather —
+/// The per-cell state mimic_dynamo consumes after the geometry / frame gather;
 /// everything the ΔA_φ law reads that isn't a fixed parameter.
 pub const DynamoCell = struct {
     r: f64, // BL radius
@@ -92,7 +92,7 @@ pub const DynamoOut = struct {
     skip: bool, // r inside 1.0001·r_horizon → the cell contributes nothing
 };
 
-/// C: the per-cell body of mimic_dynamo (magn.c:1042-1151) — the ΔA_φ toroidal
+/// C: the per-cell body of mimic_dynamo (magn.c:1042-1151). The ΔA_φ toroidal
 /// vector potential and the DAMPBETA azimuthal-field damping, as a pure function
 /// of the gathered cell state. Extracted from deltaARows so the dynamo *law* (the
 /// α sign flip across the midplane, the horizon/ISCO radial cutoffs, the faczh
@@ -149,12 +149,12 @@ pub fn dynamoDeltaA(dp: Params, a: f64, dt: f64, rhor: f64, risco: f64, c: Dynam
     return .{ .aphi = aphi, .bphi = new_bphi, .skip = false };
 }
 
-/// C: calc_avgs_throughout / CALCHRONTHEGO (mpi.c:3168) — density-weighted RMS
+/// C: calc_avgs_throughout / CALCHRONTHEGO (mpi.c:3168). Density-weighted RMS
 /// angular scale height at each radius, sqrt(Σρ√g(π/2−θ)² / Σρ√g) over the
 /// θ(,φ) column. Fills sim.scaleth[0..nx). Single rank (TOI=0): gix==0 stays
 /// the raw (unnormalized) sum, matching C's `if(gix>0 && gix<TNX)` guard.
 /// Band-parallel over ix: each worker owns whole columns, so every column's
-/// θ-sum accumulates in serial order — bit-identical at any nthreads.
+/// θ-sum accumulates in serial order; bit-identical at any nthreads.
 pub fn calcScaleHeight(comptime SimT: type, sim: *SimT) void {
     // MPI plan §7.2: with ntz>1 the θ,φ column spans all ranks — take the
     // ring-reduced path (partial sums → Allreduce(SUM) → √). The world IS
@@ -176,7 +176,7 @@ pub fn calcScaleHeight(comptime SimT: type, sim: *SimT) void {
 
 /// The ntz>1 scale height: per-radius partial sums over the LOCAL φ wedge
 /// (same iy-outer/iz-inner accumulation order as scaleHeightAtIx), two
-/// pre-√ Allreduce(SUM)s of the nx-length arrays, then the C finalize —
+/// pre-√ Allreduce(SUM)s of the nx-length arrays, then the C finalize;
 /// ix==0 keeps the raw (now-global) sum (toi==0 identically, so the local
 /// index test IS C's `gix>0` global test).
 fn calcScaleHeightRing(comptime SimT: type, sim: *SimT) void {
@@ -232,10 +232,10 @@ fn scaleHeightCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
 }
 
 /// The pre-√ column sums (Σρ√g, Σρ√gΔθ²) at one radial index over THIS
-/// rank's θ(,φ) column — the fold operands of the scale-height reduction.
+/// rank's θ(,φ) column; the fold operands of the scale-height reduction.
 /// Split out so a globally-folded diagnostic (io/scalars.zig under MPI)
 /// can Allreduce(SUM) them before the finalize; the accumulation order is
-/// the load-bearing part (iy outer, iz inner — matches partialSumCols).
+/// the load-bearing part (iy outer, iz inner; matches partialSumCols).
 pub fn scaleHeightPartsAtIx(comptime SimT: type, sim: *const SimT, ix: i64) struct { sig: f64, sth: f64 } {
     const L = SimT.Layout;
     const rho_i = comptime L.index(.rho);
@@ -268,7 +268,7 @@ pub fn scaleHeightFinalize(ix: i64, sig: f64, sth: f64) f64 {
     return if (ix > 0) @sqrt(sth / sig) else sth;
 }
 
-/// The density-weighted scale height at a single radial index — the per-column
+/// The density-weighted scale height at a single radial index; the per-column
 /// body of calcScaleHeight as a pure read (no sim.scaleth write), so a
 /// diagnostic can query one radius without mutating the Sim or filling the
 /// whole grid. C's ix==0 quirk (raw, unnormalized sum) is preserved. Both
@@ -278,7 +278,7 @@ pub fn scaleHeightAtIx(comptime SimT: type, sim: *const SimT, ix: i64) f64 {
     return scaleHeightFinalize(ix, parts.sig, parts.sth);
 }
 
-/// C: calc_angle_brbphibsq (magn.c:804), non-avg path — the field pitch
+/// C: calc_angle_brbphibsq (magn.c:804), non-avg path. The field pitch
 /// −b^r b^φ √(g_rr g_φφ) / b² evaluated in BL. Returns {angle, bsq}. The
 /// MKS2/BL geometries and the MKS2→BL Jacobian are supplied precomputed
 /// (finding #1): the BL sidecar (MetricCache.blGeom/jacMy2Bl) is bit-identical
@@ -302,13 +302,13 @@ fn fieldAngle(comptime SimT: type, geomMKS2: *const Geometry, geomBL: *const Geo
     return .{ .angle = -brbphi / b.bsq, .bsq = b.bsq };
 }
 
-/// C: mimic_dynamo (magn.c:1003) — build ΔA_φ into the dynamo scratch, apply
+/// C: mimic_dynamo (magn.c:1003). Build ΔA_φ into the dynamo scratch, apply
 /// the DAMPBETA azimuthal damping to p[B3], curl ΔA_φ, and superimpose the
 /// resulting poloidal B on the domain (+ p2u). `dt` is the sub-step dt.
-/// The two per-cell passes (ΔA_φ and superpose+p2u) are row-parallel — every
+/// The two per-cell passes (ΔA_φ and superpose+p2u) are row-parallel; every
 /// cell writes only its own ΔA_φ / B³ / B+u slots, so the result is
 /// bit-identical to serial; the cheap curl stencil between them stays serial
-/// (it reads the finished ΔA_φ of neighbour rows — a natural barrier).
+/// (it reads the finished ΔA_φ of neighbour rows; a natural barrier).
 pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) Error!void {
     const L = SimT.Layout;
     if (comptime !L.hasVar(.b1)) return;
@@ -454,7 +454,7 @@ fn superposeRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) relele.Err
     }
 }
 
-/// C: apply_dynamo (finite.c:1370) — the full per-sub-step sequence,
+/// C: apply_dynamo (finite.c:1370). The full per-sub-step sequence,
 /// including its MPI order: mpi_exchangedata → calc_avgs_throughout →
 /// set_bc → mimic_dynamo → calc_u2p (the third canonical exchange site,
 /// MPI plan §6.1).

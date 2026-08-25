@@ -2,22 +2,22 @@
 //! split into NTZ contiguous z-slabs, one per rank, forming a 1D periodic
 //! ring. θ and r are NEVER decomposed (every radial/polar subtlety stays
 //! rank-local) and 2D (nz==1) never decomposes at all. `decompose()` is pure
-//! arithmetic — unit-testable without MPI (validation ladder gate 1).
+//! arithmetic: unit-testable without MPI (validation ladder gate 1).
 
 const std = @import("std");
 const Grid = @import("../grid.zig").Grid;
 const BcFace = @import("../sim/bc.zig").BcFace;
 
 pub const Error = error{
-    /// 2D runs are single-node by decision — one modern node beats C's
+    /// 2D runs are single-node by decision; one modern node beats C's
     /// 960-rank 2D setup; requesting ntz>1 with nz==1 is a config error.
     TwoDNeverDecomposes,
-    /// TNZ % NTZ != 0 — only uniform slabs are supported (weighted cuts are
+    /// TNZ % NTZ != 0; only uniform slabs are supported (weighted cuts are
     /// a documented later option).
     PhiNotDivisible,
     /// nz_local < NG: a rank's ghost region must be fillable from its
     /// adjacent neighbor's domain alone (single-hop nearest-neighbor
-    /// exchange; C has the identical per-tile ≥ NG constraint).
+    /// exchange: C has the identical per-tile ≥ NG constraint).
     SlabThinnerThanGhosts,
     /// tk must be in [0, ntz).
     BadRingRank,
@@ -25,11 +25,11 @@ pub const Error = error{
 
 /// The decomposition record a rank carries: its slab, its ring position, and
 /// which faces are physical boundaries (C: TOI/TOJ/TOK + mpi_isitBC).
-/// TOI and TOJ are identically 0 — r and θ whole.
+/// TOI and TOJ are identically 0; r and θ whole.
 pub const Decomp = struct {
     /// Global dims/extents (what the params file describes).
     global: Grid,
-    /// This rank's slab: nz = TNZ/NTZ, z coordinates offset via izoff — see
+    /// This rank's slab: nz = TNZ/NTZ, z coordinates offset via izoff. See
     /// Grid.initLocal (dz copied, never recomputed).
     local: Grid,
     /// φ-slab origin: global z-index of local z-cell 0 (C: TOK).
@@ -39,9 +39,9 @@ pub const Decomp = struct {
     /// Ring size (C: NTZ). 1 ⇒ no decomposition, all faces physical.
     ntz: usize,
 
-    /// C: mpi_isitBC — is this face a physical boundary of this rank's slab?
+    /// C: mpi_isitBC. Is this face a physical boundary of this rank's slab?
     /// x/y faces: always (r/θ never split). z faces: only when the ring is
-    /// trivial — with ntz>1 the periodic-φ wrap becomes the interior
+    /// trivial: with ntz>1 the periodic-φ wrap becomes the interior
     /// exchange and setBc's z fill reduces to p2u of exchanged primitives.
     pub fn isPhysical(d: *const Decomp, face: BcFace) bool {
         return switch (face) {

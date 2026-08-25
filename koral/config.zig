@@ -1,7 +1,7 @@
 //! Compile-time configuration: which physics modules exist, which algorithms
 //! run, which coordinates the grid lives in. Everything here changes generated
 //! code (variable layout, ghost depth, kernel selection) and is therefore
-//! comptime; numbers a physicist tweaks between runs live in `params.zig`.
+//! comptime: numbers a physicist tweaks between runs live in `params.zig`.
 //!
 //! Mirrors the roles of KORAL's `define.h`/`choices.h` macro layer
 //! (see koral_lite/docs/zig-rewrite-architecture.md §2).
@@ -44,7 +44,7 @@ pub const TimeStepping = enum { rk1, rk2, rk2heun, rk2imex };
 /// Coordinate system of the internal (uniform) grid (C: MYCOORDS).
 pub const Coords = enum { mink, bl, ks, mks2 };
 
-/// Velocity primitive parametrization (C: VELPRIM; VELR is the robust default).
+/// Velocity primitive parametrization (C: VELPRIM; VELR is the default).
 /// Re-exports relele.VelType so there is a single VelType across the
 /// codebase (its explicit 1/2/3 values are harmless here).
 pub const VelType = relele.VelType;
@@ -57,9 +57,9 @@ pub const Config = struct {
     coords: Coords = .mink,
     velprim: VelType = .velr,
     velprim_rad: VelType = .velr,
-    /// C: EVOLVEPHOTONNUMBER — adds the NF variable to the radiation block.
+    /// C: EVOLVEPHOTONNUMBER. Adds the NF variable to the radiation block.
     evolve_photon_number: bool = false,
-    /// C: NRELBIN — number of nonthermal electron bins (relel module only).
+    /// C: NRELBIN. Number of nonthermal electron bins (relel module only).
     n_relel_bins: usize = 0,
 
     pub fn ghostCells(comptime self: Config) usize {

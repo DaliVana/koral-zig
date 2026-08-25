@@ -1,24 +1,24 @@
-//! Silo (`.silo`) export for VisIt — a port of the PUFFY-relevant subset of
+//! Silo (`.silo`) export for VisIt; a port of the PUFFY-relevant subset of
 //! KORAL's `silo.c`. Writes a `DB_PDB` non-collinear quad mesh (`mesh1`) plus
 //! zone-centered fields through the `silo` wrapper package (silo-zig), which
 //! builds LLNL Silo 4.12 from source (PDB driver only, no HDF5) and links it
-//! statically — so there is no dependency on a VisIt/Silo install, and the
+//! statically: so there is no dependency on a VisIt/Silo install, and the
 //! files are the same `DB_PDB` format VisIt reads.
 //!
 //! Field names / centering mirror `silo.c` so existing VisIt sessions and
-//! expressions carry over — including PUFFY's two silo.c additions over the
+//! expressions carry over; including PUFFY's two silo.c additions over the
 //! base: the `PRINTKAPPASTOSILO` opacity block (`kappa_gas_abs`, `kappa_rad_abs`,
 //! `kappa_gas_num`, `kappa_rad_num`, `kappa_gas_ross`, `kappa_rad_ross`,
 //! `tot_emissivity`, `kappa_es`) and the `PRINT_FIXUPS_TO_SILO` flags
 //! (`fixups_u2pmhd`, `fixups_u2prad`, `fixups_radimp`, `fixups`). The mesh nodes
 //! are the cell *boundaries* transformed
-//! to Cartesian (via the OUTCOORDS = BL spherical coordinates), and — as in
-//! PUFFY's `SILO2D_XZPLANE` — a 2D (nz==1) run is laid out in the meridional
+//! to Cartesian (via the OUTCOORDS = BL spherical coordinates), and as in
+//! PUFFY's `SILO2D_XZPLANE`; a 2D (nz==1) run is laid out in the meridional
 //! (x,z) plane with the in-plane vector component set to the physical z-part.
 //!
 //! Gated by the `-Dsilo` build flag (`build_options.silo`). When it is off,
 //! `enabled == false` and `write()` is a comptime no-op whose body is never
-//! analyzed — so no Silo symbols are referenced, the `silo` import resolves to
+//! analyzed: so no Silo symbols are referenced, the `silo` import resolves to
 //! a tiny stub (koral/io/silo_disabled.zig), and `zig build test` plus any
 //! Silo-less machine keep building. Only the `-Dsilo` problem executables
 //! compile and link the from-source Silo.
@@ -56,7 +56,7 @@ pub const Options = struct {
 // wrapper's C library is only linked — when `-Dsilo` is off.
 
 /// Project a spherical-basis vector `(vr, vth, vph)` (θ,φ components already
-/// scaled to orthonormal) at direction `(r,θ,φ)` onto Cartesian axes — the
+/// scaled to orthonormal) at direction `(r,θ,φ)` onto Cartesian axes; the
 /// rotation `silo.c` applies before writing velocity/B/flux vectors.
 fn sphToCart(th: f64, ph: f64, vr: f64, vth: f64, vph: f64) [3]f64 {
     const st = @sin(th);

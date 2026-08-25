@@ -9,7 +9,7 @@
 //! MKS2 *derived* quantities (inverse, dlgdet, Christoffels) gate at 1e-8:
 //! C's Mathematica exports mix incompatible θ-map variants (truncated
 //! `Pi` vs exact-π literals, full-θ vs (θ−π/2) forms), so C's own
-//! g·G−I reaches 4.6e-9 near the axis — measured from the golden data
+//! g·G−I reaches 4.6e-9 near the axis; measured from the golden data
 //! itself. Our AD implementation is internally consistent at 1e-15 and
 //! matches C's *covariant* MKS2 metric (θ_C-form, see forms.zig) at
 //! 1e-13; the looser MKS2 gates reflect C's internal spread, not ours.

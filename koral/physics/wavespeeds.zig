@@ -8,15 +8,15 @@
 //! Physics: these speeds set the Riemann solver's dissipation and the CFL
 //! step. c_s² = Γp/(ρ+u+p) is the relativistic sound speed and
 //! v_A² = b²/(b²+ρ+u+p) the Alfvén speed; their relativistic combination
-//! bounds the anisotropic fast-magnetosonic cone from above — an
+//! bounds the anisotropic fast-magnetosonic cone from above; an
 //! overestimate except along/perpendicular to B, which only adds numerical
 //! diffusion, never instability. The lab-frame quadratic carries the flow
 //! velocity, lapse, shift and frame dragging, so the left/right roots are
-//! asymmetric; the co-going clamps (left ≤ 0 ≤ right) are what HLL
+//! asymmetric: the co-going clamps (left ≤ 0 ≤ right) are what HLL
 //! requires of its bounding speeds.
 //!
 //! Radiation wavespeeds (τ-limited) arrive with M7; this module is the gas
-//! part only. `active_dims` marks active directions (C: TNX/TNY/TNZ > 1) — C
+//! part only. `active_dims` marks active directions (C: TNX/TNY/TNZ > 1); C
 //! leaves the entries of *inactive* directions uninitialized, we return 0.
 
 const std = @import("std");
@@ -28,7 +28,7 @@ const Geometry = @import("../geometry.zig").Geometry;
 
 /// Left/right lab-frame speeds per direction, ordered like C's aret[6]:
 /// {axl, axr, ayl, ayr, azl, azr}. `wspeed2` is per direction (C passes
-/// wspeed2x/y/z — the gas uses one value, the τ-damped rad speeds differ).
+/// wspeed2x/y/z; the gas uses one value, the τ-damped rad speeds differ).
 pub fn lrCore(
     ucon: [4]f64,
     geom: *const Geometry,
@@ -93,7 +93,7 @@ pub fn gasWspeed2(rho: f64, uu: f64, bsq: f64, gamma_adiab: f64) f64 {
     return cs2 + va2 - cs2 * va2;
 }
 
-/// Gas wavespeeds of C's calc_wavespeeds_lr_pure — aaa[0..6] with the
+/// Gas wavespeeds of C's calc_wavespeeds_lr_pure; aaa[0..6] with the
 /// co-going clamps applied (left ≤ 0 ≤ right).
 pub fn gasWavespeedsLr(
     comptime cfg: config.Config,

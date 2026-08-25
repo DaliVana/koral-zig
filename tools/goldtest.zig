@@ -1,4 +1,4 @@
-//! goldtest — run the Gold et al. 2020 (ApJ 897, 148) EHT GRRT
+//! goldtest: run the Gold et al. 2020 (ApJ 897, 148) EHT GRRT
 //! code-comparison tests (render/verify.zig) and report total fluxes
 //! against the paper's Table 2: the EXACT (arbitrary-precision) solution
 //! and the seven participating codes (BHOSS, GRTRANS, IPOLE, ODYSSEY,
@@ -8,11 +8,11 @@
 //! matches their West-right panels, Doppler crescent on the east side).
 //!
 //! usage: goldtest [outdir]
-//!   --size N     image resolution        (default 128 — the paper's)
+//!   --size N     image resolution        (default 128; the paper's)
 //!   --ss N       rays per pixel axis     (default 2)
 //!   --eps E      geodesic step, cells    (default 0.25)
 //!   --tests STR  subset, e.g. "145"      (default "12345")
-//!   --fits       also dump gold_testN.fits (Jy/pixel — for the Figure 2/3
+//!   --fits       also dump gold_testN.fits (Jy/pixel; for the Figure 2/3
 //!                reproduction script, tools/goldfig.py)
 //!   --tag STR    suffix for output names (e.g. "ref" -> gold_testN_ref.fits)
 //!   --threads N                          (default: CPU count)

@@ -1,4 +1,4 @@
-//! M7 theory gates — M1 radiation basics.
+//! M7 theory gates; M1 radiation basics.
 //!
 //! Gates (plan M7):
 //!  * isotropic radiation at rest → Eddington tensor diag(Ê, Ê/3, …) @1e-14
@@ -8,7 +8,7 @@
 //!  * closed-form γ² agrees with a test-local bisection of the M1
 //!    consistency equation @1e-12
 //!  * over-cap / under-floor conserveds take the cold branch (corrected
-//!    set, γ pinned to γmax or 1) — M1's |F̂| ≤ Ê ceiling in VELR form
+//!    set, γ pinned to γmax or 1); M1's |F̂| ≤ Ê ceiling in VELR form
 //!  * comoving observer: Ê(u_gas = u_rad) = Êrf @1e-13 (frame covariance
 //!    of Ê under coordinate transforms is an M2 gate)
 //!  * rad wavespeeds ±1/√3 at rest as τ → 0 @1e-12; thick limit 4/(3τ);
@@ -81,7 +81,7 @@ fn testGeoms() [3]Geometry {
 }
 
 /// VELR components with a prescribed Lorentz factor wrt the normal observer
-/// (γ² = 1 + g_ij ũ^i ũ^j) — coordinate-basis components in curved metrics
+/// (γ² = 1 + g_ij ũ^i ũ^j); coordinate-basis components in curved metrics
 /// carry the metric scale, so raw component sampling gives huge γ.
 fn velrGamma(geo: *const Geometry, gamma: f64, rng: std.Random) [3]f64 {
     var n: [3]f64 = undefined;

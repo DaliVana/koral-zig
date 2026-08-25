@@ -1,4 +1,4 @@
-//! Serial (single-process) communication backend — the default. Mirrors
+//! Serial (single-process) communication backend; the default. Mirrors
 //! comm/mpi/mpi.zig's API as no-ops so the numerics and drivers are written
 //! once against `comm.Backend` (comm/comm.zig selects at comptime on
 //! -Dmpi). Periodic wrap stays a boundary-stage concern here, exactly as a
@@ -45,7 +45,7 @@ pub const Serial = struct {
 
     /// MPI-IO mirror so drivers compile against either backend. Statically
     /// reachable but dynamically dead: every caller is behind an `ntz > 1`
-    /// branch, and Serial.init rejects ntz != 1 — a serial run does file
+    /// branch, and Serial.init rejects ntz != 1; a serial run does file
     /// I/O through plain std.Io (the golden path), never through these.
     pub const File = struct {};
     pub fn fileCreate(_: *const Serial, _: [*:0]const u8, _: u64) !File {
@@ -65,7 +65,7 @@ pub const Serial = struct {
 
     /// Single process: there is no job to tear down, so normal error
     /// propagation is correct and callers must never reach this. (The MPI
-    /// backend's version never returns — see comm/mpi/mpi.zig.)
+    /// backend's version never returns. See comm/mpi/mpi.zig.)
     pub fn abortJob(_: *const Serial, code: u8) noreturn {
         std.process.exit(code);
     }

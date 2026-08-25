@@ -10,7 +10,7 @@
 //!   bounds / not finite · -104 negative uint · -105 negative rho ·
 //!   -120 utcon not finite · -150 no valid initial W.
 //!
-//! The Newton iteration is transcribed literally — including the entropy
+//! The Newton iteration is transcribed literally; including the entropy
 //! residual using dwmrho0/dW = 1/γ² (u2p.c:2185).
 //! The derivative is only a Newton direction; the converged root is the
 //! same, but the iteration path must match C's for golden agreement.
@@ -31,12 +31,12 @@ const big: f64 = 1.0 / 1.0e-80;
 
 pub const Etype = enum { hot, entropy };
 
-/// C: B2RHOFLOORFRAME — the frame the b²/ρ magnetic floor injects new mass in.
+/// C: B2RHOFLOORFRAME. The frame the b²/ρ magnetic floor injects new mass in.
 pub const B2FloorFrame = enum { driftframe, zamoframe };
 
 /// Times a drift-frame floor guard diverted from the baseline algebra
 /// (near-zero field bail-out, ucondr⁰ bail-out, xx clamp, vpar damping, or
-/// the VEL3→VELR fallback) — koral_lite_puffy prints a line per event; we
+/// the VEL3→VELR fallback); koral_lite_puffy prints a line per event; we
 /// count instead (checkFloorsMhd runs inside parallelRange, and the guards
 /// fire per face state, so a printf would both race and flood). Cumulative
 /// over the process, summed across MPI ranks by the scalars collective;
@@ -57,7 +57,7 @@ pub const FloorParams = struct {
     b2rhofloorframe: B2FloorFrame = .driftframe,
     /// koral_lite_puffy ISENTROPIC_B2RHOFLOORS, drift path: the injected mass
     /// carries the pre-floor u/ρ (u scaled by the same factor f as ρ) instead
-    /// of the separate b²/u factor fuu — floored gas blends in thermally
+    /// of the separate b²/u factor fuu; floored gas blends in thermally
     /// rather than coming out hot/cold. The ZAMO path is already isentropic.
     isentropic_b2rhofloors: bool = false,
     /// The b² > b2uuratiomax·u internal-energy floor (drift frame only, as in
@@ -66,14 +66,14 @@ pub const FloorParams = struct {
     b2uufloor: bool = true,
     /// koral_lite_puffy (u2p.c, 2026-08-11): below this internal radial
     /// coordinate the drift branch skips the velocity algebra and floors in
-    /// the fluid frame (velocity untouched) — the betapar/ucondr cancellations
+    /// the fluid frame (velocity untouched); the betapar/ucondr cancellations
     /// are at their worst inside the horizon and nothing there reaches the
     /// flow outside. Set by the problem to x1(r_horizon) (monotone r ⇒ a
     /// coordinate-local compare); −inf (default) keeps the branch dead.
     horizon_x1: f64 = -std.math.inf(f64),
 
     /// The bare choices.h defaults (what a define.h without floor overrides
-    /// gets) — used by the M5/M6 oracle problems, whose define.h sets only
+    /// gets); used by the M5/M6 oracle problems, whose define.h sets only
     /// B2RHOFLOORFRAME DRIFTFRAME to match our drift-frame implementation.
     pub const cdefault = FloorParams{};
 
@@ -223,10 +223,10 @@ fn wOutOfBounds(W: f64, Qtsq: f64, QdotBsq: f64, Bsq: f64, res: Residual) bool {
         !std.math.isFinite(res.f) or !std.math.isFinite(res.df);
 }
 
-/// C: u2p_solver_W (u2p.c:1024). Returns C's status code; on 0 the
+/// C: u2p_solver_W (u2p.c:1024). Returns C's status code. On 0 the
 /// MHD primitive slots of `pp` are overwritten.
 ///
-/// `pp` is IN/OUT: on entry it must hold the cell's current primitives —
+/// `pp` is IN/OUT: on entry it must hold the cell's current primitives;
 /// pp[rho], pp[uu], pp[vx..vz] seed the Newton initial guess (C: the previous
 /// step's p). A zeroed or arbitrary buffer gives W≈0, ~50 stuck iterations,
 /// and a −150 return → entropy fallback; the guess-dependence is load-bearing
@@ -468,7 +468,7 @@ pub fn u2pMhd(
 
 /// C: check_floors_mhd (u2p.c:416) with PUFFY's build: no RHOFLOOR_BH/INIT,
 /// VELPRIM == VELR, no electron/relel species. The b²/ρ magnetic floor injects
-/// new mass in `floors.b2rhofloorframe` — DRIFTFRAME (Ressler+2017, validated)
+/// new mass in `floors.b2rhofloorframe`; DRIFTFRAME (Ressler+2017, validated)
 /// or ZAMOFRAME (koral_lite_puffy). Returns -1 if anything was floored, else 0;
 /// pp is modified in place and ENTR re-synced after a floor hits.
 pub fn checkFloorsMhd(

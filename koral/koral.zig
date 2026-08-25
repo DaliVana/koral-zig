@@ -1,4 +1,4 @@
-//! koral — a Zig reimplementation of KORAL (GR radiation MHD).
+//! koral: a Zig reimplementation of KORAL (GR radiation MHD).
 //!
 //! `koral` is a library; a *problem* is an executable that imports it,
 //! declares a comptime `Config`, loads runtime `Params`, and supplies
@@ -92,7 +92,7 @@ pub const problems = struct {
 pub const testing = struct {
     pub const golden = @import("testing/golden.zig");
     pub const tubes = @import("testing/tubes.zig");
-    /// Zig-generated regression baselines — NOT the C oracle; see the module
+    /// Zig-generated regression baselines; NOT the C oracle. See the module
     /// header for what a mismatch does and does not mean.
     pub const selfgolden = @import("testing/selfgolden.zig");
     pub const selfscenarios = @import("testing/selfscenarios.zig");

@@ -5,7 +5,7 @@
 //!
 //! Physics: ideal gas, p = (Γ−1)u. The entropy tracer S = ρ·ln(p^n/ρ^{n+1})
 //! with n = 1/(Γ−1) is the logarithmic specific entropy of an ideal gas,
-//! carried as an extra advected conserved variable — redundant while energy
+//! carried as an extra advected conserved variable; redundant while energy
 //! conservation holds, but the inversion's backup where u is a tiny
 //! difference of large numbers (high magnetization) and the energy-based
 //! u2p fails. The stress tensor
@@ -23,7 +23,7 @@ const layout = @import("../layout.zig");
 const Geometry = @import("../geometry.zig").Geometry;
 
 /// Specific-entropy-like conserved S(ρ, u) (C: calc_Sfromu, physics.c:1457;
-/// log form — NOLOGINS is not defined for PUFFY).
+/// log form; NOLOGINS is not defined for PUFFY).
 pub fn sFromU(rho: f64, u: f64, gamma_adiab: f64) f64 {
     return sFromUG(f64, rho, u, gamma_adiab);
 }
@@ -79,7 +79,7 @@ pub fn calcTij(
 }
 
 /// The tensor assembly of calcTij with the gas 4-velocity `u` and magnetic
-/// four-vector (`bcon`, `bsq`) already in hand — lets a caller that has
+/// four-vector (`bcon`, `bsq`) already in hand; lets a caller that has
 /// solved these (e.g. fFluxPrime) skip the duplicate convertBoth +
 /// bconBcovBsqFrom4vel. Bit-identical to calcTij: same inputs, same
 /// expression shape. (`bcon`/`bsq` are the zero-field values when b1 is

@@ -2,27 +2,27 @@
 //! radiation-MHD limotorus around a 10 M☉ Schwarzschild hole in MKS2.
 //!
 //! This module transcribes the problem-side C files:
-//!   tools.c     — limotorus solver (lamBL/rmidlam bisections at 5ε, the
+//!   tools.c: limotorus solver (lamBL/rmidlam bisections at 5ε, the
 //!                 ln f quadrature; gsl_integration_qags epsrel 1e-8 is
 //!                 replaced by math/quad.zig adaptive GK21 at rtol 1e-12,
-//!                 so the C diff is bounded by C's own epsrel — pinned by
+//!                 so the C diff is bounded by C's own epsrel; pinned by
 //!                 the epsrel-1e-12 oracle variant)
-//!   prepinit.c  — per-cell initial primitives (torus + atmospheres, LTE
+//!   prepinit.c: per-cell initial primitives (torus + atmospheres, LTE
 //!                 pressure split P = bT + aT⁴, prad_ff2lab, BL→MKS2,
 //!                 QUADLOOPS vector potential in the B slots)
-//!   init.c      — ENTR from calc_Sfromu + p2u
-//!   postinit.c  — global β normalization: fac = √(MAXBETA/maxβ),
+//!   init.c: ENTR from calc_Sfromu + p2u
+//!   postinit.c: global β normalization: fac = √(MAXBETA/maxβ),
 //!                 BETANORMFULL (max over the whole domain)
-//!   bc.c        — XBCHI outflow with r-rescaling + no-inflow, XBCLO copy
+//!   bc.c: XBCHI outflow with r-rescaling + no-inflow, XBCLO copy
 //!                 (RMIN=1.85 < r_horizon=2 skips the inflow check),
 //!                 YBC polar reflection (VY/B2/FY sign flip)
 //! and the ko.c init sequence (ko.c:140-263): prepinit+init → set_bc →
-//! calc_BfromA(p,1) → set_bc → postinit. No BC refresh after postinit —
+//! calc_BfromA(p,1) → set_bc → postinit. No BC refresh after postinit;
 //! ghost B keeps the pre-scaling values, exactly as in C.
 //!
 //! C recomputes the angular-momentum breaks and inner-edge constants for
 //! every cell (tools.c:239-253); they are cell-independent, so we compute
-//! them once (TorusConsts) — bitwise the same values.
+//! them once (TorusConsts); bitwise the same values.
 
 const std = @import("std");
 const config = @import("../../config.zig");
@@ -58,7 +58,7 @@ const Geometry = geometry.Geometry;
 // ---------------------------------------------------------------------------
 // problem constants (PROBLEMS/PUFFY/define.h)
 
-/// The fiducial (Schwarzschild) RMIN — PUFFY's define.h value, immutable. Used
+/// The fiducial (Schwarzschild) RMIN; PUFFY's define.h value, immutable. Used
 /// as the reference depth for `rminForSpin`; also the value tests/goldens use.
 pub const rmin_ref: f64 = 1.85;
 
@@ -67,8 +67,8 @@ pub const Atm = struct { uintatmmin: f64, eradatmmin: f64 };
 
 /// Inner boundary placed the same fraction inside the (Kerr) horizon as the
 /// fiducial a = 0 setup: RMIN(a) = rmin_ref · r_h(a)/r_h(0), i.e. 0.925·r_h(a)
-/// (r_h(0) = 2). This is the standard KORAL idiom — other problems define
-/// `RMIN = 0.7…0.825·RH` — and it is bit-exactly rmin_ref at a = 0 (·2/2 is
+/// (r_h(0) = 2). This is the standard KORAL idiom; other problems define
+/// `RMIN = 0.7…0.825·RH`, and it is bit-exactly rmin_ref at a = 0 (·2/2 is
 /// exact), so a Schwarzschild run is unchanged. For a = 0.9375, r_h = 1.348 →
 /// RMIN ≈ 1.247 (~3.5 cells inside the horizon at nx = 256), restoring the
 /// clean, causally-disconnected plain-copy excision at high spin.
@@ -78,7 +78,7 @@ pub fn rminForSpin(a: f64) f64 {
 
 /// Runtime physics for one PUFFY run. Defaults are the validated koral_lite
 /// PROBLEM 147 constants (tests and goldens use `defaults` and never go
-/// through `fromParams`). `fromParams` is how a TOML preset — Sgr A*, AGN —
+/// through `fromParams`). `fromParams` is how a TOML preset; Sgr A*, AGN;
 /// retargets the run without process-wide mutation. See
 /// docs/PUFFY_AGN_DIVERGENCES.md for what a preset can and cannot match.
 pub const Physics = struct {
@@ -327,7 +327,7 @@ pub const lt = struct {
 };
 
 /// The production grid (define.h: TNX=384, TNY=360, TNZ=1, NG=3); nx/ny can
-/// be reduced for cheaper tests — the coordinate extents stay PUFFY's. The
+/// be reduced for cheaper tests; the coordinate extents stay PUFFY's. The
 /// 2D axisymmetric slice (nz=1). Uses `defaults` (validated extents).
 pub fn makeGrid(nx: usize, ny: usize) Grid {
     return defaults.makeGrid(nx, ny);
@@ -336,7 +336,7 @@ pub fn makeGrid(nx: usize, ny: usize) Grid {
 /// Grid with an explicit azimuthal resolution (define.h TNZ). nz=1 is the 2D
 /// axisymmetric slice and reproduces `makeGrid` byte-for-byte; nz>1 subdivides
 /// the fixed PHIWEDGE=π/2 wedge with periodic z (φ) boundaries. Only the
-/// resolution is tunable — the extents stay `defaults`. Production uses
+/// resolution is tunable; the extents stay `defaults`. Production uses
 /// `Physics.makeGridNz` so a params override of RMIN/RMAX is honored.
 pub fn makeGridNz(nx: usize, ny: usize, nz: usize) Grid {
     return defaults.makeGridNz(nx, ny, nz);
@@ -364,7 +364,7 @@ const pi_2: f64 = std.math.pi / 2.0; // C: M_PI_2
 
 pub const Gd = struct { gdtt: f64, gdtp: f64, gdpp: f64 };
 
-/// tools.c:1 compute_gd — BL g_tt, g_tφ, g_φφ (limotorus4.nb expressions).
+/// tools.c:1 compute_gd; BL g_tt, g_tφ, g_φφ (limotorus4.nb expressions).
 pub fn computeGd(r: f64, th: f64, a: f64) Gd {
     const ac = a * @cos(th);
     const sigma = ac * ac + r * r;
@@ -377,14 +377,14 @@ pub fn computeGd(r: f64, th: f64, a: f64) Gd {
     };
 }
 
-/// tools.c:14 lK — Keplerian equatorial ℓ = u_φ/u_t.
+/// tools.c:14 lK; Keplerian equatorial ℓ = u_φ/u_t.
 pub fn lK(r: f64, a: f64) f64 {
     const curly_f = 1.0 - 2.0 * a / std.math.pow(f64, r, 1.5) + (a / r) * (a / r);
     const curly_g = 1.0 - 2.0 / r + a / std.math.pow(f64, r, 1.5);
     return @sqrt(r) * curly_f / curly_g;
 }
 
-/// tools.c:22 l3d — ξ·lK clamped to the broken-power-law window.
+/// tools.c:22 l3d; ξ·lK clamped to the broken-power-law window.
 pub fn l3d(lam: f64, a: f64, lambreak1: f64, lambreak2: f64, xi: f64) f64 {
     const arg = if (lam <= lambreak1) lambreak1 else if (lam >= lambreak2) lambreak2 else lam;
     return xi * lK(arg, a);
@@ -431,7 +431,7 @@ pub const LamF = struct {
     }
 };
 
-/// tools.c:68 lamBL — von Zeipel cylinder radius, bracket (R, 10R).
+/// tools.c:68 lamBL; von Zeipel cylinder radius, bracket (R, 10R).
 pub fn lamBL(R: f64, gd: Gd, a: f64, lambreak1: f64, lambreak2: f64, xi: f64) f64 {
     return rtbis(LamF{
         .gdtt = gd.gdtt,
@@ -454,7 +454,7 @@ pub fn computeAgrav(om: f64, gd: Gd) f64 {
     return @sqrt(@abs(1.0 / (gd.gdtt + 2.0 * om * gd.gdtp + om * om * gd.gdpp)));
 }
 
-/// tools.c:97 rmidlam — the passed-in gd values are dead in C (immediately
+/// tools.c:97 rmidlam; the passed-in gd values are dead in C (immediately
 /// overwritten with midplane values at x); only lam², a, breaks, ξ matter.
 pub const RmidF = struct {
     lamsq: f64,
@@ -469,7 +469,7 @@ pub const RmidF = struct {
     }
 };
 
-/// tools.c:118 limotorus_findrml — bracket (6, 10·λ²) as written in C.
+/// tools.c:118 limotorus_findrml; bracket (6, 10·λ²) as written in C.
 pub fn findRml(lam: f64, a: f64, lambreak1: f64, lambreak2: f64, xi: f64) f64 {
     const lamsq = lam * lam;
     return rtbis(RmidF{
@@ -528,7 +528,7 @@ pub const LnfIntegrand = struct {
 
 /// The cell-independent part of init_dsandvels_limotorus (tools.c:239-253):
 /// break λ's, and ℓ/ω/Agrav at the torus inner edge. C recomputes these per
-/// cell; the values are identical.
+/// cell: the values are identical.
 pub const TorusConsts = struct {
     lambreak1: f64,
     lambreak2: f64,
@@ -663,7 +663,7 @@ pub fn fillGeometryBL(g: *const Grid, coords: config.Coords, ix: i64, iy: i64, i
     return precompute.geometryBLat(g, coords, defaults.mp, ix, iy, iz);
 }
 
-/// prepinit.c:92-93 — the T > 0 root of P = bbb·T + aaa·T⁴ (Mathematica
+/// prepinit.c:92-93; the T > 0 root of P = bbb·T + aaa·T⁴ (Mathematica
 /// closed form, transcribed with its literal decimal exponents).
 pub fn tFromPtot(P: f64, aaa: f64, bbb: f64) f64 {
     const third = 0.3333333333333333;
@@ -679,7 +679,7 @@ pub fn tFromPtot(P: f64, aaa: f64, bbb: f64) f64 {
             (2.0 * bbb) / (aaa * @sqrt((-4.0 * c23 * P) / naw1 + naw1 / (c2 * c3 * aaa)))) / 2.0;
 }
 
-/// splitmix64 finalizer — self-contained (no std.hash dependency, so the
+/// splitmix64 finalizer; self-contained (no std.hash dependency, so the
 /// noise field is reproducible across Zig versions).
 fn mix64(z0: u64) u64 {
     var z = z0 +% 0x9E3779B97F4A7C15;
@@ -811,12 +811,12 @@ pub fn prepInitCellWith(
 // the full init sequence (ko.c:140-263 with ifinit == 1)
 
 /// prepinit + init over the domain (leaves the vector potential A_φ in the
-/// B slots, ENTR = calc_Sfromu, p2u). Does NOT fill ghosts — the caller
+/// B slots, ENTR = calc_Sfromu, p2u). Does NOT fill ghosts; the caller
 /// runs set_bc next, matching ko.c's set_initial_profile → set_bc.
 /// Band-parallel over iy: every cell writes only its own p/u slots and reads
 /// only the (already-built, const) metric cache, so the initialized state is
-/// bit-identical at any thread count. This is the dominant startup cost —
-/// the limotorus solve per cell is heavy in pow/log/exp — and left serial it
+/// bit-identical at any thread count. This is the dominant startup cost;
+/// the limotorus solve per cell is heavy in pow/log/exp, and left serial it
 /// ignored `nthreads` entirely.
 pub fn prepInitDomain(comptime SimT: type, sim: *SimT) !void {
     return prepInitDomainWith(SimT, sim, &defaults);
@@ -883,7 +883,7 @@ pub fn initAllWith(comptime SimT: type, sim: *SimT, phys: *const Physics) !f64 {
     return try postinitWith(SimT, sim, phys);
 }
 
-/// postinit.c — global β normalization. Returns fac; ghost cells keep their
+/// postinit.c: global β normalization. Returns fac; ghost cells keep their
 /// unscaled B (C does not refresh BCs after postinit).
 pub fn postinit(comptime SimT: type, sim: *SimT) !f64 {
     return postinitWith(SimT, sim, &defaults);
@@ -1014,12 +1014,12 @@ fn betaScaleRows(comptime SimT: type, sim: *SimT, fac: f64, iy0: i64, iy1: i64) 
 // seed MRI-quality report (campaign notes 2026-08-08)
 
 /// Mass-weighted seed MRI-quality sums over this rank's slab. The caller
-/// folds them across ranks (globalSum) and divides — every field is
+/// folds them across ranks (globalSum) and divides; every field is
 /// sum-reducible on purpose. Same disk mask as tools/qmri.zig (ρ > 10³×
 /// the atmosphere floor profile, r < 100) so the startup numbers are
 /// directly comparable to qmri on later dumps. Q_i = 2π|b^i|/(√(ρh+b²)·
 /// |Ω|·Δx^i) with radiation-inclusive inertia; Q_φ ≡ 0 for the A_φ-only
-/// seed and is omitted. Serial pass over the interior — the geometry is
+/// seed and is omitted. Serial pass over the interior; the geometry is
 /// cached, so this costs well under a second even on campaign grids.
 /// Assumes MKS2 internal coordinates (r = e^{x1} + mksr0), like the rest
 /// of this problem.

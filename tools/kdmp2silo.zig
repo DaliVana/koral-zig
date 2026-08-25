@@ -1,4 +1,4 @@
-//! kdmp2silo — convert PUFFY KDMP checkpoints into VisIt-openable `.silo`
+//! kdmp2silo: convert PUFFY KDMP checkpoints into VisIt-openable `.silo`
 //! files (MPI plan §8.2, Phase A). Under MPI the run writes KDMP only (the
 //! §8.1 collective checkpoints); this SERIAL tool replays a checkpoint
 //! through the existing io/silo.zig writer, so multi-rank runs get VisIt
@@ -10,8 +10,8 @@
 //! have written.
 //!
 //! usage: kdmp2silo <params.toml> <file.kdmp | dumps-dir> [out-dir]
-//!   file — convert one checkpoint to <out-dir>/<name>.silo
-//!   dir  — convert every *.kdmp in it (lexical order)
+//!   file: convert one checkpoint to <out-dir>/<name>.silo
+//!   dir: convert every *.kdmp in it (lexical order)
 //!   out-dir defaults to the checkpoint's own directory.
 //!
 //! Build with `-Dsilo` (e.g. `zig build kdmp2silo -Dsilo -Doptimize=ReleaseFast`);
