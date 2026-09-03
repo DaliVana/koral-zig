@@ -500,6 +500,48 @@ zig build test -Dtest-filter="radtube"
 zig build test -Dtest-filter="golden" -Dtest-filter="implicit"
 ```
 
+### Sadowski et al. (2013) reproduction gates
+
+Two test files reproduce published, quantitative results using the algorithms
+that exist in this port:
+
+```sh
+# Figure 1 at 500 cells and t=50, for linear theta=1 and theta=2
+zig build test -Dtest-filter="Sadowski 2013 section 4.1"
+
+# Figure 9 at its first published time, with the paper's grid and opacity
+zig build test -Dtest-filter="thick pulse has the early Figure 9"
+
+# All four Figure 9 times through t=100000
+zig build test -Dslow-tests=true -Dtest-filter="full four-time Figure 9"
+```
+
+`paper2013_hydro_tests.zig` compares the paper's Table 1 shock directly with a
+test-local exact relativistic Riemann solution. It checks both profile errors,
+the shock position, and the reported result that theta=1 is more diffusive than
+theta=2. MP5 is not available in this port and is not approximated by another
+reconstruction method.
+
+`paper2013_pulse_tests.zig` uses the Section 4.4 domain, 101 cells, temperature
+profile, radiative constant, scattering optical depth, and output times. The
+analytic diffusion curve is evaluated directly by expanding the fourth power
+of the temperature profile into Gaussian terms. A mathematically exact
+pure-scattering scaling multiplies rho, gas energy, and radiation energy by the
+same factor while dividing the opacity per mass by that factor; this preserves
+temperature, E/rho, chi, D, and the dimensionless solution while keeping the
+implicit solve away from absolute tolerances at E of order 1e-40.
+
+The Section 4.3 radiative shock tubes are already covered by
+`radtube_tests.zig`: tubes 3a and 4a run normally, with tubes 1, 2, 4b and
+higher-resolution checks under `-Dslow-tests=true`. Those runs validate the
+published plateau states and the stationary radiation equations, but use the
+current M1/PPM/RK2IMEX solver. The paper used Eddington closure for those plots,
+so they are physics checks rather than pixel or raw-data reproductions.
+
+The tests do not claim direct reproduction of results that require unavailable
+features or inputs: MP5, the Eddington-closure comparison, the removed original
+problem directories, or numerical data behind the published figures.
+
 ### Reading the results
 
 `zig build test` compiles *one* test artifact from `koral/koral.zig`'s `test {}`
@@ -544,9 +586,10 @@ data:
 - `metric_tests.zig`, `evolution_tests.zig`, `mhd_evolution_tests.zig`,
   `radiation_tests.zig`, `opacity_tests.zig`, `implicit_tests.zig`,
   `state_tests.zig`, `flux_tests.zig`, `polaraxis_tests.zig`,
-  `radstep_tests.zig`, `radtube_tests.zig`, `dynamo_tests.zig`,
+  `radstep_tests.zig`, `radtube_tests.zig`, `paper2013_hydro_tests.zig`,
+  `paper2013_pulse_tests.zig`, `dynamo_tests.zig`,
   `radvisc_tests.zig`, `scalars_tests.zig`, `threading_tests.zig`,
-  `puffy_tests.zig`, `sim_tests.zig` (`Sim.init` precondition rejection),
+  `puffy_tests.zig`, `sim_tests.zig` (`Sim.init` validation and initializer invariants),
   `restart_tests.zig` (KDMP round-trip), `simd_tests.zig` (scalar ↔ SIMD
   bit-identity), plus in-module `test` blocks in nearly every source file.
 

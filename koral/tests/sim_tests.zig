@@ -81,7 +81,11 @@ test "Sim.init rejects correct_polaraxis on non-spherical coords" {
     }));
 }
 
-test "Sim.init accepts a clean config" {
+test "Sim.init accepts a clean config and leaves horizon order reduction disabled" {
     var s = try SimT.init(a, grid(3, 8), .{ .coords = .mink });
     defer s.deinit();
+    // Sim.init builds `self` from undefined, so declaration defaults do not
+    // initialize this field.  An indeterminate positive value silently turns
+    // linear reconstruction into donor cell in optimized builds.
+    try std.testing.expectEqual(std.math.minInt(i64), s.reduce_order_ix_max);
 }

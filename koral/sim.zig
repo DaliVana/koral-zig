@@ -375,6 +375,10 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.tstepdenmax = 0;
             self.tstepdenmin = big;
             self.nstep = 0;
+            // `self` starts as undefined, so field declaration defaults do
+            // not run here.  Keep order reduction disabled unless the
+            // explicit horizon scan below finds a qualifying cell.
+            self.reduce_order_ix_max = std.math.minInt(i64);
             self.n_radimp_failures = 0;
             self.n_radimp_iters = 0;
             self.n_radimp_solves = 0;
