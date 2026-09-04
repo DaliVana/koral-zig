@@ -31,6 +31,47 @@
 //!    serial at any nthreads (pinned by the dynamo threading test).
 
 const std = @import("std");
+const field_mod = @import("../field.zig");
+const Grid = @import("../grid.zig").Grid;
+const threading_mod = @import("../threading.zig");
+
+/// The dynamo's scratch, owned by a Sim only when `opt.dynamo` is on
+/// (redesign step 3: pass-owned scratch). Lives at `sim.dynamo`.
+pub const Scratch = struct {
+    allocator: std.mem.Allocator,
+    /// C: ptemp1 — the dynamo's cell-centered ΔA_φ scratch (slot 2 = φ).
+    dyn_a: field_mod.Field(3),
+    /// C: scaleth_otg — the per-radius density-weighted scale height.
+    scaleth: []f64,
+    /// MPI plan §7.2: per-radius partial sums (Σρ√g, Σρ√g·Δθ²) for the
+    /// scale-height ring reduction — the pre-√ Allreduce(SUM) operands.
+    /// Only the ntz>1 path touches them; tiny (2·nx doubles).
+    scaleth_sig: []f64,
+    scaleth_sth: []f64,
+
+    pub fn init(allocator: std.mem.Allocator, g: Grid, team: ?*threading_mod.Team) !Scratch {
+        var dyn_a = try field_mod.Field(3).initUninitialized(allocator, g);
+        errdefer dyn_a.deinit();
+        threading_mod.parallelZero(team, dyn_a.data);
+        const scaleth = try allocator.alloc(f64, g.nx);
+        errdefer allocator.free(scaleth);
+        @memset(scaleth, 0);
+        const sig = try allocator.alloc(f64, g.nx);
+        errdefer allocator.free(sig);
+        @memset(sig, 0);
+        const sth = try allocator.alloc(f64, g.nx);
+        @memset(sth, 0);
+        return .{ .allocator = allocator, .dyn_a = dyn_a, .scaleth = scaleth, .scaleth_sig = sig, .scaleth_sth = sth };
+    }
+
+    pub fn deinit(self: *Scratch) void {
+        self.dyn_a.deinit();
+        self.allocator.free(self.scaleth);
+        self.allocator.free(self.scaleth_sig);
+        self.allocator.free(self.scaleth_sth);
+        self.* = undefined;
+    }
+};
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const relele = @import("../relele.zig");
@@ -82,7 +123,7 @@ pub const DynamoCell = struct {
     angle: f64, // field pitch −b^r b^φ √(g_rr g_φφ)/b² (fieldAngle)
     prermhd: f64, // (γ−1)u (+ Ê/3 with radiation) — the pressure feeding β
     gg33: f64, // MKS2 g_φφ at the cell
-    scaleth: f64, // sim.scaleth[clamp(ix)] — raw density-weighted scale height
+    scaleth: f64, // sim.dynamo.?.scaleth[clamp(ix)] — raw density-weighted scale height
 };
 
 /// What the dynamo produces for one cell.
@@ -151,7 +192,7 @@ pub fn dynamoDeltaA(dp: Params, a: f64, dt: f64, rhor: f64, risco: f64, c: Dynam
 
 /// C: calc_avgs_throughout / CALCHRONTHEGO (mpi.c:3168). Density-weighted RMS
 /// angular scale height at each radius, sqrt(Σρ√g(π/2−θ)² / Σρ√g) over the
-/// θ(,φ) column. Fills sim.scaleth[0..nx). Single rank (TOI=0): gix==0 stays
+/// θ(,φ) column. Fills sim.dynamo.?.scaleth[0..nx). Single rank (TOI=0): gix==0 stays
 /// the raw (unnormalized) sum, matching C's `if(gix>0 && gix<TNX)` guard.
 /// Band-parallel over ix: each worker owns whole columns, so every column's
 /// θ-sum accumulates in serial order; bit-identical at any nthreads.
@@ -189,10 +230,10 @@ fn calcScaleHeightRing(comptime SimT: type, sim: *SimT) void {
     _ = threading.parallelRange(SimT, sim, sim.team, 0, sim.nxi(), W.cols);
     const c = sim.opt.comm.?; // ntz>1 implies a backend (Sim.init check 6)
     sim.timers.begin(.collect);
-    c.allreduceSum(sim.scaleth_sig);
-    c.allreduceSum(sim.scaleth_sth);
+    c.allreduceSum(sim.dynamo.?.scaleth_sig);
+    c.allreduceSum(sim.dynamo.?.scaleth_sth);
     sim.timers.end();
-    for (sim.scaleth, sim.scaleth_sig, sim.scaleth_sth, 0..) |*out, sig, sth, ix| {
+    for (sim.dynamo.?.scaleth, sim.dynamo.?.scaleth_sig, sim.dynamo.?.scaleth_sth, 0..) |*out, sig, sth, ix| {
         out.* = if (ix > 0) @sqrt(sth / sig) else sth;
     }
 }
@@ -218,8 +259,8 @@ fn partialSumCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
                 sth += rho * gd * dth * dth;
             }
         }
-        sim.scaleth_sig[@intCast(ix)] = sigma;
-        sim.scaleth_sth[@intCast(ix)] = sth;
+        sim.dynamo.?.scaleth_sig[@intCast(ix)] = sigma;
+        sim.dynamo.?.scaleth_sth[@intCast(ix)] = sth;
     }
 }
 
@@ -227,7 +268,7 @@ fn partialSumCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
 fn scaleHeightCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
     var ix: i64 = ix0;
     while (ix < ix1) : (ix += 1) {
-        sim.scaleth[@intCast(ix)] = scaleHeightAtIx(SimT, sim, ix);
+        sim.dynamo.?.scaleth[@intCast(ix)] = scaleHeightAtIx(SimT, sim, ix);
     }
 }
 
@@ -269,7 +310,7 @@ pub fn scaleHeightFinalize(ix: i64, sig: f64, sth: f64) f64 {
 }
 
 /// The density-weighted scale height at a single radial index; the per-column
-/// body of calcScaleHeight as a pure read (no sim.scaleth write), so a
+/// body of calcScaleHeight as a pure read (no sim.dynamo.?.scaleth write), so a
 /// diagnostic can query one radius without mutating the Sim or filling the
 /// whole grid. C's ix==0 quirk (raw, unnormalized sum) is preserved. Both
 /// paths route through here, so calcScaleHeight stays bit-identical.
@@ -316,7 +357,7 @@ pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) Error!void {
     const ny = sim.nyi();
     const ylim: i64 = if (ny > 1) 1 else 0;
 
-    threading.parallelZero(sim.team, sim.dyn_a.data);
+    threading.parallelZero(sim.team, sim.dynamo.?.dyn_a.data);
 
     const Ctx = struct { sim: *SimT, dt: f64 };
     var ctx = Ctx{ .sim = sim, .dt = dt };
@@ -340,9 +381,9 @@ pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) Error!void {
     }
 
     // ---- curl ΔA_φ → B^i in the scratch slots 3..5, superimpose on domain ----
-    // curlFromA clobbers &sim.vecpot 0..2 (corner A) and returns it with B in
+    // curlFromA clobbers &sim.ct.vecpot 0..2 (corner A) and returns it with B in
     // 3..5; the superpose pass below reads those slots from sim.vecpot.
-    _ = ct.curlFromA(SimT, sim, &sim.vecpot, &sim.dyn_a, 0);
+    _ = ct.curlFromA(SimT, sim, &sim.ct.vecpot, &sim.dynamo.?.dyn_a, 0);
 
     {
         const res = threading.parallelRange(SimT, sim, sim.team, 0, ny, W.superpose);
@@ -412,10 +453,10 @@ fn deltaARows(comptime SimT: type, sim: *SimT, dt: f64, iy0: i64, iy1: i64) rele
                     .angle = fa.angle,
                     .prermhd = prermhd,
                     .gg33 = geom.gg[3][3],
-                    .scaleth = sim.scaleth[@intCast(gix)],
+                    .scaleth = sim.dynamo.?.scaleth[@intCast(gix)],
                 });
 
-                sim.dyn_a.set(2, ix, iy, iz, out.aphi); // φ component (B3 slot)
+                sim.dynamo.?.dyn_a.set(2, ix, iy, iz, out.aphi); // φ component (B3 slot)
                 if (dp.dampbeta) sim.p.set(b3, ix, iy, iz, out.bphi);
             }
         }
@@ -440,9 +481,9 @@ fn superposeRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) relele.Err
             while (jx < nx) : (jx += 1) {
                 var pp: [SimT.nv]f64 = undefined;
                 sim.p.load(jx, jy, jz, &pp);
-                pp[b1] += sim.vecpot.get(3, jx, jy, jz);
-                pp[b1 + 1] += sim.vecpot.get(4, jx, jy, jz);
-                pp[b1 + 2] += sim.vecpot.get(5, jx, jy, jz);
+                pp[b1] += sim.ct.vecpot.get(3, jx, jy, jz);
+                pp[b1 + 1] += sim.ct.vecpot.get(4, jx, jy, jz);
+                pp[b1 + 2] += sim.ct.vecpot.get(5, jx, jy, jz);
                 const geom = sim.cache.fillGeometry(jx, jy, jz);
                 const uu = try p2u_mod.p2u(cfg, pp, &geom, sim.opt.gam);
                 sim.p.store(jx, jy, jz, &pp);

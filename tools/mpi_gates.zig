@@ -592,8 +592,8 @@ fn gate5(allocator: std.mem.Allocator, comm: *Comm) !bool {
     // and because this torus is φ-uniform, every rank computes the SAME
     // wrong answer if an operand is dropped, so ranks-agree is blind and
     // the serial comparison is what actually catches it.
-    try expectRanksAgree(&g, comm, allocator, "scaleth", s.scaleth);
-    expectMatchesSerial(&g, "scaleth", ref.scaleth, s.scaleth, 1e-6);
+    try expectRanksAgree(&g, comm, allocator, "scaleth", s.dynamo.?.scaleth);
+    expectMatchesSerial(&g, "scaleth", ref.scaleth, s.dynamo.?.scaleth, 1e-6);
     // BETANORM's global max (puffy.zig postinit): a missing fold makes each
     // rank normalize B by its own slab maximum.
     try expectRanksAgree(&g, comm, allocator, "betanorm_fac", &.{fac_s});

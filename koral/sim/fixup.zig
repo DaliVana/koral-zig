@@ -10,9 +10,38 @@ const relele = @import("../relele.zig");
 const p2u_mod = @import("../p2u.zig");
 const threading = @import("../threading.zig");
 const storage = @import("storage.zig");
+const std = @import("std");
+const field_mod = @import("../field.zig");
+const Grid = @import("../grid.zig").Grid;
 
 const Error = relele.Error || error{OutOfMemory};
 const Flag = storage.Flag;
+
+/// The whole-grid u/p backups cell_fixup averages through (finite.c:5030),
+/// owned by the fixup pass (redesign step 3). Lives at `sim.bak`.
+pub fn Backups(comptime NV: usize) type {
+    return struct {
+        const Self = @This();
+        pub const FieldT = field_mod.Field(NV);
+        u: FieldT,
+        p: FieldT,
+
+        pub fn init(allocator: std.mem.Allocator, g: Grid, team: ?*threading.Team) !Self {
+            var u = try FieldT.initUninitialized(allocator, g);
+            errdefer u.deinit();
+            threading.parallelZero(team, u.data);
+            const p = try FieldT.initUninitialized(allocator, g);
+            threading.parallelZero(team, p.data);
+            return .{ .u = u, .p = p };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.u.deinit();
+            self.p.deinit();
+            self.* = undefined;
+        }
+    };
+}
 
 /// True if any domain cell carries flag `which`. Early-out scan for
 /// cellFixup: reads one i32/cell (getFlag is inline) and returns on the
@@ -50,16 +79,16 @@ pub fn cellFixup(comptime SimT: type, self: *SimT, comptime which: Flag) Error!v
     // (P2 #3).
     if (!anyFlagSet(SimT, self, which)) return;
 
-    threading.parallelCopy(self.team, self.u_bak.data, self.u.data);
-    threading.parallelCopy(self.team, self.p_bak.data, self.p.data);
+    threading.parallelCopy(self.team, self.bak.u.data, self.u.data);
+    threading.parallelCopy(self.team, self.bak.p.data, self.p.data);
 
     // the averaging loop is parallel-safe as-is: flags are frozen
     // during the pass, reads touch only non-flagged neighbours of
     // the (frozen) p, writes only the flagged cells' _bak slots
     try threading.parallelRangeErr(SimT, self, self.team, 0, self.nyi(), rowsFn(SimT, which));
 
-    threading.parallelCopy(self.team, self.u.data, self.u_bak.data);
-    threading.parallelCopy(self.team, self.p.data, self.p_bak.data);
+    threading.parallelCopy(self.team, self.u.data, self.bak.u.data);
+    threading.parallelCopy(self.team, self.p.data, self.bak.p.data);
 }
 
 fn rowsFn(comptime SimT: type, comptime which: Flag) fn (*SimT, i64, i64) Error!void {
@@ -132,8 +161,8 @@ fn fixupRows(comptime SimT: type, self: *SimT, comptime which: Flag, iy0: i64, i
                 }
                 const geom = self.cache.fillGeometry(ix, iy, iz);
                 const uu = try p2u_mod.p2u(cfg, pp, &geom, self.opt.gam);
-                self.u_bak.store(ix, iy, iz, &uu);
-                self.p_bak.store(ix, iy, iz, &pp);
+                self.bak.u.store(ix, iy, iz, &uu);
+                self.bak.p.store(ix, iy, iz, &pp);
             }
         }
     }

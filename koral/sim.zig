@@ -120,6 +120,8 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub const nv = NV;
         pub const FieldT = field_mod.Field(NV);
         pub const FaceT = FaceStore(NV);
+        /// sim/ct.zig's scratch type when the layout has B, else void.
+        pub const CtScratch = if (L.hasVar(.b1)) ct.Scratch else void;
         /// C: MPI4CORNERS (force-defined by MAGNFIELD): MHD sweeps reach ±1
         /// ghost row and fill 2D corners. Read by the sim/ passes.
         pub const wide = mhd_wide;
@@ -243,42 +245,28 @@ pub fn Sim(comptime cfg: config.Config) type {
         drt1: FieldT,
         drt2: FieldT,
         uforget: FieldT,
-        // fixup backups (finite.c:5030)
-        u_bak: FieldT,
-        p_bak: FieldT,
-
-        // face-interpolated primitives & one-sided fluxes (pbLx.., flLx..)
-        pb_l: [3]FaceT,
-        pb_r: [3]FaceT,
-        fl_l: [3]FaceT,
-        fl_r: [3]FaceT,
-        // combined fluxes (flbx/flby/flbz)
-        flb: [3]FaceT,
+        // Pass-owned scratch (redesign step 3): each pass module declares the
+        // buffers it needs and Sim composes them; the optional ones exist
+        // only when the option that uses them is on.
+        /// The explicit operator's face stores (sim/explicit.zig): pbL/pbR,
+        /// flL/flR per side and the combined flb. Flux-CT rewrites flb's B rows.
+        faces: explicit_pass.Faces(NV),
+        /// The fixup pass's whole-grid u/p backups (sim/fixup.zig, finite.c:5030).
+        bak: fixup_pass.Backups(NV),
 
         scal: field_mod.Field(n_scal),
         flags: []i32,
 
-        // corner EMFs for flux-CT (comps 1..3 at slots 0..2), (nx+1)(ny+1)(nz+1)
-        emf: [3][]f64,
-
-        // vector-potential/B scratch for calc_BfromA (C: pvecpot — corner A
-        // lives in slots B1..B3, the curl result in slots 1..3, coexisting).
-        // Here: slots 0..2 = corner A_i, slots 3..5 = B^i.
-        vecpot: field_mod.Field(6),
-
-        // C: Rijviscglobal — the per-cell viscous R^i_j (flattened i*4+j),
-        // filled once per step over the domain + one non-corner ghost ring.
-        rijvisc: field_mod.Field(16),
-
-        // C: ptemp1 — the dynamo's cell-centered ΔA_φ scratch (slot 2 = φ);
-        // and scaleth_otg — the per-radius density-weighted scale height.
-        dyn_a: field_mod.Field(3),
-        scaleth: []f64,
-        // MPI plan §7.2: per-radius partial sums (Σρ√g, Σρ√g·Δθ²) for the
-        // scale-height ring reduction — the pre-√ Allreduce(SUM) operands.
-        // Only the ntz>1 dynamo path touches them; tiny (2·nx doubles).
-        scaleth_sig: []f64,
-        scaleth_sth: []f64,
+        /// Constrained-transport scratch (sim/ct.zig: corner EMFs + the
+        /// vector-potential work field). Present iff the config has MHD;
+        /// `void` otherwise so a hydro-only Sim carries nothing.
+        ct: CtScratch,
+        /// Radiative-viscosity scratch (sim/rijvisc.zig: R^i_j per cell).
+        /// Allocated only when opt.radviscosity.
+        visc: ?rijvisc_mod.Scratch,
+        /// Dynamo scratch (sim/dynamo.zig: ΔA_φ + the scale-height arrays).
+        /// Allocated only when opt.dynamo.
+        dynamo: ?dynamo_mod.Scratch,
 
         t: f64 = 0,
         /// C: global_time. Frozen at step start, used by set_bc.
@@ -312,14 +300,11 @@ pub fn Sim(comptime cfg: config.Config) type {
         timers: timers_mod.PassTimers = .{},
 
         /// The full-Field members allocated in init and freed in deinit, in one
-        /// place so the two lists cannot drift (P5). Startup allocation failure
-        /// is treated as fatal; Sim.init has no per-alloc errdefer; a driver
-        /// exits and the OS reclaims, and the test suite runs under the leak-
-        /// checking allocator only after a *successful* init.
+        /// place so the two lists cannot drift (P5): the live p/u pair and the
+        /// RK2IMEX stage buffers. Every other buffer is pass-owned scratch.
         const heap_field_names = .{
-            "p",     "u",     "ut0",  "ut1",  "ut2",
-            "dut1",  "dut2",  "drt1", "drt2", "uforget",
-            "u_bak", "p_bak",
+            "p",    "u",    "ut0",  "ut1",  "ut2",
+            "dut1", "dut2", "drt1", "drt2", "uforget",
         };
 
         pub fn init(allocator: std.mem.Allocator, g: Grid, opt: Options) !Self {
@@ -400,6 +385,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.n_radimp_solves = 0;
             self.timers = .{};
             self.team = if (opt.nthreads > 1) try threading.Team.init(allocator, opt.nthreads, opt.pin_threads) else null;
+            errdefer if (self.team) |tm| tm.deinit();
 
             // The dynamo / radviscosity passes work in BL (OUTCOORDS): build
             // the per-cell BL geometry sidecar and point the my2out Jacobian
@@ -416,6 +402,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                 // fills are pure per-cell writes — bit-identical threaded.
                 .team = self.team,
             });
+            errdefer self.cache.deinit();
 
             // The big per-cell stores are allocated raw and zeroed THROUGH
             // THE TEAM (P4b NUMA first-touch): the first write to each page
@@ -423,46 +410,44 @@ pub fn Sim(comptime cfg: config.Config) type {
             // node's memory controllers instead of concentrating them on
             // the main thread's. Zeros are zeros — bit-identical serially
             // (team == null degenerates to one whole-range memset).
+            // Every allocation carries an errdefer, so a failed init leaks
+            // nothing (redesign step 3; previously fatal-and-leak).
+            var n_fields: usize = 0;
+            errdefer {
+                inline for (heap_field_names, 0..) |name, k| {
+                    if (k < n_fields) @field(self, name).deinit();
+                }
+            }
             inline for (heap_field_names) |name| {
                 @field(self, name) = try FieldT.initUninitialized(allocator, g);
+                n_fields += 1;
                 threading.parallelZero(self.team, @field(self, name).data);
             }
             // MPI plan §6.2: the four persistent zero-copy channels bind
             // directly into p's storage, which never moves after this.
             if (opt.comm) |c| try c.bindExchange(self.p.data, g, NV);
-            for (0..3) |d| {
-                self.pb_l[d] = try FaceT.initUninitialized(allocator, g, d);
-                self.pb_r[d] = try FaceT.initUninitialized(allocator, g, d);
-                self.fl_l[d] = try FaceT.initUninitialized(allocator, g, d);
-                self.fl_r[d] = try FaceT.initUninitialized(allocator, g, d);
-                self.flb[d] = try FaceT.initUninitialized(allocator, g, d);
-                threading.parallelZero(self.team, self.pb_l[d].data);
-                threading.parallelZero(self.team, self.pb_r[d].data);
-                threading.parallelZero(self.team, self.fl_l[d].data);
-                threading.parallelZero(self.team, self.fl_r[d].data);
-                threading.parallelZero(self.team, self.flb[d].data);
-            }
+            errdefer if (opt.comm) |c| c.unbindExchange();
+
+            self.faces = try explicit_pass.Faces(NV).init(allocator, g, self.team);
+            errdefer self.faces.deinit();
+            self.bak = try fixup_pass.Backups(NV).init(allocator, g, self.team);
+            errdefer self.bak.deinit();
             self.scal = try field_mod.Field(n_scal).initUninitialized(allocator, g);
+            errdefer self.scal.deinit();
             threading.parallelZero(self.team, self.scal.data);
             self.flags = try allocator.alloc(i32, g.cellCount() * n_flags);
+            errdefer allocator.free(self.flags);
             @memset(self.flags, 0);
-            const ncorn = (g.nx + 1) * (g.ny + 1) * (g.nz + 1);
-            for (0..3) |c| {
-                self.emf[c] = try allocator.alloc(f64, ncorn);
-                @memset(self.emf[c], 0);
+            if (comptime L.hasVar(.b1)) {
+                self.ct = try ct.Scratch.init(allocator, g, self.team);
+            } else {
+                self.ct = {};
             }
-            self.vecpot = try field_mod.Field(6).initUninitialized(allocator, g);
-            threading.parallelZero(self.team, self.vecpot.data);
-            self.rijvisc = try field_mod.Field(16).initUninitialized(allocator, g);
-            threading.parallelZero(self.team, self.rijvisc.data);
-            self.dyn_a = try field_mod.Field(3).initUninitialized(allocator, g);
-            threading.parallelZero(self.team, self.dyn_a.data);
-            self.scaleth = try allocator.alloc(f64, g.nx);
-            @memset(self.scaleth, 0);
-            self.scaleth_sig = try allocator.alloc(f64, g.nx);
-            @memset(self.scaleth_sig, 0);
-            self.scaleth_sth = try allocator.alloc(f64, g.nx);
-            @memset(self.scaleth_sth, 0);
+            errdefer if (comptime L.hasVar(.b1)) self.ct.deinit();
+            self.visc = if (opt.radviscosity) try rijvisc_mod.Scratch.init(allocator, g, self.team) else null;
+            errdefer if (self.visc) |*v| v.deinit();
+            self.dynamo = if (opt.dynamo) try dynamo_mod.Scratch.init(allocator, g, self.team) else null;
+            errdefer if (self.dynamo) |*d| d.deinit();
 
             // C: set_grid's min-size scan (finite.c:1946-1961), including its
             // quirk of comparing dy/dz against *mdx*.
@@ -525,22 +510,13 @@ pub fn Sim(comptime cfg: config.Config) type {
             inline for (heap_field_names) |name| {
                 @field(self, name).deinit();
             }
-            for (0..3) |d| {
-                self.pb_l[d].deinit();
-                self.pb_r[d].deinit();
-                self.fl_l[d].deinit();
-                self.fl_r[d].deinit();
-                self.flb[d].deinit();
-            }
+            self.faces.deinit();
+            self.bak.deinit();
             self.scal.deinit();
             allocator.free(self.flags);
-            for (0..3) |c| allocator.free(self.emf[c]);
-            self.vecpot.deinit();
-            self.rijvisc.deinit();
-            self.dyn_a.deinit();
-            allocator.free(self.scaleth);
-            allocator.free(self.scaleth_sig);
-            allocator.free(self.scaleth_sth);
+            if (comptime L.hasVar(.b1)) self.ct.deinit();
+            if (self.visc) |*v| v.deinit();
+            if (self.dynamo) |*d| d.deinit();
             self.cache.deinit();
             self.* = undefined;
         }
@@ -585,21 +561,6 @@ pub fn Sim(comptime cfg: config.Config) type {
         }
         pub inline fn scSet(self: *Self, s: Scal, ix: i64, iy: i64, iz: i64, v: f64) void {
             self.scal.set(@intFromEnum(s), ix, iy, iz, v);
-        }
-
-        pub fn emfIdx(self: *const Self, ix: i64, iy: i64, iz: i64) usize {
-            const g = &self.grid;
-            const jx: usize = @intCast(ix);
-            const jy: usize = @intCast(iy);
-            const jz: usize = @intCast(iz);
-            std.debug.assert(jx <= g.nx and jy <= g.ny and jz <= g.nz);
-            return (jz * (g.ny + 1) + jy) * (g.nx + 1) + jx;
-        }
-        pub fn getEmf(self: *const Self, comp: usize, ix: i64, iy: i64, iz: i64) f64 {
-            return self.emf[comp - 1][self.emfIdx(ix, iy, iz)];
-        }
-        pub fn setEmf(self: *Self, comp: usize, ix: i64, iy: i64, iz: i64, v: f64) void {
-            self.emf[comp - 1][self.emfIdx(ix, iy, iz)] = v;
         }
 
         // ---- MPI seam (plan §5–§7) ----------------------------------------

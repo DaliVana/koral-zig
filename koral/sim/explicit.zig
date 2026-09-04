@@ -25,8 +25,58 @@ const p2u_mod = @import("../p2u.zig");
 const rijvisc_mod = @import("rijvisc.zig");
 const threading = @import("../threading.zig");
 const storage = @import("storage.zig");
+const std = @import("std");
+const Grid = @import("../grid.zig").Grid;
 
 const Error = relele.Error || error{OutOfMemory};
+
+/// The face stores the explicit operator owns (redesign step 3: pass-owned
+/// scratch): face-interpolated primitives and one-sided fluxes per side
+/// (C: pbLx.., flLx..) and the combined fluxes (flbx/flby/flbz). Lives at
+/// `sim.faces`; flux-CT (sim/ct.zig) rewrites the B rows of `flb` in place.
+pub fn Faces(comptime NV: usize) type {
+    return struct {
+        const Self = @This();
+        pub const FaceT = storage.FaceStore(NV);
+
+        pb_l: [3]FaceT,
+        pb_r: [3]FaceT,
+        fl_l: [3]FaceT,
+        fl_r: [3]FaceT,
+        flb: [3]FaceT,
+
+        pub fn init(allocator: std.mem.Allocator, g: Grid, team: ?*threading.Team) !Self {
+            var self: Self = undefined;
+            var n: usize = 0;
+            errdefer self.deinitFirst(n);
+            for (0..3) |d| {
+                inline for (.{ "pb_l", "pb_r", "fl_l", "fl_r", "flb" }) |name| {
+                    @field(self, name)[d] = try FaceT.initUninitialized(allocator, g, d);
+                    n += 1;
+                    // Zeroed THROUGH THE TEAM (P4b NUMA first-touch); zeros are zeros.
+                    threading.parallelZero(team, @field(self, name)[d].data);
+                }
+            }
+            return self;
+        }
+
+        /// Release the first `n` stores in init's allocation order.
+        fn deinitFirst(self: *Self, n: usize) void {
+            var k: usize = 0;
+            for (0..3) |d| {
+                inline for (.{ "pb_l", "pb_r", "fl_l", "fl_r", "flb" }) |name| {
+                    if (k < n) @field(self, name)[d].deinit();
+                    k += 1;
+                }
+            }
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.deinitFirst(15);
+            self.* = undefined;
+        }
+    };
+}
 
 // ---- source terms -----------------------------------------------------
 
@@ -270,11 +320,11 @@ inline fn sweepFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i6
 
     // pbR[dim] at face i ← pl; pbL[dim] at face i+1 ← pr
     var cp = cell;
-    self.pb_r[dim].store(cp[0], cp[1], cp[2], &pl);
-    if (dol) self.fl_r[dim].store(cp[0], cp[1], cp[2], &ffl);
+    self.faces.pb_r[dim].store(cp[0], cp[1], cp[2], &pl);
+    if (dol) self.faces.fl_r[dim].store(cp[0], cp[1], cp[2], &ffl);
     cp[dim] = i + 1;
-    self.pb_l[dim].store(cp[0], cp[1], cp[2], &pr);
-    if (dor) self.fl_l[dim].store(cp[0], cp[1], cp[2], &ffr);
+    self.faces.pb_l[dim].store(cp[0], cp[1], cp[2], &pr);
+    if (dor) self.faces.fl_l[dim].store(cp[0], cp[1], cp[2], &ffr);
 }
 
 // ---- flux combination ---------------------------------------------------
@@ -285,7 +335,7 @@ inline fn sweepFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i6
 /// Band-parallel over cross[0] per dimension, like the sweep. The caller
 /// owns the timer.
 pub fn fluxesAtFaces(comptime SimT: type, self: *SimT) Error!void {
-    for (0..3) |d| threading.parallelZero(self.team, self.flb[d].data);
+    for (0..3) |d| threading.parallelZero(self.team, self.faces.flb[d].data);
 
     inline for (0..3) |dim| {
         if (self.nDim(dim) > 1) {
@@ -360,8 +410,8 @@ inline fn fluxFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i64
 
     var pLl: [NV]f64 = undefined;
     var pRl: [NV]f64 = undefined;
-    self.pb_l[dim].load(cf[0], cf[1], cf[2], &pLl);
-    self.pb_r[dim].load(cf[0], cf[1], cf[2], &pRl);
+    self.faces.pb_l[dim].load(cf[0], cf[1], cf[2], &pLl);
+    self.faces.pb_r[dim].load(cf[0], cf[1], cf[2], &pRl);
 
     const geom = self.cache.fillGeometryFace(cf[0], cf[1], cf[2], dim);
     const uLl = try p2u_mod.p2u(cfg, pLl, &geom, self.opt.gam);
@@ -393,8 +443,8 @@ inline fn fluxFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i64
     // (P2 #4). uLl/uRl are already whole-cell arrays.
     var fll: [NV]f64 = undefined;
     var flr: [NV]f64 = undefined;
-    self.fl_l[dim].load(cf[0], cf[1], cf[2], &fll);
-    self.fl_r[dim].load(cf[0], cf[1], cf[2], &flr);
+    self.faces.fl_l[dim].load(cf[0], cf[1], cf[2], &fll);
+    self.faces.fl_r[dim].load(cf[0], cf[1], cf[2], &flr);
     var fstar: [NV]f64 = undefined;
     for (0..NV) |iv| {
         // C: i < NVMHD → hydro block, else radiation
@@ -407,7 +457,7 @@ inline fn fluxFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i64
             .hll => laxf_mod.hll(fll[iv], flr[iv], uLl[iv], uRl[iv], al_sel, ar_sel),
         };
     }
-    self.flb[dim].store(cf[0], cf[1], cf[2], &fstar);
+    self.faces.flb[dim].store(cf[0], cf[1], cf[2], &fstar);
 }
 
 // ---- the conserved update -----------------------------------------------
@@ -458,12 +508,12 @@ fn updateRows(comptime SimT: type, self: *SimT, dtin: f64, iy0: i64, iy1: i64) E
                 var flyr: [NV]f64 = undefined;
                 var flzl: [NV]f64 = undefined;
                 var flzr: [NV]f64 = undefined;
-                self.flb[0].load(ix, iy, iz, &flxl);
-                self.flb[0].load(ix + 1, iy, iz, &flxr);
-                self.flb[1].load(ix, iy, iz, &flyl);
-                self.flb[1].load(ix, iy + 1, iz, &flyr);
-                self.flb[2].load(ix, iy, iz, &flzl);
-                self.flb[2].load(ix, iy, iz + 1, &flzr);
+                self.faces.flb[0].load(ix, iy, iz, &flxl);
+                self.faces.flb[0].load(ix + 1, iy, iz, &flxr);
+                self.faces.flb[1].load(ix, iy, iz, &flyl);
+                self.faces.flb[1].load(ix, iy + 1, iz, &flyr);
+                self.faces.flb[2].load(ix, iy, iz, &flzl);
+                self.faces.flb[2].load(ix, iy, iz + 1, &flzr);
                 var uu: [NV]f64 = undefined;
                 self.u.load(ix, iy, iz, &uu);
 

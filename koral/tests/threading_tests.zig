@@ -179,8 +179,8 @@ test "P1 threading: full PUFFY step nthreads=4 is bit-identical to nthreads=1" {
     // full arrays incl. ghosts, every flag, the reductions — to the bit
     for (s1.p.data, s4.p.data) |v1, v4| try std.testing.expectEqual(v1, v4);
     for (s1.u.data, s4.u.data) |v1, v4| try std.testing.expectEqual(v1, v4);
-    for (s1.rijvisc.data, s4.rijvisc.data) |v1, v4| try std.testing.expectEqual(v1, v4);
-    for (s1.scaleth, s4.scaleth) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.visc.?.rijvisc.data, s4.visc.?.rijvisc.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.dynamo.?.scaleth, s4.dynamo.?.scaleth) |v1, v4| try std.testing.expectEqual(v1, v4);
     for (s1.flags, s4.flags) |f1, f4| try std.testing.expectEqual(f1, f4);
     try std.testing.expectEqual(s1.n_radimp_failures, s4.n_radimp_failures);
     try std.testing.expectEqual(s1.n_radimp_iters, s4.n_radimp_iters);

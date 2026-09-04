@@ -313,9 +313,9 @@ test "golden: flux_ct (Tóth EMF averaging) vs C" {
         const dim: usize = @intFromFloat(r.in[0]);
         const ix: i64 = @intFromFloat(r.in[1]);
         const iy: i64 = @intFromFloat(r.in[2]);
-        s.flb[dim].set(L.index(.b1), ix, iy, 0, r.in[3]);
-        s.flb[dim].set(L.index(.b2), ix, iy, 0, r.in[4]);
-        s.flb[dim].set(L.index(.b3), ix, iy, 0, r.in[5]);
+        s.faces.flb[dim].set(L.index(.b1), ix, iy, 0, r.in[3]);
+        s.faces.flb[dim].set(L.index(.b2), ix, iy, 0, r.in[4]);
+        s.faces.flb[dim].set(L.index(.b3), ix, iy, 0, r.in[5]);
     }
 
     ct.fluxCt(SimT, &s);
@@ -326,9 +326,9 @@ test "golden: flux_ct (Tóth EMF averaging) vs C" {
         const dim: usize = @intFromFloat(r.in[0]);
         const ix: i64 = @intFromFloat(r.in[1]);
         const iy: i64 = @intFromFloat(r.in[2]);
-        dev.add(r.out[0], s.flb[dim].get(L.index(.b1), ix, iy, 0), i);
-        dev.add(r.out[1], s.flb[dim].get(L.index(.b2), ix, iy, 0), i);
-        dev.add(r.out[2], s.flb[dim].get(L.index(.b3), ix, iy, 0), i);
+        dev.add(r.out[0], s.faces.flb[dim].get(L.index(.b1), ix, iy, 0), i);
+        dev.add(r.out[1], s.faces.flb[dim].get(L.index(.b2), ix, iy, 0), i);
+        dev.add(r.out[2], s.faces.flb[dim].get(L.index(.b3), ix, iy, 0), i);
     }
     try dev.check(1.0e-15, "flux_ct");
 }

@@ -238,7 +238,7 @@ test "M12 dynamo: ΔA_φ equatorial sign flip + |B³| non-increasing + divB" {
         while (iy < ny) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
-                const aphi = s.dyn_a.get(2, ix, iy, 0);
+                const aphi = s.dynamo.?.dyn_a.get(2, ix, iy, 0);
                 const bphi = b3_before[@intCast(iy * nx + ix)];
                 const expected = -(pi / 2.0 - thetaBL(&s, ix, iy)) * bphi;
                 if (@abs(aphi) > 1e-40 and @abs(expected) > 1e-40) {
@@ -285,8 +285,8 @@ test "M12 dynamo: calcScaleHeight = density-weighted RMS |π/2−θ|" {
         num += rho * geom.gdet * dth * dth;
         den += rho * geom.gdet;
     }
-    try std.testing.expectApproxEqRel(@sqrt(num / den), s.scaleth[@intCast(ix)], 1e-12);
-    try std.testing.expect(s.scaleth[@intCast(ix)] > 0);
+    try std.testing.expectApproxEqRel(@sqrt(num / den), s.dynamo.?.scaleth[@intCast(ix)], 1e-12);
+    try std.testing.expect(s.dynamo.?.scaleth[@intCast(ix)] > 0);
 }
 
 test "P1 dynamo threading: applyDynamo nthreads=4 is bit-identical to nthreads=1" {
@@ -317,8 +317,8 @@ test "P1 dynamo threading: applyDynamo nthreads=4 is bit-identical to nthreads=1
     // the scale-height reduction, and the ΔA_φ scratch — all to the bit
     for (s1.p.data, s4.p.data) |v1, v4| try std.testing.expectEqual(v1, v4);
     for (s1.u.data, s4.u.data) |v1, v4| try std.testing.expectEqual(v1, v4);
-    for (s1.dyn_a.data, s4.dyn_a.data) |v1, v4| try std.testing.expectEqual(v1, v4);
-    for (s1.scaleth, s4.scaleth) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.dynamo.?.dyn_a.data, s4.dynamo.?.dyn_a.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.dynamo.?.scaleth, s4.dynamo.?.scaleth) |v1, v4| try std.testing.expectEqual(v1, v4);
 }
 
 // The dynamo *law* was extracted from the mimic_dynamo grid loop into the pure

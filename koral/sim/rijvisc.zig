@@ -12,8 +12,8 @@
 //!   calcRijVisc: per-cell R^i_j via the pure kernel
 //!                           (C: calc_Rij_visc, rad.c:4670).
 //!   calcRijViscTotal: the once-per-step threaded domain pass filling
-//!                           sim.rijvisc (C: calc_Rij_visc_total, rad.c:4628).
-//!   faceAvg: face-averaged R^i_j read from sim.rijvisc
+//!                           sim.visc.?.rijvisc (C: calc_Rij_visc_total, rad.c:4628).
+//!   faceAvg: face-averaged R^i_j read from sim.visc.?.rijvisc
 //!                           (C: f_flux_prime_rad_total's ifacedim>−1 branch,
 //!                           rad.c:3782).
 //!   addRadViscFlux: p2u of the face state + the pure velocity-damped
@@ -32,6 +32,28 @@ const p2u_mod = @import("../p2u.zig");
 const metric = @import("../metric/metric.zig");
 const threading = @import("../threading.zig");
 const Geometry = @import("../geometry.zig").Geometry;
+const std = @import("std");
+const field_mod = @import("../field.zig");
+const Grid = @import("../grid.zig").Grid;
+
+/// The viscous-stress scratch, owned by a Sim only when `opt.radviscosity`
+/// is on (redesign step 3: pass-owned scratch). Lives at `sim.visc`.
+pub const Scratch = struct {
+    /// C: Rijviscglobal — the per-cell viscous R^i_j (flattened i*4+j),
+    /// filled once per step over the domain + one non-corner ghost ring.
+    rijvisc: field_mod.Field(16),
+
+    pub fn init(allocator: std.mem.Allocator, g: Grid, team: ?*threading.Team) !Scratch {
+        const rijvisc = try field_mod.Field(16).initUninitialized(allocator, g);
+        threading.parallelZero(team, rijvisc.data);
+        return .{ .rijvisc = rijvisc };
+    }
+
+    pub fn deinit(self: *Scratch) void {
+        self.rijvisc.deinit();
+        self.* = undefined;
+    }
+};
 
 /// threading.Error's shape (the union parallelRangeErr workers return); the
 /// same local alias sim/bc.zig uses.
@@ -258,13 +280,13 @@ pub fn calcRijVisc(
     return radvisc.rijVisc(rv.nu, pp[L.index(.ee)], &rv.shear, geom);
 }
 
-/// C: calc_Rij_visc_total (rad.c:4628). Populate sim.rijvisc (R^i_j) over the
+/// C: calc_Rij_visc_total (rad.c:4628). Populate sim.visc.?.rijvisc (R^i_j) over the
 /// domain plus a one-cell ghost ring, skipping corners (sim.isCorner). Called
 /// once per step (problem.c:127) with the step's global_dt. P1: band-parallel
 /// over iy rows (each cell writes only its own rijvisc block; the ±1-stencil
 /// reads of p are frozen during the pass).
 pub fn calcRijViscTotal(comptime SimT: type, sim: *SimT, global_dt: f64) Error!void {
-    threading.parallelZero(sim.team, sim.rijvisc.data);
+    threading.parallelZero(sim.team, sim.visc.?.rijvisc.data);
 
     const ny = sim.nyi();
     const ylim: i64 = if (ny > 1) 1 else 0;
@@ -301,7 +323,7 @@ fn rijViscRows(comptime SimT: type, sim: *SimT, global_dt: f64, iy0: i64, iy1: i
                 const rvisc = try calcRijVisc(SimT, sim, ix, iy, iz, &pp, &geom, global_dt);
                 // [4][4]f64 is row-major contiguous → bit-identical flatten.
                 const t: [16]f64 = @bitCast(rvisc);
-                sim.rijvisc.store(ix, iy, iz, &t);
+                sim.visc.?.rijvisc.store(ix, iy, iz, &t);
             }
         }
     }
@@ -309,14 +331,14 @@ fn rijViscRows(comptime SimT: type, sim: *SimT, global_dt: f64, iy0: i64, iy1: i
 
 /// C: f_flux_prime_rad_total's ifacedim>−1 branch (rad.c:3782-3786). The
 /// face-averaged viscous R^i_j at the face (fx,fy,fz) in dimension `dim`
-/// (between that cell and its dim−1 neighbour), read from sim.rijvisc.
+/// (between that cell and its dim−1 neighbour), read from sim.visc.?.rijvisc.
 pub fn faceAvg(comptime SimT: type, sim: *const SimT, dim: usize, fx: i64, fy: i64, fz: i64) [4][4]f64 {
     var a: [16]f64 = undefined;
     var b: [16]f64 = undefined;
-    sim.rijvisc.load(fx, fy, fz, &a);
+    sim.visc.?.rijvisc.load(fx, fy, fz, &a);
     var c = [3]i64{ fx, fy, fz };
     c[dim] -= 1;
-    sim.rijvisc.load(c[0], c[1], c[2], &b);
+    sim.visc.?.rijvisc.load(c[0], c[1], c[2], &b);
     var out: [4][4]f64 = undefined;
     for (0..4) |i| {
         for (0..4) |j| out[i][j] = 0.5 * (a[i * 4 + j] + b[i * 4 + j]);

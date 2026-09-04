@@ -25,6 +25,61 @@ const std = @import("std");
 const relele = @import("../relele.zig");
 const p2u_mod = @import("../p2u.zig");
 const threading = @import("../threading.zig");
+const field_mod = @import("../field.zig");
+const Grid = @import("../grid.zig").Grid;
+
+/// The constrained-transport scratch a Sim owns when the config has MHD
+/// (redesign step 3: pass-owned scratch): the corner EMFs of flux_ct and
+/// the 6-slot vector-potential work field of calc_BfromA (also borrowed by
+/// the dynamo's curl). Lives at `sim.ct`.
+pub const Scratch = struct {
+    allocator: std.mem.Allocator,
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    /// corner EMFs for flux-CT (comps 1..3 at slots 0..2), (nx+1)(ny+1)(nz+1)
+    emf: [3][]f64,
+    /// vector-potential/B scratch for calc_BfromA (C: pvecpot — corner A
+    /// lives in slots B1..B3, the curl result in slots 1..3, coexisting).
+    /// Here: slots 0..2 = corner A_i, slots 3..5 = B^i.
+    vecpot: field_mod.Field(6),
+
+    pub fn init(allocator: std.mem.Allocator, g: Grid, team: ?*threading.Team) !Scratch {
+        const ncorn = (g.nx + 1) * (g.ny + 1) * (g.nz + 1);
+        var emf: [3][]f64 = undefined;
+        var n_alloc: usize = 0;
+        errdefer for (emf[0..n_alloc]) |e| allocator.free(e);
+        for (0..3) |c| {
+            emf[c] = try allocator.alloc(f64, ncorn);
+            n_alloc += 1;
+            @memset(emf[c], 0);
+        }
+        // Zeroed THROUGH THE TEAM (P4b NUMA first-touch); zeros are zeros.
+        const vecpot = try field_mod.Field(6).initUninitialized(allocator, g);
+        threading.parallelZero(team, vecpot.data);
+        return .{ .allocator = allocator, .nx = g.nx, .ny = g.ny, .nz = g.nz, .emf = emf, .vecpot = vecpot };
+    }
+
+    pub fn deinit(self: *Scratch) void {
+        for (0..3) |c| self.allocator.free(self.emf[c]);
+        self.vecpot.deinit();
+        self.* = undefined;
+    }
+
+    pub fn emfIdx(self: *const Scratch, ix: i64, iy: i64, iz: i64) usize {
+        const jx: usize = @intCast(ix);
+        const jy: usize = @intCast(iy);
+        const jz: usize = @intCast(iz);
+        std.debug.assert(jx <= self.nx and jy <= self.ny and jz <= self.nz);
+        return (jz * (self.ny + 1) + jy) * (self.nx + 1) + jx;
+    }
+    pub fn getEmf(self: *const Scratch, comp: usize, ix: i64, iy: i64, iz: i64) f64 {
+        return self.emf[comp - 1][self.emfIdx(ix, iy, iz)];
+    }
+    pub fn setEmf(self: *Scratch, comp: usize, ix: i64, iy: i64, iz: i64, v: f64) void {
+        self.emf[comp - 1][self.emfIdx(ix, iy, iz)] = v;
+    }
+};
 
 fn flPin(n: i64, i: i64) i64 {
     return if (n == 1) 0 else i;
@@ -83,46 +138,46 @@ fn emfBand(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) void {
                 if (ny > 1 or nz > 1) {
                     var s: f64 = 0;
                     if (ny > 1) {
-                        s += sim.flb[1].get(b3, flPin(nx, ix), flPin(ny, iy), flPin(nz, iz)) +
-                            sim.flb[1].get(b3, flPin(nx, ix), flPin(ny, iy), flPin(nz, iz - 1));
+                        s += sim.faces.flb[1].get(b3, flPin(nx, ix), flPin(ny, iy), flPin(nz, iz)) +
+                            sim.faces.flb[1].get(b3, flPin(nx, ix), flPin(ny, iy), flPin(nz, iz - 1));
                     }
                     if (nz > 1) {
-                        s -= sim.flb[2].get(b2, flPin(nx, ix), flPin(ny, iy), flPin(nz, iz)) +
-                            sim.flb[2].get(b2, flPin(nx, ix), flPin(ny, iy - 1), flPin(nz, iz));
+                        s -= sim.faces.flb[2].get(b2, flPin(nx, ix), flPin(ny, iy), flPin(nz, iz)) +
+                            sim.faces.flb[2].get(b2, flPin(nx, ix), flPin(ny, iy - 1), flPin(nz, iz));
                     }
-                    sim.setEmf(1, ix, iy, iz, coefemf[1] * s);
+                    sim.ct.setEmf(1, ix, iy, iz, coefemf[1] * s);
                 } else {
-                    sim.setEmf(1, ix, iy, iz, 0);
+                    sim.ct.setEmf(1, ix, iy, iz, 0);
                 }
                 // EMF2
                 if (nx > 1 or nz > 1) {
                     var s: f64 = 0;
                     if (nz > 1) {
-                        s += sim.flb[2].get(b1, flPin(nx, ix), flPin(ny, iy), flPin(nz, iz)) +
-                            sim.flb[2].get(b1, flPin(nx, ix - 1), flPin(ny, iy), flPin(nz, iz));
+                        s += sim.faces.flb[2].get(b1, flPin(nx, ix), flPin(ny, iy), flPin(nz, iz)) +
+                            sim.faces.flb[2].get(b1, flPin(nx, ix - 1), flPin(ny, iy), flPin(nz, iz));
                     }
                     if (nx > 1) {
-                        s -= sim.flb[0].get(b3, ix, flPin(ny, iy), flPin(nz, iz)) +
-                            sim.flb[0].get(b3, ix, flPin(ny, iy), flPin(nz, iz - 1));
+                        s -= sim.faces.flb[0].get(b3, ix, flPin(ny, iy), flPin(nz, iz)) +
+                            sim.faces.flb[0].get(b3, ix, flPin(ny, iy), flPin(nz, iz - 1));
                     }
-                    sim.setEmf(2, ix, iy, iz, coefemf[2] * s);
+                    sim.ct.setEmf(2, ix, iy, iz, coefemf[2] * s);
                 } else {
-                    sim.setEmf(2, ix, iy, iz, 0);
+                    sim.ct.setEmf(2, ix, iy, iz, 0);
                 }
                 // EMF3
                 if (nx > 1 or ny > 1) {
                     var s: f64 = 0;
                     if (nx > 1) {
-                        s += sim.flb[0].get(b2, ix, flPin(ny, iy), flPin(nz, iz)) +
-                            sim.flb[0].get(b2, ix, flPin(ny, iy - 1), flPin(nz, iz));
+                        s += sim.faces.flb[0].get(b2, ix, flPin(ny, iy), flPin(nz, iz)) +
+                            sim.faces.flb[0].get(b2, ix, flPin(ny, iy - 1), flPin(nz, iz));
                     }
                     if (ny > 1) {
-                        s -= sim.flb[1].get(b1, flPin(nx, ix), flPin(ny, iy), flPin(nz, iz)) +
-                            sim.flb[1].get(b1, flPin(nx, ix - 1), flPin(ny, iy), flPin(nz, iz));
+                        s -= sim.faces.flb[1].get(b1, flPin(nx, ix), flPin(ny, iy), flPin(nz, iz)) +
+                            sim.faces.flb[1].get(b1, flPin(nx, ix - 1), flPin(ny, iy), flPin(nz, iz));
                     }
-                    sim.setEmf(3, ix, iy, iz, coefemf[3] * s);
+                    sim.ct.setEmf(3, ix, iy, iz, coefemf[3] * s);
                 } else {
-                    sim.setEmf(3, ix, iy, iz, 0);
+                    sim.ct.setEmf(3, ix, iy, iz, 0);
                 }
             }
         }
@@ -157,19 +212,19 @@ fn rebuildBand(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) void {
             var ix: i64 = 0;
             while (ix <= nx) : (ix += 1) {
                 if (nx > 1 and iy < ny and iz < nz) {
-                    sim.flb[0].set(b1, ix, iy, iz, 0);
-                    sim.flb[0].set(b2, ix, iy, iz, 0.5 * (sim.getEmf(3, ix, iy, iz) + sim.getEmf(3, ix, iy + 1, iz)));
-                    sim.flb[0].set(b3, ix, iy, iz, -0.5 * (sim.getEmf(2, ix, iy, iz) + sim.getEmf(2, ix, iy, iz + 1)));
+                    sim.faces.flb[0].set(b1, ix, iy, iz, 0);
+                    sim.faces.flb[0].set(b2, ix, iy, iz, 0.5 * (sim.ct.getEmf(3, ix, iy, iz) + sim.ct.getEmf(3, ix, iy + 1, iz)));
+                    sim.faces.flb[0].set(b3, ix, iy, iz, -0.5 * (sim.ct.getEmf(2, ix, iy, iz) + sim.ct.getEmf(2, ix, iy, iz + 1)));
                 }
                 if (ny > 1 and ix < nx and iz < nz) {
-                    sim.flb[1].set(b1, ix, iy, iz, -0.5 * (sim.getEmf(3, ix, iy, iz) + sim.getEmf(3, ix + 1, iy, iz)));
-                    sim.flb[1].set(b2, ix, iy, iz, 0);
-                    sim.flb[1].set(b3, ix, iy, iz, 0.5 * (sim.getEmf(1, ix, iy, iz) + sim.getEmf(1, ix, iy, iz + 1)));
+                    sim.faces.flb[1].set(b1, ix, iy, iz, -0.5 * (sim.ct.getEmf(3, ix, iy, iz) + sim.ct.getEmf(3, ix + 1, iy, iz)));
+                    sim.faces.flb[1].set(b2, ix, iy, iz, 0);
+                    sim.faces.flb[1].set(b3, ix, iy, iz, 0.5 * (sim.ct.getEmf(1, ix, iy, iz) + sim.ct.getEmf(1, ix, iy, iz + 1)));
                 }
                 if (nz > 1 and ix < nx and iy < ny) {
-                    sim.flb[2].set(b1, ix, iy, iz, 0.5 * (sim.getEmf(2, ix, iy, iz) + sim.getEmf(2, ix + 1, iy, iz)));
-                    sim.flb[2].set(b2, ix, iy, iz, -0.5 * (sim.getEmf(1, ix, iy, iz) + sim.getEmf(1, ix, iy + 1, iz)));
-                    sim.flb[2].set(b3, ix, iy, iz, 0);
+                    sim.faces.flb[2].set(b1, ix, iy, iz, 0.5 * (sim.ct.getEmf(2, ix, iy, iz) + sim.ct.getEmf(2, ix + 1, iy, iz)));
+                    sim.faces.flb[2].set(b2, ix, iy, iz, -0.5 * (sim.ct.getEmf(1, ix, iy, iz) + sim.ct.getEmf(1, ix, iy + 1, iz)));
+                    sim.faces.flb[2].set(b3, ix, iy, iz, 0);
                 }
             }
         }
@@ -190,8 +245,8 @@ pub fn calcBfromA(comptime SimT: type, sim: *SimT, ifoverwrite: bool) relele.Err
     const ny = sim.nyi();
     const nz = sim.nzi();
 
-    cornerAverageA(SimT, sim, &sim.vecpot, &sim.p, b1);
-    calcBfromACore(SimT, sim, &sim.vecpot);
+    cornerAverageA(SimT, sim, &sim.ct.vecpot, &sim.p, b1);
+    calcBfromACore(SimT, sim, &sim.ct.vecpot);
 
     if (ifoverwrite) {
         const ngx: i64 = @intCast(sim.grid.ngx);
@@ -205,9 +260,9 @@ pub fn calcBfromA(comptime SimT: type, sim: *SimT, ifoverwrite: bool) relele.Err
                 while (ix < nx + ngx) : (ix += 1) {
                     var pp: [SimT.nv]f64 = undefined;
                     sim.p.load(ix, iy, iz, &pp);
-                    pp[b1] = sim.vecpot.get(3, ix, iy, iz);
-                    pp[b1 + 1] = sim.vecpot.get(4, ix, iy, iz);
-                    pp[b1 + 2] = sim.vecpot.get(5, ix, iy, iz);
+                    pp[b1] = sim.ct.vecpot.get(3, ix, iy, iz);
+                    pp[b1 + 1] = sim.ct.vecpot.get(4, ix, iy, iz);
+                    pp[b1 + 2] = sim.ct.vecpot.get(5, ix, iy, iz);
                     const geom = sim.cache.fillGeometry(ix, iy, iz);
                     const uu = try p2u_mod.p2u(SimT.Cfg, pp, &geom, sim.opt.gam);
                     sim.p.store(ix, iy, iz, &pp);
@@ -222,7 +277,7 @@ pub fn calcBfromA(comptime SimT: type, sim: *SimT, ifoverwrite: bool) relele.Err
 /// the average of the surrounding cell-centered A_i, read from `src` slots
 /// [base, base+1, base+2] and written into `scratch` slots 0..2. `src` is any
 /// Field on the same grid; sim.p (B slots) for calc_BfromA, the dynamo scratch
-/// for mimic_dynamo; `scratch` is the 6-slot work Field (`&sim.vecpot`) that
+/// for mimic_dynamo; `scratch` is the 6-slot work Field (`&sim.ct.vecpot`) that
 /// carries the corner A (0..2) then the curl B (3..5). Exposed via pub so the
 /// dynamo can reuse the curl.
 pub fn cornerAverageA(comptime SimT: type, sim: *SimT, scratch: anytype, src: anytype, base: usize) void {

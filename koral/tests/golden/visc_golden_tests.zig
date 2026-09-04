@@ -119,7 +119,7 @@ test "M12 radviscosity: shear + nu + R^i_j vs C (PUFFY t=0, 384×360)" {
                 const iy = kvisc.cellY(jy);
                 const base = kvisc.base(jx, jy, 0);
                 var t: [16]f64 = undefined;
-                s.rijvisc.load(ix, iy, 0, &t);
+                s.visc.?.rijvisc.load(ix, iy, 0, &t);
                 for (0..16) |k| dev_rij.add(kvisc.data[base + k], t[k]);
             }
         }
