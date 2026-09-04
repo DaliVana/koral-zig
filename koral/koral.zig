@@ -90,6 +90,17 @@ pub const magn = struct {
 
 pub const problems = struct {
     pub const puffy = @import("problems/puffy/puffy.zig");
+    /// Library pieces shared by torus problems (redesign step 5): the
+    /// limotorus solver, floor atmospheres, β normalization, MRI seed
+    /// quality, the stock bc.c fragments and the init perturbation.
+    pub const common = struct {
+        pub const limotorus = @import("problems/common/limotorus.zig");
+        pub const atmosphere = @import("problems/common/atmosphere.zig");
+        pub const magnetize = @import("problems/common/magnetize.zig");
+        pub const mri = @import("problems/common/mri.zig");
+        pub const bcs = @import("problems/common/bcs.zig");
+        pub const perturb = @import("problems/common/perturb.zig");
+    };
 };
 
 pub const testing = struct {
@@ -176,6 +187,12 @@ test {
     _ = render.verify;
     _ = @import("math/quad.zig");
     _ = @import("problems/puffy/puffy.zig");
+    _ = problems.common.limotorus;
+    _ = problems.common.atmosphere;
+    _ = problems.common.magnetize;
+    _ = problems.common.mri;
+    _ = problems.common.bcs;
+    _ = problems.common.perturb;
     _ = @import("testing/tubes.zig");
 
     // theory gates — koral/tests/

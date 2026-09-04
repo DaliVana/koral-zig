@@ -20,9 +20,13 @@
 //! calc_BfromA(p,1) → set_bc → postinit. No BC refresh after postinit;
 //! ghost B keeps the pre-scaling values, exactly as in C.
 //!
-//! C recomputes the angular-momentum breaks and inner-edge constants for
-//! every cell (tools.c:239-253); they are cell-independent, so we compute
-//! them once (TorusConsts); bitwise the same values.
+//! The generic pieces (redesign step 5, 2026-09-04) live in
+//! problems/common/: limotorus.zig (tools.c), atmosphere.zig (the floor
+//! atmospheres + the LTE pressure split), perturb.zig, magnetize.zig
+//! (postinit.c β normalization), mri.zig (seed quality) and bcs.zig (the
+//! bc.c fragments). This file keeps what is PUFFY's — Physics, the LT_*
+//! constants, prepinit.c's per-cell composition, the init sequence and the
+//! BC dispatch — and re-exports every moved name so callers are unchanged.
 
 const std = @import("std");
 const config = @import("../../config.zig");
@@ -47,10 +51,12 @@ const units_mod = @import("../../units.zig");
 const metric = @import("../../metric/metric.zig");
 const coco = @import("../../metric/coco.zig");
 const precompute = @import("../../metric/precompute.zig");
-const quad = @import("../../math/quad.zig");
 const ct = @import("../../sim/ct.zig");
 const sim_mod = @import("../../sim.zig");
 const params_mod = @import("../../params.zig");
+const magnetize = @import("../common/magnetize.zig");
+const mri = @import("../common/mri.zig");
+const bcs = @import("../common/bcs.zig");
 
 const Grid = grid_mod.Grid;
 const Geometry = geometry.Geometry;
@@ -62,8 +68,9 @@ const Geometry = geometry.Geometry;
 /// as the reference depth for `rminForSpin`; also the value tests/goldens use.
 pub const rmin_ref: f64 = 1.85;
 
-/// UINTATMMIN / ERADATMMIN (define.h:221/225), computed once.
-pub const Atm = struct { uintatmmin: f64, eradatmmin: f64 };
+/// UINTATMMIN / ERADATMMIN (define.h:221/225), computed once
+/// (problems/common/atmosphere.zig).
+pub const Atm = @import("../common/atmosphere.zig").Atm;
 
 /// Inner boundary placed the same fraction inside the (Kerr) horizon as the
 /// fiducial a = 0 setup: RMIN(a) = rmin_ref · r_h(a)/r_h(0), i.e. 0.925·r_h(a)
@@ -357,260 +364,49 @@ pub fn atmConsts(con: *const thermo.Consts) Atm {
 }
 
 // ---------------------------------------------------------------------------
-// limotorus (PROBLEMS/PUFFY/tools.c)
+// limotorus (PROBLEMS/PUFFY/tools.c) — the solver lives in
+// problems/common/limotorus.zig; PUFFY's LT_* constants are `lt` above.
+// Everything is re-exported under its old name so callers are unchanged.
 
-const xacc: f64 = 5.0 * std.math.floatEps(f64); // C: 5.*DBL_EPSILON
-const pi_2: f64 = std.math.pi / 2.0; // C: M_PI_2
+pub const limotorus = @import("../common/limotorus.zig");
+pub const Gd = limotorus.Gd;
+pub const computeGd = limotorus.computeGd;
+pub const lK = limotorus.lK;
+pub const l3d = limotorus.l3d;
+pub const rtbis = limotorus.rtbis;
+pub const LamF = limotorus.LamF;
+pub const lamBL = limotorus.lamBL;
+pub const omega3d = limotorus.omega3d;
+pub const computeAgrav = limotorus.computeAgrav;
+pub const RmidF = limotorus.RmidF;
+pub const findRml = limotorus.findRml;
+pub const LnfIntegrand = limotorus.LnfIntegrand;
+pub const TorusConsts = limotorus.TorusConsts;
+pub const DsVels = limotorus.DsVels;
 
-pub const Gd = struct { gdtt: f64, gdtp: f64, gdpp: f64 };
-
-/// tools.c:1 compute_gd; BL g_tt, g_tφ, g_φφ (limotorus4.nb expressions).
-pub fn computeGd(r: f64, th: f64, a: f64) Gd {
-    const ac = a * @cos(th);
-    const sigma = ac * ac + r * r;
-    const s2 = @sin(th) * @sin(th);
-    const tmp = 2.0 * r * s2 / sigma;
-    return .{
-        .gdtt = -1.0 + 2.0 * r / sigma,
-        .gdtp = -a * tmp,
-        .gdpp = (r * r + a * a * (1.0 + tmp)) * s2,
-    };
+/// PUFFY's limotorus constants (define.h LT_*) with this run's LT_KAPPA.
+pub fn ltParams(kappa: f64) limotorus.Params {
+    return .{ .xi = lt.xi, .r1 = lt.r1, .r2 = lt.r2, .gamma = lt.gamma, .rin = lt.rin, .kappa = kappa };
 }
 
-/// tools.c:14 lK; Keplerian equatorial ℓ = u_φ/u_t.
-pub fn lK(r: f64, a: f64) f64 {
-    const curly_f = 1.0 - 2.0 * a / std.math.pow(f64, r, 1.5) + (a / r) * (a / r);
-    const curly_g = 1.0 - 2.0 / r + a / std.math.pow(f64, r, 1.5);
-    return @sqrt(r) * curly_f / curly_g;
-}
-
-/// tools.c:22 l3d; ξ·lK clamped to the broken-power-law window.
-pub fn l3d(lam: f64, a: f64, lambreak1: f64, lambreak2: f64, xi: f64) f64 {
-    const arg = if (lam <= lambreak1) lambreak1 else if (lam >= lambreak2) lambreak2 else lam;
-    return xi * lK(arg, a);
-}
-
-/// tools.c:26 rtbis (HARM's nrutil.c bisection): 100 halvings max, exits at
-/// |dx| < xacc. On an unbracketed root C prints a warning and marches on;
-/// we do the same (silently).
-pub fn rtbis(func: anytype, x1: f64, x2: f64, xacc_: f64) f64 {
-    const f = func.eval(x1);
-    var fmid = func.eval(x2);
-    var dx: f64 = undefined;
-    var rtb: f64 = undefined;
-    if (f < 0.0) {
-        dx = x2 - x1;
-        rtb = x1;
-    } else {
-        dx = x1 - x2;
-        rtb = x2;
-    }
-    var j: usize = 1;
-    while (j <= 100) : (j += 1) {
-        dx *= 0.5;
-        const xmid = rtb + dx;
-        fmid = func.eval(xmid);
-        if (fmid <= 0.0) rtb = xmid;
-        if (@abs(dx) < xacc_ or fmid == 0.0) return rtb;
-    }
-    return 0.0; // C: "Too many bisections in rtbis"
-}
-
-/// tools.c:51 lamBL_func.
-pub const LamF = struct {
-    gdtt: f64,
-    gdtp: f64,
-    gdpp: f64,
-    a: f64,
-    lambreak1: f64,
-    lambreak2: f64,
-    xi: f64,
-    pub fn eval(s: LamF, lam: f64) f64 {
-        const l = l3d(lam, s.a, s.lambreak1, s.lambreak2, s.xi);
-        return lam * lam + l * (l * s.gdtp + s.gdpp) / (l * s.gdtt + s.gdtp);
-    }
-};
-
-/// tools.c:68 lamBL; von Zeipel cylinder radius, bracket (R, 10R).
-pub fn lamBL(R: f64, gd: Gd, a: f64, lambreak1: f64, lambreak2: f64, xi: f64) f64 {
-    return rtbis(LamF{
-        .gdtt = gd.gdtt,
-        .gdtp = gd.gdtp,
-        .gdpp = gd.gdpp,
-        .a = a,
-        .lambreak1 = lambreak1,
-        .lambreak2 = lambreak2,
-        .xi = xi,
-    }, R, 10.0 * R, xacc);
-}
-
-/// tools.c:89 omega3d (pow(x,-1) folds to a reciprocal under clang -O2).
-pub fn omega3d(l: f64, gd: Gd) f64 {
-    return -(gd.gdtt * l + gd.gdtp) * (1.0 / (gd.gdpp + gd.gdtp * l));
-}
-
-/// tools.c:93 compute_Agrav.
-pub fn computeAgrav(om: f64, gd: Gd) f64 {
-    return @sqrt(@abs(1.0 / (gd.gdtt + 2.0 * om * gd.gdtp + om * om * gd.gdpp)));
-}
-
-/// tools.c:97 rmidlam; the passed-in gd values are dead in C (immediately
-/// overwritten with midplane values at x); only lam², a, breaks, ξ matter.
-pub const RmidF = struct {
-    lamsq: f64,
-    a: f64,
-    lambreak1: f64,
-    lambreak2: f64,
-    xi: f64,
-    pub fn eval(s: RmidF, x: f64) f64 {
-        const gd = computeGd(x, pi_2, s.a);
-        const lam_x = lamBL(x, gd, s.a, s.lambreak1, s.lambreak2, s.xi);
-        return s.lamsq - lam_x * lam_x;
-    }
-};
-
-/// tools.c:118 limotorus_findrml; bracket (6, 10·λ²) as written in C.
-pub fn findRml(lam: f64, a: f64, lambreak1: f64, lambreak2: f64, xi: f64) f64 {
-    const lamsq = lam * lam;
-    return rtbis(RmidF{
-        .lamsq = lamsq,
-        .a = a,
-        .lambreak1 = lambreak1,
-        .lambreak2 = lambreak2,
-        .xi = xi,
-    }, 6.0, 10.0 * lamsq, xacc);
-}
-
-/// tools.c:146 lnf_integrand.
-pub const LnfIntegrand = struct {
-    a: f64,
-    lambreak1: f64,
-    lambreak2: f64,
-    xi: f64,
-    pub fn eval(s: LnfIntegrand, r: f64) f64 {
-        const r2 = r * r;
-        const r3 = r2 * r;
-        const a2 = s.a * s.a;
-        const gd = computeGd(r, pi_2, s.a);
-        const lam = lamBL(r, gd, s.a, s.lambreak1, s.lambreak2, s.xi);
-        const lam2 = lam * lam;
-        const l = l3d(lam, s.a, s.lambreak1, s.lambreak2, s.xi);
-
-        const term1 = (r - 2.0) * l;
-        const term2 = 2.0 * s.a;
-        const term3 = r3 + a2 * (r + 2.0);
-        const term4 = term2 * l;
-        const om_numerator = term1 + term2;
-        const om_denominator = term3 - term4;
-        const om = om_numerator / om_denominator;
-
-        var dl_dr: f64 = 0.0;
-        if (lam <= s.lambreak1 or lam >= s.lambreak2) {
-            dl_dr = 0.0;
-        } else {
-            const oneplusx = 1.0 - 2.0 / lam + s.a * std.math.pow(f64, lam, -1.5);
-            const dx_dlam = 2.0 * std.math.pow(f64, lam, -2.0) - 1.5 * s.a * std.math.pow(f64, lam, -2.5);
-            const lamroot = @sqrt(lam);
-            const dlk_dlam = (oneplusx * 0.5 * (1.0 / lamroot) + (s.a - lamroot) * dx_dlam) /
-                (oneplusx * oneplusx);
-            const dd = term3 - 2.0 * term4 - lam2 * (r - 2.0);
-            const ee = l * (3.0 * r2 + a2 - lam2);
-            dl_dr = ee / (2.0 * lam * om_numerator / (s.xi * dlk_dlam) - dd);
-        }
-
-        const dom_dr = (om_denominator * (l + (r - 2.0) * dl_dr) -
-            om_numerator * (3.0 * r2 + a2 + 2.0 * s.a * dl_dr)) /
-            (om_denominator * om_denominator);
-
-        return -l / (1.0 - om * l) * dom_dr;
-    }
-};
-
-/// The cell-independent part of init_dsandvels_limotorus (tools.c:239-253):
-/// break λ's, and ℓ/ω/Agrav at the torus inner edge. C recomputes these per
-/// cell: the values are identical.
-pub const TorusConsts = struct {
-    lambreak1: f64,
-    lambreak2: f64,
-    lamin: f64,
-    lin: f64,
-    omin: f64,
-    agravin: f64,
-};
-
+/// tools.c:239-253 for PUFFY's window (κ does not enter).
 pub fn torusConsts(a: f64) TorusConsts {
-    var gd = computeGd(lt.r1, pi_2, a);
-    const lambreak1 = lamBL(lt.r1, gd, a, 0.0, 200000.0, lt.xi);
-    gd = computeGd(lt.r2, pi_2, a);
-    const lambreak2 = lamBL(lt.r2, gd, a, lambreak1, 200000.0, lt.xi);
-
-    gd = computeGd(lt.rin, pi_2, a);
-    const lamin = lamBL(lt.rin, gd, a, lambreak1, lambreak2, lt.xi);
-    const lin = l3d(lamin, a, lambreak1, lambreak2, lt.xi);
-    const omin = omega3d(lin, gd);
-    const agravin = computeAgrav(omin, gd);
-
-    return .{
-        .lambreak1 = lambreak1,
-        .lambreak2 = lambreak2,
-        .lamin = lamin,
-        .lin = lin,
-        .omin = omin,
-        .agravin = agravin,
-    };
+    return limotorus.torusConsts(a, ltParams(defaults.lt_kappa));
 }
 
-pub const DsVels = struct { rho: f64, uu: f64, ell: f64 };
-
-/// tools.c:195 init_dsandvels_limotorus at (r, θ) in BL. rho = −1 flags
-/// "outside the torus" (including quadrature failure, mirroring the
-/// GSL_NEGINF branch).
+/// tools.c:195 init_dsandvels_limotorus with the validated LT_KAPPA.
 pub fn initDsandvels(r: f64, th: f64, a: f64, tc: *const TorusConsts) DsVels {
-    return initDsandvelsKappa(r, th, a, tc, defaults.lt_kappa);
-}
-
-fn initDsandvelsKappa(r: f64, th: f64, a: f64, tc: *const TorusConsts, kappa: f64) DsVels {
-    const R = r * @sin(th);
-    if (R < lt.rin) return .{ .rho = -1.0, .uu = 0.0, .ell = 0.0 };
-    const gd = computeGd(r, th, a);
-    const lam = lamBL(R, gd, a, tc.lambreak1, tc.lambreak2, lt.xi);
-    const l = l3d(lam, a, tc.lambreak1, tc.lambreak2, lt.xi);
-    const om = omega3d(l, gd);
-    const agrav = computeAgrav(om, gd);
-    const rml = findRml(lam, a, tc.lambreak1, tc.lambreak2, lt.xi);
-
-    const integrand = LnfIntegrand{
-        .a = a,
-        .lambreak1 = tc.lambreak1,
-        .lambreak2 = tc.lambreak2,
-        .xi = lt.xi,
-    };
-    // C: gsl_integration_qags(rin → rml, epsabs 0, epsrel 1e-8); failure sets
-    // lnf3d = GSL_NEGINF so the density comes out 0/negative.
-    const q = quad.integrate(integrand, lt.rin, rml, 0.0, 1.0e-12);
-    const lnf3d: f64 = if (q.converged) q.value else -std.math.inf(f64);
-    const f3d = @exp(-lnf3d);
-
-    const f3din: f64 = 1.0; // ≡ 1 at r = rin by construction
-    const hh = f3din * agrav / (f3d * tc.agravin);
-    const eps = (-1.0 + hh) * (1.0 / lt.gamma);
-
-    // C: pow(kappa,-1) and pow(-1+LT_GAMMA,-1) fold to reciprocals.
-    const rho: f64 = if (eps < 0.0)
-        -1.0
-    else
-        std.math.pow(f64, (-1.0 + lt.gamma) * eps * (1.0 / kappa), 1.0 / (-1.0 + lt.gamma));
-
-    return .{
-        .rho = rho,
-        .ell = l,
-        .uu = kappa * std.math.pow(f64, rho, lt.gamma) / (lt.gamma - 1.0),
-    };
+    return limotorus.initDsandvels(r, th, a, tc, ltParams(defaults.lt_kappa));
 }
 
 // ---------------------------------------------------------------------------
-// atmospheres (relele.c:518 / :718, atmtype 0 — normal observer)
+// atmospheres (relele.c:518 / :718) — problems/common/atmosphere.zig
 
+pub const atmosphere = @import("../common/atmosphere.zig");
+pub const setRadAtmosphere = atmosphere.setRadAtmosphere;
+pub const tFromPtot = atmosphere.tFromPtot;
+
+/// set_hdatmosphere with this problem's RHOATMMIN and metric.
 pub fn setHdAtmosphere(
     comptime cfg: config.Config,
     pp: *[layout.VarLayout(cfg).count]f64,
@@ -618,39 +414,7 @@ pub fn setHdAtmosphere(
     atm: *const Atm,
     phys: *const Physics,
 ) void {
-    const L = layout.VarLayout(cfg);
-    // normal observer in VELR ≡ VELPRIM — no conversion
-    const ucon = relele.normalObsVelr(geom);
-    pp[L.index(.vx)] = ucon[1];
-    pp[L.index(.vy)] = ucon[2];
-    pp[L.index(.vz)] = ucon[3];
-
-    // Bondi-like profile, normalized at r_BL = 2
-    const xx2 = coco.cocoN(geom.xxvec, geom.coords, .bl, phys.mp);
-    const r = xx2[1];
-    const rout: f64 = 2.0;
-    pp[L.index(.rho)] = phys.rhoatmmin * std.math.pow(f64, r / rout, -1.5);
-    pp[L.index(.uu)] = atm.uintatmmin * std.math.pow(f64, r / rout, -2.5);
-
-    if (comptime L.hasVar(.b1)) {
-        pp[L.index(.b1)] = 0.0;
-        pp[L.index(.b2)] = 0.0;
-        pp[L.index(.b3)] = 0.0;
-    }
-}
-
-pub fn setRadAtmosphere(
-    comptime cfg: config.Config,
-    pp: *[layout.VarLayout(cfg).count]f64,
-    geom: *const Geometry,
-    atm: *const Atm,
-) void {
-    const L = layout.VarLayout(cfg);
-    pp[L.index(.ee)] = atm.eradatmmin;
-    const ucon = relele.normalObsVelr(geom); // VELR ≡ VELPRIMRAD
-    pp[L.index(.fx)] = ucon[1];
-    pp[L.index(.fy)] = ucon[2];
-    pp[L.index(.fz)] = ucon[3];
+    atmosphere.setHdAtmosphere(cfg, pp, geom, atm, phys.rhoatmmin, phys.mp);
 }
 
 // ---------------------------------------------------------------------------
@@ -663,43 +427,8 @@ pub fn fillGeometryBL(g: *const Grid, coords: config.Coords, ix: i64, iy: i64, i
     return precompute.geometryBLat(g, coords, defaults.mp, ix, iy, iz);
 }
 
-/// prepinit.c:92-93; the T > 0 root of P = bbb·T + aaa·T⁴ (Mathematica
-/// closed form, transcribed with its literal decimal exponents).
-pub fn tFromPtot(P: f64, aaa: f64, bbb: f64) f64 {
-    const third = 0.3333333333333333;
-    const twothird = 0.6666666666666666;
-    const naw1 = std.math.cbrt(9.0 * aaa * (bbb * bbb) -
-        @sqrt(3.0) * @sqrt(27.0 * (aaa * aaa) * std.math.pow(f64, bbb, 4.0) +
-            256.0 * std.math.pow(f64, aaa, 3.0) * std.math.pow(f64, P, 3.0)));
-    const c23 = std.math.pow(f64, twothird, third);
-    const c2 = std.math.pow(f64, 2.0, third);
-    const c3 = std.math.pow(f64, 3.0, twothird);
-    return -@sqrt((-4.0 * c23 * P) / naw1 + naw1 / (c2 * c3 * aaa)) / 2.0 +
-        @sqrt((4.0 * c23 * P) / naw1 - naw1 / (c2 * c3 * aaa) +
-            (2.0 * bbb) / (aaa * @sqrt((-4.0 * c23 * P) / naw1 + naw1 / (c2 * c3 * aaa)))) / 2.0;
-}
-
-/// splitmix64 finalizer; self-contained (no std.hash dependency, so the
-/// noise field is reproducible across Zig versions).
-fn mix64(z0: u64) u64 {
-    var z = z0 +% 0x9E3779B97F4A7C15;
-    z = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9;
-    z = (z ^ (z >> 27)) *% 0x94D049BB133111EB;
-    return z ^ (z >> 31);
-}
-
-/// Deterministic per-cell noise ξ ∈ [−1, 1) for the init perturbation,
-/// hashed from the cell-center INTERNAL coordinates. The grid contract
-/// (MPI plan gate 1) makes those coordinates bit-identical for the same
-/// physical cell on every rank and thread count, so the noise field is
-/// decomposition-invariant by construction.
-pub fn perturbXi(x: [4]f64) f64 {
-    const b1: u64 = @bitCast(x[1]);
-    const b2: u64 = @bitCast(x[2]);
-    const b3: u64 = @bitCast(x[3]);
-    const u = mix64(mix64(mix64(b1) ^ b2) ^ b3);
-    return 2.0 * (@as(f64, @floatFromInt(u >> 11)) * 0x1.0p-53) - 1.0;
-}
+/// The MRI-seeding noise (problems/common/perturb.zig).
+pub const perturbXi = @import("../common/perturb.zig").perturbXi;
 
 pub fn prepInitCell(
     comptime cfg: config.Config,
@@ -728,7 +457,7 @@ pub fn prepInitCellWith(
     const r = geomBL.xxvec[1];
     const th = geomBL.xxvec[2];
 
-    const dv = initDsandvelsKappa(r, th, phys.mp.a, tc, phys.lt_kappa);
+    const dv = limotorus.initDsandvels(r, th, phys.mp.a, tc, ltParams(phys.lt_kappa));
     const rho = dv.rho;
     var uint = dv.uu;
     var ell = dv.ell;
@@ -883,207 +612,43 @@ pub fn initAllWith(comptime SimT: type, sim: *SimT, phys: *const Physics) !f64 {
     return try postinitWith(SimT, sim, phys);
 }
 
-/// postinit.c: global β normalization. Returns fac; ghost cells keep their
-/// unscaled B (C does not refresh BCs after postinit).
+/// postinit.c: global β normalization (problems/common/magnetize.zig).
+/// Returns fac; ghost cells keep their unscaled B (C does not refresh BCs
+/// after postinit).
 pub fn postinit(comptime SimT: type, sim: *SimT) !f64 {
     return postinitWith(SimT, sim, &defaults);
 }
 
 pub fn postinitWith(comptime SimT: type, sim: *SimT, phys: *const Physics) !f64 {
-    const L = SimT.Layout;
-    if (comptime !L.hasVar(.b1)) return 1.0;
-
-    const ny: i64 = @intCast(sim.grid.ny);
-
-    // Pass 1 — the BETANORMFULL max, band-parallel over iy. `tsd_max` is
-    // ChunkResult's max-merged slot, so combining bands is order-insensitive
-    // and therefore bit-identical to the serial scan; clamping at 0 below
-    // reproduces the serial `maxb = 0.0` starting value exactly (the slot's
-    // neutral element is -inf).
-    const MaxW = struct {
-        fn rows(s: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            betaMaxRows(SimT, s, iy0, iy1, res) catch |e| {
-                res.err = e;
-            };
-        }
-    };
-    const mres = threading.parallelRange(SimT, sim, sim.team, 0, ny, MaxW.rows);
-    if (mres.err) |e| return e;
-    var maxb: f64 = @max(0.0, mres.tsd_max);
-
-    // BETANORMFULL is a GLOBAL max (MPI plan §1.1-5): without the fold each
-    // rank normalizes B differently and the field is discontinuous from
-    // step 0. Identity serially; max is exact, so the folded value is
-    // bit-identical to a serial run's.
-    maxb = sim.globalMax(maxb);
-    const fac = @sqrt(phys.maxbeta / maxb);
-
-    // Pass 2 — apply the factor. Per-cell writes only; band-parallel.
-    const ScaleCtx = struct { sim: *SimT, fac: f64 };
-    var sctx = ScaleCtx{ .sim = sim, .fac = fac };
-    const ScaleW = struct {
-        fn rows(c: *ScaleCtx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            betaScaleRows(SimT, c.sim, c.fac, iy0, iy1) catch |e| {
-                res.err = e;
-            };
-        }
-    };
-    const sres = threading.parallelRange(ScaleCtx, &sctx, sim.team, 0, ny, ScaleW.rows);
-    if (sres.err) |e| return e;
-
-    return fac;
-}
-
-/// postinit pass 1 body for iy ∈ [iy0, iy1): the per-cell β = p_mag/p_tot,
-/// accumulated into the chunk's max-merged slot.
-fn betaMaxRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) !void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const nx: i64 = @intCast(sim.grid.nx);
-    const nz: i64 = @intCast(sim.grid.nz);
-
-    var iz: i64 = 0;
-    while (iz < nz) : (iz += 1) {
-        var iy: i64 = iy0;
-        while (iy < iy1) : (iy += 1) {
-            var ix: i64 = 0;
-            while (ix < nx) : (ix += 1) {
-                var pp: [SimT.nv]f64 = undefined;
-                sim.p.load(ix, iy, iz, &pp);
-                const geom = sim.cache.fillGeometry(ix, iy, iz);
-
-                const ug = try relele.uconUcovFromPrims(
-                    .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
-                    &geom,
-                );
-                const bb = mhd.bconBcovBsqFrom4vel(
-                    .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
-                    ug.con,
-                    ug.cov,
-                    &geom,
-                );
-                const pmag = bb.bsq / 2.0;
-
-                const pgas = (sim.opt.gam - 1.0) * pp[L.index(.uu)];
-                var ptot = pgas;
-                if (comptime cfg.has(.radiation)) {
-                    const rt = try radiation.calcFfRtt(cfg, pp, &geom);
-                    const ehat = -rt.rtt;
-                    ptot += ehat / 3.0;
-                }
-
-                // BETANORMFULL: max over the whole domain
-                if (pmag / ptot > res.tsd_max) res.tsd_max = pmag / ptot;
-            }
-        }
-    }
-}
-
-/// postinit pass 2 body for iy ∈ [iy0, iy1): scale B by `fac` and refresh
-/// the conserveds.
-fn betaScaleRows(comptime SimT: type, sim: *SimT, fac: f64, iy0: i64, iy1: i64) !void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const nx: i64 = @intCast(sim.grid.nx);
-    const nz: i64 = @intCast(sim.grid.nz);
-
-    var iz: i64 = 0;
-    while (iz < nz) : (iz += 1) {
-        var iy: i64 = iy0;
-        while (iy < iy1) : (iy += 1) {
-            var ix: i64 = 0;
-            while (ix < nx) : (ix += 1) {
-                var pp: [SimT.nv]f64 = undefined;
-                sim.p.load(ix, iy, iz, &pp);
-                pp[L.index(.b1)] *= fac;
-                pp[L.index(.b2)] *= fac;
-                pp[L.index(.b3)] *= fac;
-                const geom = sim.cache.fillGeometry(ix, iy, iz);
-                const uu = try p2u_mod.p2u(cfg, pp, &geom, sim.opt.gam);
-                sim.p.store(ix, iy, iz, &pp);
-                sim.u.store(ix, iy, iz, &uu);
-            }
-        }
-    }
+    return magnetize.normalizeBeta(SimT, sim, phys.maxbeta);
 }
 
 // ---------------------------------------------------------------------------
 // bc.c — problem-specific boundary conditions
 
 // ---------------------------------------------------------------------------
-// seed MRI-quality report (campaign notes 2026-08-08)
+// seed MRI-quality report (problems/common/mri.zig)
 
-/// Mass-weighted seed MRI-quality sums over this rank's slab. The caller
-/// folds them across ranks (globalSum) and divides; every field is
-/// sum-reducible on purpose. Same disk mask as tools/qmri.zig (ρ > 10³×
-/// the atmosphere floor profile, r < 100) so the startup numbers are
-/// directly comparable to qmri on later dumps. Q_i = 2π|b^i|/(√(ρh+b²)·
-/// |Ω|·Δx^i) with radiation-inclusive inertia; Q_φ ≡ 0 for the A_φ-only
-/// seed and is omitted. Serial pass over the interior; the geometry is
-/// cached, so this costs well under a second even on campaign grids.
-/// Assumes MKS2 internal coordinates (r = e^{x1} + mksr0), like the rest
-/// of this problem.
-pub const SeedQ = struct { mass: f64 = 0, qr_m: f64 = 0, qth_m: f64 = 0 };
+pub const SeedQ = mri.SeedQ;
 
 pub fn seedQuality(comptime SimT: type, s: *SimT) !SeedQ {
     return seedQualityWith(SimT, s, &defaults);
 }
 
 pub fn seedQualityWith(comptime SimT: type, s: *SimT, phys: *const Physics) !SeedQ {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    if (comptime !L.hasVar(.b1)) return .{};
-    var out = SeedQ{};
-    var iz: i64 = 0;
-    while (iz < s.nzi()) : (iz += 1) {
-        var iy: i64 = 0;
-        while (iy < s.nyi()) : (iy += 1) {
-            var ix: i64 = 0;
-            while (ix < s.nxi()) : (ix += 1) {
-                var pp: [SimT.nv]f64 = undefined;
-                s.p.load(ix, iy, iz, &pp);
-                const rho = pp[L.index(.rho)];
-                if (!(rho > 0)) continue;
-                const geom = s.cache.fillGeometry(ix, iy, iz);
-                const r = @exp(geom.xxvec[1]) + phys.mp.mksr0;
-                if (r > 100.0) continue;
-                if (rho < 1.0e3 * phys.rhoatmmin * std.math.pow(f64, r / 2.0, -1.5)) continue;
-                const ug = try relele.uconUcovFromPrims(
-                    .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
-                    &geom,
-                );
-                const bb = mhd.bconBcovBsqFrom4vel(
-                    .{ pp[L.index(.b1)], pp[L.index(.b2)], pp[L.index(.b3)] },
-                    ug.con,
-                    ug.cov,
-                    &geom,
-                );
-                const omega = @abs(ug.con[3] / ug.con[0]);
-                if (!(omega > 1e-12)) continue;
-                var w = rho + phys.gam * pp[L.index(.uu)];
-                if (comptime cfg.has(.radiation)) {
-                    const rt = try radiation.calcFfRtt(cfg, pp, &geom);
-                    const ehat = -rt.rtt;
-                    if (ehat > 0 and std.math.isFinite(ehat)) w += (4.0 / 3.0) * ehat;
-                }
-                const den = @sqrt(w + bb.bsq) * omega;
-                const wgt = rho * geom.gdet;
-                out.mass += wgt;
-                out.qr_m += wgt * 2.0 * std.math.pi * @abs(bb.bcon[1]) / (den * s.grid.dx);
-                out.qth_m += wgt * 2.0 * std.math.pi * @abs(bb.bcon[2]) / (den * s.grid.dy);
-            }
-        }
-    }
-    return out;
+    return mri.seedQuality(SimT, s, .{ .mksr0 = phys.mp.mksr0, .rhoatmmin = phys.rhoatmmin, .gam = phys.gam });
 }
+
+// ---------------------------------------------------------------------------
+// bc.c — the problem's boundary conditions, composed from the stock
+// fragments in problems/common/bcs.zig: XBCHI outflow with r-rescaling +
+// no-inflow, XBCLO plain copy (RMIN=1.85 < r_horizon=2 skips the inflow
+// check), YBC polar reflection. TNZ == 1 has no z ghosts; nz > 1 is
+// periodic in φ and never reaches this callback.
 
 pub fn Bc(comptime SimT: type) type {
     return struct {
-        const cfg = SimT.Cfg;
-        const L = SimT.Layout;
         const NV = SimT.nv;
-        const has_rad = cfg.has(.radiation);
-        const has_b = L.hasVar(.b1);
 
         pub fn calc(
             ctx: ?*const anyopaque,
@@ -1098,97 +663,12 @@ pub fn Bc(comptime SimT: type) type {
             _ = ctx; // Sim.opt.mp carries the problem metric; no extra context
             _ = t;
             _ = ifinit;
-            const nx: i64 = @intCast(sim.grid.nx);
-            const ny: i64 = @intCast(sim.grid.ny);
-            var pp: [NV]f64 = undefined;
-
-            switch (face) {
-                .xhi => {
-                    // outflow with r-rescaling (bc.c:23-121)
-                    sim.p.load(nx - 1, iy, iz, &pp);
-
-                    const geom = sim.cache.fillGeometry(ix, iy, iz);
-                    const geomBL = precompute.geometryBLat(&sim.grid, cfg.coords, sim.opt.mp, ix, iy, iz);
-
-                    // MHD prims to BL (ghost-cell geometries, as in C)
-                    pp = try frames.transPmhdCoco(cfg, pp, &geom, &geomBL, sim.opt.mp);
-
-                    const geombdBL = precompute.geometryBLat(&sim.grid, cfg.coords, sim.opt.mp, nx - 1, iy, iz);
-                    const rghost = geomBL.xxvec[1];
-                    const rbound = geombdBL.xxvec[1];
-                    const scale1 = rbound * rbound / rghost / rghost;
-                    const scale2 = rbound / rghost;
-
-                    pp[L.index(.rho)] *= scale1;
-                    pp[L.index(.uu)] *= scale1;
-                    if (comptime has_b) {
-                        pp[L.index(.b1)] *= scale1;
-                        pp[L.index(.b2)] *= scale2;
-                        pp[L.index(.b3)] *= scale2;
-                    }
-                    pp[L.index(.vy)] *= scale1;
-                    pp[L.index(.vz)] *= scale1;
-                    if (comptime has_rad) {
-                        // note: rad prims scaled while the MHD block sits in
-                        // BL — they never left MYCOORDS (C does the same)
-                        pp[L.index(.ee)] *= scale1;
-                        pp[L.index(.fy)] *= scale1;
-                        pp[L.index(.fz)] *= scale1;
-                    }
-
-                    pp = try frames.transPmhdCoco(cfg, pp, &geomBL, &geom, sim.opt.mp);
-
-                    // no-inflow: gas
-                    var ucon = [4]f64{ 0.0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
-                    ucon = try relele.convert(ucon, .velr, .vel4, &geom, .recompute_ut);
-                    ucon = frames.trans2Coco(geom.xxvec, ucon, cfg.coords, .bl, sim.opt.mp);
-                    if (ucon[1] < 0.0) {
-                        ucon[1] = 0.0;
-                        ucon = frames.trans2Coco(geomBL.xxvec, ucon, .bl, cfg.coords, sim.opt.mp);
-                        ucon = try relele.convert(ucon, .vel4, .velr, &geom, .recompute_ut);
-                        pp[L.index(.vx)] = ucon[1];
-                        pp[L.index(.vy)] = ucon[2];
-                        pp[L.index(.vz)] = ucon[3];
-                    }
-                    if (comptime has_rad) {
-                        var urf = [4]f64{ 0.0, pp[L.index(.fx)], pp[L.index(.fy)], pp[L.index(.fz)] };
-                        urf = try relele.convert(urf, .velr, .vel4, &geom, .recompute_ut);
-                        urf = frames.trans2Coco(geom.xxvec, urf, cfg.coords, .bl, sim.opt.mp);
-                        if (urf[1] < 0.0) {
-                            urf[1] = 0.0;
-                            urf = frames.trans2Coco(geomBL.xxvec, urf, .bl, cfg.coords, sim.opt.mp);
-                            urf = try relele.convert(urf, .vel4, .velr, &geom, .recompute_ut);
-                            pp[L.index(.fx)] = urf[1];
-                            pp[L.index(.fy)] = urf[2];
-                            pp[L.index(.fz)] = urf[3];
-                        }
-                    }
-                },
-                .xlo => {
-                    // outflow near the BH; RMIN=1.85 < r_horizon=2 in PUFFY,
-                    // so the C inflow check (bc.c:133) never runs
-                    sim.p.load(0, iy, iz, &pp);
-                },
-                .ylo => {
-                    // polar reflection, upper axis
-                    const iiy = -iy - 1;
-                    sim.p.load(ix, iiy, iz, &pp);
-                    pp[L.index(.vy)] = -pp[L.index(.vy)];
-                    if (comptime has_b) pp[L.index(.b2)] = -pp[L.index(.b2)];
-                    if (comptime has_rad) pp[L.index(.fy)] = -pp[L.index(.fy)];
-                },
-                .yhi => {
-                    // polar reflection, lower axis
-                    const iiy = ny - (iy - ny) - 1;
-                    sim.p.load(ix, iiy, iz, &pp);
-                    pp[L.index(.vy)] = -pp[L.index(.vy)];
-                    if (comptime has_b) pp[L.index(.b2)] = -pp[L.index(.b2)];
-                    if (comptime has_rad) pp[L.index(.fy)] = -pp[L.index(.fy)];
-                },
-                // TNZ == 1: no z ghost cells exist
+            return switch (face) {
+                .xhi => try bcs.outflowRescaleXhi(SimT, sim, ix, iy, iz),
+                .xlo => bcs.copyXlo(SimT, sim, iy, iz),
+                .ylo, .yhi => bcs.polarReflect(SimT, sim, ix, iy, iz, face),
                 .zlo, .zhi => unreachable,
-            }
-            return pp;
+            };
         }
     };
 }

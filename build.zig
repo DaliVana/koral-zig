@@ -402,12 +402,15 @@ pub fn build(b: *std.Build) !void {
             .dependOn(&install_gates.step);
     }
 
-    // One executable per koral/problems/<name>/main.zig
+    // One executable per koral/problems/<name>/main.zig. A subdirectory
+    // without a main.zig (koral/problems/common/, the shared torus /
+    // atmosphere / bc library) is not a problem and is skipped.
     var dir = try b.build_root.handle.openDir(io, "koral/problems", .{ .iterate = true });
     defer dir.close(io);
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
         if (entry.kind != .directory) continue;
+        dir.access(io, b.fmt("{s}/main.zig", .{entry.name}), .{}) catch continue;
         const exe = b.addExecutable(.{
             .name = entry.name,
             .root_module = b.createModule(.{
