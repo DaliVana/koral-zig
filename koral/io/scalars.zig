@@ -41,15 +41,15 @@ const pi = std.math.pi;
 /// metric params from the sim options so the reductions stay problem-agnostic.
 /// The reduction itself lives once in precompute.geometryBLat.
 fn blGeom(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64) Geometry {
-    return precompute.geometryBLat(&sim.grid, SimT.Cfg.coords, sim.opt.mp, ix, iy, iz);
+    return precompute.geometryBLat(&sim.core.grid, SimT.Cfg.coords, sim.core.phys.mp, ix, iy, iz);
 }
 
 /// r in OUTCOORDS at a radial index (θ,φ-independent for BL/MKS). MINK has no
 /// BH frame, so the Cartesian x-coordinate stands in as the radius proxy.
 pub fn radiusBL(comptime SimT: type, sim: *const SimT, ix: i64) f64 {
-    if (comptime SimT.Cfg.coords == .mink) return sim.grid.xc(ix);
-    const xx = [4]f64{ 0.0, sim.grid.xc(ix), sim.grid.yc(0), sim.grid.zc(0) };
-    return coco.cocoN(xx, SimT.Cfg.coords, .bl, sim.opt.mp)[1];
+    if (comptime SimT.Cfg.coords == .mink) return sim.core.grid.xc(ix);
+    const xx = [4]f64{ 0.0, sim.core.grid.xc(ix), sim.core.grid.yc(0), sim.core.grid.zc(0) };
+    return coco.cocoN(xx, SimT.Cfg.coords, .bl, sim.core.phys.mp)[1];
 }
 
 /// First domain radial index whose BL radius exceeds `radius` (C's
@@ -80,7 +80,7 @@ pub fn totalMass(comptime SimT: type, sim: *const SimT) f64 {
 
     // 2π/PHIWEDGE wedge→full-torus factor for TNZ>1 (1.0 in 2D, where the
     // single z-cell already spans the whole wedge and C does not expand it).
-    const phifac: f64 = if (sim.nzi() > 1) 2.0 * pi / (sim.grid.maxz - sim.grid.minz) else 1.0;
+    const phifac: f64 = if (sim.nzi() > 1) 2.0 * pi / (sim.core.grid.maxz - sim.core.grid.minz) else 1.0;
 
     var mass: f64 = 0;
     var iz: i64 = 0;
@@ -89,11 +89,11 @@ pub fn totalMass(comptime SimT: type, sim: *const SimT) f64 {
         while (iy < sim.nyi()) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < sim.nxi()) : (ix += 1) {
-                const geom = sim.cache.fillGeometry(ix, iy, iz);
-                const dx = sim.grid.cellSize(ix, 0);
-                const dy = sim.grid.cellSize(iy, 1);
-                const dz = sim.grid.cellSize(iz, 2) * phifac;
-                mass += sim.p.get(rho_i, ix, iy, iz) * dx * dy * dz * geom.gdet;
+                const geom = sim.core.cache.fillGeometry(ix, iy, iz);
+                const dx = sim.core.grid.cellSize(ix, 0);
+                const dy = sim.core.grid.cellSize(iy, 1);
+                const dz = sim.core.grid.cellSize(iz, 2) * phifac;
+                mass += sim.core.p.get(rho_i, ix, iy, iz) * dx * dy * dz * geom.gdet;
             }
         }
     }
@@ -114,15 +114,15 @@ pub fn mdot(comptime SimT: type, sim: *const SimT, ix: i64) relele.Error!f64 {
         var iy: i64 = 0;
         while (iy < sim.nyi()) : (iy += 1) {
             var pp: [SimT.nv]f64 = undefined;
-            sim.p.load(ix, iy, iz, &pp);
-            const geom = sim.cache.fillGeometry(ix, iy, iz);
+            sim.core.p.load(ix, iy, iz, &pp);
+            const geom = sim.core.cache.fillGeometry(ix, iy, iz);
             const vcon = [4]f64{ 0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
             const ucon = try relele.convert(vcon, .velr, .vel4, &geom, .recompute_ut);
             const rhouconr = pp[rho_i] * ucon[1];
-            const dy = sim.grid.cellSize(iy, 1);
+            const dy = sim.core.grid.cellSize(iy, 1);
             // C calc_mdot: dφ → 2π for TNZ==1, raw cell dφ × (2π/PHIWEDGE) for
             // TNZ>1 (postproc.c:2786-2807) — both give the full-torus flux.
-            const dz = if (twod) 2.0 * pi else sim.grid.cellSize(iz, 2) * (2.0 * pi / (sim.grid.maxz - sim.grid.minz));
+            const dz = if (twod) 2.0 * pi else sim.core.grid.cellSize(iz, 2) * (2.0 * pi / (sim.core.grid.maxz - sim.core.grid.minz));
             acc += geom.gdet * rhouconr * dy * dz;
         }
     }
@@ -148,25 +148,25 @@ pub fn lum(comptime SimT: type, sim: *const SimT, ix: i64) relele.Error!Lum {
         var iy: i64 = 0;
         while (iy < sim.nyi()) : (iy += 1) {
             var pp: [SimT.nv]f64 = undefined;
-            sim.p.load(ix, iy, iz, &pp);
-            const geom = sim.cache.fillGeometry(ix, iy, iz);
+            sim.core.p.load(ix, iy, iz, &pp);
+            const geom = sim.core.cache.fillGeometry(ix, iy, iz);
             const geomBL = blGeom(SimT, sim, ix, iy, iz);
 
             // to BL (both MHD and radiation blocks; C: trans_pall_coco)
-            pp = try frames.transPallCoco(cfg, pp, &geom, &geomBL, sim.opt.mp);
+            pp = try frames.transPallCoco(cfg, pp, &geom, &geomBL, sim.core.phys.mp);
 
             // BL cell θ-width (C: get_cellsize_out non-precompute path — the
             // difference of OUTCOORDS θ across the y-faces at this x-center)
             const dthBL = blThetaWidth(SimT, sim, ix, iy, iz);
             // C calc_lum: dφ_BL → 2π for TNZ==1, BL cell dφ × (2π/PHIWEDGE)
             // for TNZ>1 — the full-torus luminosity, not the π/2 wedge's.
-            const dphBL = if (twod) 2.0 * pi else blPhiWidth(SimT, sim, ix, iy, iz) * (2.0 * pi / (sim.grid.maxz - sim.grid.minz));
+            const dphBL = if (twod) 2.0 * pi else blPhiWidth(SimT, sim, ix, iy, iz) * (2.0 * pi / (sim.core.grid.maxz - sim.core.grid.minz));
 
             const vcon = [4]f64{ 0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
             const ucon = try relele.convert(vcon, .velr, .vel4, &geomBL, .recompute_ut);
             const rhour = pp[L.index(.rho)] * ucon[1];
 
-            const tij_up = try hydro.calcTij(cfg, pp, &geomBL, sim.opt.gam);
+            const tij_up = try hydro.calcTij(cfg, pp, &geomBL, sim.core.phys.gam);
             const tij = relele.lowerSecond(tij_up, &geomBL);
             const trt = tij[1][0];
 
@@ -189,31 +189,31 @@ pub fn lum(comptime SimT: type, sim: *const SimT, ix: i64) relele.Error!Lum {
 /// OUTCOORDS θ across the two y-faces of cell (ix,iy) at its x-center
 /// (C: get_cellsize_out dx[1], non-precompute).
 fn blThetaWidth(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64) f64 {
-    const xc = sim.grid.xc(ix);
-    const zc = sim.grid.zc(iz);
-    const a = coco.cocoN(.{ 0, xc, sim.grid.yl(iy), zc }, SimT.Cfg.coords, .bl, sim.opt.mp)[2];
-    const b = coco.cocoN(.{ 0, xc, sim.grid.yl(iy + 1), zc }, SimT.Cfg.coords, .bl, sim.opt.mp)[2];
+    const xc = sim.core.grid.xc(ix);
+    const zc = sim.core.grid.zc(iz);
+    const a = coco.cocoN(.{ 0, xc, sim.core.grid.yl(iy), zc }, SimT.Cfg.coords, .bl, sim.core.phys.mp)[2];
+    const b = coco.cocoN(.{ 0, xc, sim.core.grid.yl(iy + 1), zc }, SimT.Cfg.coords, .bl, sim.core.phys.mp)[2];
     return @abs(b - a);
 }
 
 /// OUTCOORDS φ across the two z-faces of cell (ix,iy,iz) (unused for TNZ==1).
 fn blPhiWidth(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64) f64 {
-    const xc = sim.grid.xc(ix);
-    const yc = sim.grid.yc(iy);
-    const a = coco.cocoN(.{ 0, xc, yc, sim.grid.zl(iz) }, SimT.Cfg.coords, .bl, sim.opt.mp)[3];
-    const b = coco.cocoN(.{ 0, xc, yc, sim.grid.zl(iz + 1) }, SimT.Cfg.coords, .bl, sim.opt.mp)[3];
+    const xc = sim.core.grid.xc(ix);
+    const yc = sim.core.grid.yc(iy);
+    const a = coco.cocoN(.{ 0, xc, yc, sim.core.grid.zl(iz) }, SimT.Cfg.coords, .bl, sim.core.phys.mp)[3];
+    const b = coco.cocoN(.{ 0, xc, yc, sim.core.grid.zl(iz + 1) }, SimT.Cfg.coords, .bl, sim.core.phys.mp)[3];
     return @abs(b - a);
 }
 
 /// C: calc_scaleheight (postproc.c:2645). The density-weighted RMS |π/2−θ|
-/// at the radial shell nearest `radius`. Fills sim.scaleth first (C's
+/// at the radial shell nearest `radius`. C fills scaleth first (its
 /// scaleth_otg is populated by calc_avgs_throughout during the step).
 pub fn scaleHeightAt(comptime SimT: type, sim: *const SimT, radius: f64) f64 {
     // Read-only: query the one radial column directly instead of filling the
-    // whole sim.scaleth (that fill is dynamo-owned state; a diagnostic must
+    // whole `sim.dynamo.?.scaleth` (dynamo-owned scratch; a diagnostic must
     // not mutate the Sim). Bit-identical — same per-ix body as calcScaleHeight.
     const ix = radialShellIndex(SimT, sim, radius);
-    return dynamo.scaleHeightAtIx(SimT, sim, ix);
+    return dynamo.scaleHeightAtIx(SimT.CoreT, &sim.core, ix);
 }
 
 pub const GlobalScalars = struct {
@@ -248,11 +248,11 @@ pub fn globalScalars(
     const md = try mdot(SimT, sim, ix_mdot);
     const l = try lum(SimT, sim, ix_lum);
     const ix_s = radialShellIndex(SimT, sim, r_scale);
-    const parts = dynamo.scaleHeightPartsAtIx(SimT, sim, ix_s);
+    const parts = dynamo.scaleHeightPartsAtIx(SimT.CoreT, &sim.core, ix_s);
     var maxb = [1]f64{try maxPmagPtot(SimT, sim)};
 
     var sums = [6]f64{ mass, md, l.radlum, l.totallum, parts.sig, parts.sth };
-    if (sim.opt.comm) |c| {
+    if (sim.core.comm) |c| {
         // Two fixed collectives, same order on every rank (the extras are
         // carried inside the first so the count never varies by caller).
         var buf: [16]f64 = undefined;
@@ -289,8 +289,8 @@ pub fn maxPmagPtot(comptime SimT: type, sim: *const SimT) relele.Error!f64 {
             var ix: i64 = 0;
             while (ix < sim.nxi()) : (ix += 1) {
                 var pp: [SimT.nv]f64 = undefined;
-                sim.p.load(ix, iy, iz, &pp);
-                const geom = sim.cache.fillGeometry(ix, iy, iz);
+                sim.core.p.load(ix, iy, iz, &pp);
+                const geom = sim.core.cache.fillGeometry(ix, iy, iz);
                 const ug = try relele.uconUcovFromPrims(
                     .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
                     &geom,
@@ -302,7 +302,7 @@ pub fn maxPmagPtot(comptime SimT: type, sim: *const SimT) relele.Error!f64 {
                     &geom,
                 );
                 const pmag = bb.bsq / 2.0;
-                var ptot = (sim.opt.gam - 1.0) * pp[L.index(.uu)];
+                var ptot = (sim.core.phys.gam - 1.0) * pp[L.index(.uu)];
                 if (comptime cfg.has(.radiation)) {
                     const rt = try radiation.calcFfRtt(cfg, pp, &geom);
                     ptot += (-rt.rtt) / 3.0;

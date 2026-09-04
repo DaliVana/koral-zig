@@ -18,6 +18,9 @@ pub const Flag = enum(usize) {
 };
 pub const n_flags = @typeInfo(Flag).@"enum".fields.len;
 
+/// C: BIG (ko.h) — only ever compared against, value moot.
+pub const big: f64 = 1.0e50;
+
 /// Cell-scalar slots (C: ahdxl..ahdz, aradxl..aradz global arrays +
 /// cell_tstepden/cell_dt). The arad slots hold the τ-limited speeds used
 /// for the fluxes; the unlimited ones only feed the timestep and are not

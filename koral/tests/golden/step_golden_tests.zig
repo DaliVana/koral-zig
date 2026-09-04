@@ -91,8 +91,8 @@ fn runStepTest(
                 for (0..k.nv) |iv| {
                     const v_u = r0.u[k.idx(iv, ix, iy, iz)];
                     const v_p = r0.p[k.idx(iv, ix, iy, iz)];
-                    s.u.set(iv, @intCast(ix), @intCast(iy), @intCast(iz), v_u);
-                    s.p.set(iv, @intCast(ix), @intCast(iy), @intCast(iz), v_p);
+                    s.core.u.set(iv, @intCast(ix), @intCast(iy), @intCast(iz), v_u);
+                    s.core.p.set(iv, @intCast(ix), @intCast(iy), @intCast(iz), v_p);
                 }
             }
         }
@@ -144,11 +144,11 @@ fn runStepTest(
                     const zz: i64 = @intCast(iz);
                     for (0..k.nv) |iv| {
                         const cu = r.u[k.idx(iv, ix, iy, iz)];
-                        const zu = s.u.get(iv, zx, zy, zz);
+                        const zu = s.core.u.get(iv, zx, zy, zz);
                         dev_u.add(cu / scale[iv], zu / scale[iv], istep);
                         const du = @abs(cu - zu) / scale[iv];
                         const cp = r.p[k.idx(iv, ix, iy, iz)];
-                        const zp = s.p.get(iv, zx, zy, zz);
+                        const zp = s.core.p.get(iv, zx, zy, zz);
                         dev_p.add(cp / scale_p[iv], zp / scale_p[iv], istep);
                         const dp = @abs(cp - zp) / scale_p[iv];
                         if (@max(du, dp) > step_max) {
@@ -188,8 +188,8 @@ fn runStepTest(
                     istep,                                step_max,
                     budget,                               worst_iv,
                     worst_ix,                             worst_scale,
-                    r.u[k.idx(worst_iv, worst_ix, 0, 0)], s.u.get(worst_iv, wx, 0, 0),
-                    r.p[k.idx(worst_iv, worst_ix, 0, 0)], s.p.get(worst_iv, wx, 0, 0),
+                    r.u[k.idx(worst_iv, worst_ix, 0, 0)], s.core.u.get(worst_iv, wx, 0, 0),
+                    r.p[k.idx(worst_iv, worst_ix, 0, 0)], s.core.p.get(worst_iv, wx, 0, 0),
                 },
             );
             return error.GoldenMismatch;
@@ -208,9 +208,8 @@ test "golden step: sod64 (SR Sod, 10 forced-dt RK2IMEX steps) vs C" {
     const SimT = sim_mod.Sim(cfg_hydro);
     const g = Grid.init(.{ .nx = 64, .ng = 3, .minx = 0, .maxx = 1 });
     try runStepTest(SimT, "step/sod64.kstp", "step sod64", g, .{}, .{
-        .coords = .mink,
-        .gam = 5.0 / 3.0,
-        .bc_x = .copy,
+        .phys = .{ .coords = .mink, .gam = 5.0 / 3.0 },
+        .bc = .{ .x = .copy },
     });
 }
 
@@ -218,9 +217,8 @@ test "golden step: mhdtube64 (Balsara-1, Γ=2, 10 forced-dt steps) vs C" {
     const SimT = sim_mod.Sim(cfg_mhd);
     const g = Grid.init(.{ .nx = 64, .ng = 3, .minx = 0, .maxx = 1 });
     try runStepTest(SimT, "step/mhdtube64.kstp", "step mhdtube64", g, .{}, .{
-        .coords = .mink,
-        .gam = 2.0,
-        .bc_x = .copy,
+        .phys = .{ .coords = .mink, .gam = 2.0 },
+        .bc = .{ .x = .copy },
     });
 }
 
@@ -229,10 +227,8 @@ test "golden step: ot32 (SR Orszag-Tang 32², periodic, 10 forced-dt steps) vs C
     const tp = 2.0 * std.math.pi;
     const g = Grid.init(.{ .nx = 32, .ny = 32, .ng = 3, .minx = 0, .maxx = tp, .miny = 0, .maxy = tp });
     try runStepTest(SimT, "step/ot32.kstp", "step ot32", g, .{}, .{
-        .coords = .mink,
-        .gam = 5.0 / 3.0,
-        .bc_x = .periodic,
-        .bc_y = .periodic,
+        .phys = .{ .coords = .mink, .gam = 5.0 / 3.0 },
+        .bc = .{ .x = .periodic, .y = .periodic },
     });
 }
 
@@ -245,7 +241,7 @@ const SimRad = sim_mod.Sim(tubes.cfg_rad);
 /// ZIGRADTUBE/bc.c: Dirichlet: ghosts pinned to the tube-2 states.
 fn radtubeBc(
     ctx: ?*const anyopaque,
-    s: *const SimRad,
+    s: *const SimRad.CoreT,
     ix: i64,
     iy: i64,
     iz: i64,
@@ -272,23 +268,16 @@ test "golden step: radtube64 (Farris tube 2, grey κ, 10 forced-dt steps) vs C" 
     // rung/branch selection at step 3, jumping the deviation to ~1.6e-9
     // (then plateauing ~1e-9) instead of the old smooth decade growth.
     try runStepTest(SimRad, "step/radtube64.kstp", "step radtube64", g, .{ .base = 5.0e-10, .steps_per_decade = 2.5 }, .{
-        .coords = .mink,
-        .gam = tube.gam,
-        .bc_x = .specific,
-        .specific_bc = &radtubeBc,
-        .opac = tube.params(),
-        .implicit = implicit.ImplicitParams.puffy,
+        .phys = .{ .coords = .mink, .gam = tube.gam, .opac = tube.params(), .implicit = implicit.ImplicitParams.puffy },
+        .bc = .{ .x = .{ .specific = .{ .f = &radtubeBc } } },
     });
 }
 
 test "golden step: radpulse64 (τ-thick LTE pulse, 10 forced-dt steps) vs C" {
     const g = Grid.init(.{ .nx = 64, .ng = 3, .minx = -50, .maxx = 50 });
     try runStepTest(SimRad, "step/radpulse64.kstp", "step radpulse64", g, .{ .base = 2.0e-10, .steps_per_decade = 2.5 }, .{
-        .coords = .mink,
-        .gam = 5.0 / 3.0,
-        .bc_x = .copy,
-        .opac = tubes.pulse.params(),
-        .implicit = implicit.ImplicitParams.puffy,
+        .phys = .{ .coords = .mink, .gam = 5.0 / 3.0, .opac = tubes.pulse.params(), .implicit = implicit.ImplicitParams.puffy },
+        .bc = .{ .x = .copy },
     });
 }
 
@@ -305,7 +294,10 @@ test "golden: flux_ct (Tóth EMF averaging) vs C" {
     const L = SimT.Layout;
     const tp = 2.0 * std.math.pi;
     const g = Grid.init(.{ .nx = 32, .ny = 32, .ng = 3, .minx = 0, .maxx = tp, .miny = 0, .maxy = tp });
-    var s = try SimT.init(a, g, .{ .coords = .mink, .bc_x = .periodic, .bc_y = .periodic });
+    var s = try SimT.init(a, g, .{
+        .phys = .{ .coords = .mink },
+        .bc = .{ .x = .periodic, .y = .periodic },
+    });
     defer s.deinit();
 
     for (0..gld.nrec) |i| {
@@ -313,12 +305,12 @@ test "golden: flux_ct (Tóth EMF averaging) vs C" {
         const dim: usize = @intFromFloat(r.in[0]);
         const ix: i64 = @intFromFloat(r.in[1]);
         const iy: i64 = @intFromFloat(r.in[2]);
-        s.flb[dim].set(L.index(.b1), ix, iy, 0, r.in[3]);
-        s.flb[dim].set(L.index(.b2), ix, iy, 0, r.in[4]);
-        s.flb[dim].set(L.index(.b3), ix, iy, 0, r.in[5]);
+        s.faces.flb[dim].set(L.index(.b1), ix, iy, 0, r.in[3]);
+        s.faces.flb[dim].set(L.index(.b2), ix, iy, 0, r.in[4]);
+        s.faces.flb[dim].set(L.index(.b3), ix, iy, 0, r.in[5]);
     }
 
-    ct.fluxCt(SimT, &s);
+    s.fluxCt();
 
     var dev = golden.DevTracker{};
     for (0..gld.nrec) |i| {
@@ -326,9 +318,9 @@ test "golden: flux_ct (Tóth EMF averaging) vs C" {
         const dim: usize = @intFromFloat(r.in[0]);
         const ix: i64 = @intFromFloat(r.in[1]);
         const iy: i64 = @intFromFloat(r.in[2]);
-        dev.add(r.out[0], s.flb[dim].get(L.index(.b1), ix, iy, 0), i);
-        dev.add(r.out[1], s.flb[dim].get(L.index(.b2), ix, iy, 0), i);
-        dev.add(r.out[2], s.flb[dim].get(L.index(.b3), ix, iy, 0), i);
+        dev.add(r.out[0], s.faces.flb[dim].get(L.index(.b1), ix, iy, 0), i);
+        dev.add(r.out[1], s.faces.flb[dim].get(L.index(.b2), ix, iy, 0), i);
+        dev.add(r.out[2], s.faces.flb[dim].get(L.index(.b3), ix, iy, 0), i);
     }
     try dev.check(1.0e-15, "flux_ct");
 }
@@ -347,7 +339,10 @@ test "golden: calc_BfromA (corner average + curl, overwrite) vs C" {
     const gam: f64 = 5.0 / 3.0;
     const tp = 2.0 * std.math.pi;
     const g = Grid.init(.{ .nx = 32, .ny = 32, .ng = 3, .minx = 0, .maxx = tp, .miny = 0, .maxy = tp });
-    var s = try SimT.init(a, g, .{ .coords = .mink, .gam = gam, .bc_x = .periodic, .bc_y = .periodic });
+    var s = try SimT.init(a, g, .{
+        .phys = .{ .coords = .mink, .gam = gam },
+        .bc = .{ .x = .periodic, .y = .periodic },
+    });
     defer s.deinit();
 
     // uniform hydro background (B result is independent of it), A from record
@@ -365,16 +360,16 @@ test "golden: calc_BfromA (corner average + curl, overwrite) vs C" {
         try s.initCell(ix, iy, 0, pp);
     }
     try s.setBc(0.0, true);
-    try ct.calcBfromA(SimT, &s, true);
+    try s.calcBfromA(true);
 
     var dev = golden.DevTracker{};
     for (0..gld.nrec) |i| {
         const r = gld.rec(i);
         const ix: i64 = @intFromFloat(r.in[0]);
         const iy: i64 = @intFromFloat(r.in[1]);
-        dev.add(r.out[0], s.p.get(L.index(.b1), ix, iy, 0), i);
-        dev.add(r.out[1], s.p.get(L.index(.b2), ix, iy, 0), i);
-        dev.add(r.out[2], s.p.get(L.index(.b3), ix, iy, 0), i);
+        dev.add(r.out[0], s.core.p.get(L.index(.b1), ix, iy, 0), i);
+        dev.add(r.out[1], s.core.p.get(L.index(.b2), ix, iy, 0), i);
+        dev.add(r.out[2], s.core.p.get(L.index(.b3), ix, iy, 0), i);
     }
     try dev.check(1.0e-14, "calc_BfromA");
 }

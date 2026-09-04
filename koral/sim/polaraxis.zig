@@ -16,15 +16,22 @@
 //! nothing then supplies; p decouples from u, and since the B-only u2p branch
 //! deliberately zeroes the fixup flags, nothing reports it. `Band` is the
 //! single source of truth both halves derive from, and it carries BOTH
-//! activation gates (the `correct_polaraxis` option and the coordinate system)
+//! activation gates (the `num.polaraxis` option and the coordinate system)
 //! so they cannot drift apart. `Sim.init` also rejects the two configs
-//! that would make the contract unsatisfiable: `ny ≤ 2·nccorrectpolar` (the
+//! that would make the contract unsatisfiable: `ny ≤ 2·ncells` (the
 //! overwrite's sources would lie inside the overwritten band) and non-spherical
 //! coords (preconditions (5) and (7)).
 //!
 //! `sim.zig` keeps the two entry points; `Sim.doCorrect` and
 //! `Sim.isCellCorrectedPolaraxis`; as thin delegates, the same way it fronts
 //! sim/bc.zig with `Sim.setBc`.
+//!
+//! Physics anchor: tests/ks_evolution_tests.zig drives the 2D Bondi/Michel
+//! flow through the band and the stock polar reflection on a full-θ KS grid;
+//! the drift converges at 2nd order and the profile stays θ-uniform to
+//! roundoff. The grid must not put a face on the axis itself (g^φφ = 1/sin²θ
+//! diverges there): PUFFY's MINY = 0.001 is that offset, and the band's
+//! `thaxis` is the first face, not θ = 0.
 //!
 //! Not yet transcribed, but lands here rather than in sim/ct.zig when it does:
 //! adjust_fluxcttoth_emfs (polar-axis EMF zeroing), which is CORRECT_POLARAXIS
@@ -66,10 +73,10 @@ pub const Band = struct {
 
 /// The band this sim's axis treatment owns, or null when it is inactive.
 /// `.mink` is the only non-spherical `Coords` (same test as io/silo.zig).
-pub fn band(comptime SimT: type, sim: *const SimT) ?Band {
-    if (comptime SimT.Cfg.coords == .mink) return null;
-    if (!sim.opt.correct_polaraxis) return null;
-    return .{ .nc = sim.opt.nccorrectpolar, .ny = sim.nyi() };
+pub fn band(comptime CoreT: type, sim: *const CoreT) ?Band {
+    if (comptime CoreT.Cfg.coords == .mink) return null;
+    const pa = sim.num.polaraxis orelse return null;
+    return .{ .nc = pa.ncells, .ny = sim.nyi() };
 }
 
 /// C: correct_polaraxis (finite.c:5525). Scalars and in-row velocities copied
@@ -81,25 +88,25 @@ pub fn band(comptime SimT: type, sim: *const SimT) ?Band {
 /// source rows and writes only its own owned rows, so banding is bit-identical
 /// to serial. For the same reason the two sides can share one `ic` loop;
 /// no write is ever read back, so their interleaving cannot change a value.
-pub fn correct(comptime SimT: type, sim: *SimT) Error!void {
-    const b = band(SimT, sim) orelse return;
-    var ctx = Ctx(SimT){ .sim = sim, .band = b };
-    return threading.parallelRangeErr(Ctx(SimT), &ctx, sim.team, 0, sim.nxi(), colsFn(SimT));
+pub fn correct(comptime CoreT: type, sim: *CoreT) Error!void {
+    const b = band(CoreT, sim) orelse return;
+    var ctx = Ctx(CoreT){ .sim = sim, .band = b };
+    return threading.parallelRangeErr(Ctx(CoreT), &ctx, sim.team, 0, sim.nxi(), colsFn(CoreT));
 }
 
-fn Ctx(comptime SimT: type) type {
-    return struct { sim: *SimT, band: Band };
+fn Ctx(comptime CoreT: type) type {
+    return struct { sim: *CoreT, band: Band };
 }
 
-fn colsFn(comptime SimT: type) fn (*Ctx(SimT), i64, i64) Error!void {
+fn colsFn(comptime CoreT: type) fn (*Ctx(CoreT), i64, i64) Error!void {
     return struct {
-        fn w(c: *Ctx(SimT), ix0: i64, ix1: i64) Error!void {
-            return colsBand(SimT, c, ix0, ix1);
+        fn w(c: *Ctx(CoreT), ix0: i64, ix1: i64) Error!void {
+            return colsBand(CoreT, c, ix0, ix1);
         }
     }.w;
 }
 
-fn colsBand(comptime SimT: type, c: *Ctx(SimT), ix0: i64, ix1: i64) Error!void {
+fn colsBand(comptime CoreT: type, c: *Ctx(CoreT), ix0: i64, ix1: i64) Error!void {
     const b = c.band;
     var iz: i64 = 0;
     while (iz < c.sim.nzi()) : (iz += 1) {
@@ -107,23 +114,23 @@ fn colsBand(comptime SimT: type, c: *Ctx(SimT), ix0: i64, ix1: i64) Error!void {
         while (ix < ix1) : (ix += 1) {
             var ic: i64 = 0;
             while (ic < b.nc) : (ic += 1) {
-                try overwriteCell(SimT, c.sim, b, ix, ic, iz); // upper axis
-                try overwriteCell(SimT, c.sim, b, ix, b.ny - 1 - ic, iz); // lower
+                try overwriteCell(CoreT, c.sim, b, ix, ic, iz); // upper axis
+                try overwriteCell(CoreT, c.sim, b, ix, b.ny - 1 - ic, iz); // lower
             }
         }
     }
 }
 
-fn overwriteCell(comptime SimT: type, sim: *SimT, b: Band, ix: i64, iy: i64, iz: i64) Error!void {
-    const L = SimT.Layout;
+fn overwriteCell(comptime CoreT: type, sim: *CoreT, b: Band, ix: i64, iy: i64, iz: i64) Error!void {
+    const L = CoreT.Layout;
     const g = &sim.grid;
 
     const iysrc = b.sourceRow(iy);
     const thaxis = g.yl(b.axisFace(iy));
     const fac = @abs((g.yc(iy) - thaxis) / (g.yc(iysrc) - thaxis));
 
-    var pp: [SimT.nv]f64 = undefined;
-    var pps: [SimT.nv]f64 = undefined;
+    var pp: [CoreT.nv]f64 = undefined;
+    var pps: [CoreT.nv]f64 = undefined;
     sim.p.load(ix, iy, iz, &pp);
     sim.p.load(ix, iysrc, iz, &pps);
 
@@ -141,7 +148,7 @@ fn overwriteCell(comptime SimT: type, sim: *SimT, b: Band, ix: i64, iy: i64, iz:
     }
 
     const geom = sim.cache.fillGeometry(ix, iy, iz);
-    const uu = try p2u_mod.p2u(SimT.Cfg, pp, &geom, sim.opt.gam);
+    const uu = try p2u_mod.p2u(CoreT.Cfg, pp, &geom, sim.phys.gam);
     sim.p.store(ix, iy, iz, &pp);
     sim.u.store(ix, iy, iz, &uu);
 }

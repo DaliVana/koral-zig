@@ -45,15 +45,9 @@ const L = SimT.Layout;
 
 fn opts(nthreads: usize) SimT.Options {
     return .{
-        .coords = .mink,
-        .gam = 5.0 / 3.0,
-        .floors = invert.FloorParams.puffy,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = radforce.Params.puffy(),
-        .implicit = implicit.ImplicitParams.puffy,
-        .bc_x = .copy,
-        .bc_y = .copy,
-        .nthreads = nthreads,
+        .phys = .{ .coords = .mink, .gam = 5.0 / 3.0, .floors = invert.FloorParams.puffy, .rad = invert_rad.RadParams.puffy, .opac = radforce.Params.puffy(), .implicit = implicit.ImplicitParams.puffy },
+        .bc = .{ .x = .copy, .y = .copy },
+        .parallel = .{ .nthreads = nthreads },
     };
 }
 
@@ -101,7 +95,7 @@ test "M13 threading: nthreads=4 is bit-identical to nthreads=1 (2D radiation)" {
 
     // force the same dt on both (serial's CFL choice), several steps
     for (0..4) |_| {
-        const dt = 1.0 / s1.tstepdenmax;
+        const dt = 1.0 / s1.core.tstepdenmax;
         try s1.step(dt);
         try s4.step(dt);
     }
@@ -114,8 +108,8 @@ test "M13 threading: nthreads=4 is bit-identical to nthreads=1 (2D radiation)" {
             var ix: i64 = 0;
             while (ix < s1.nxi()) : (ix += 1) {
                 for (0..SimT.nv) |iv| {
-                    try std.testing.expectEqual(s1.u.get(iv, ix, iy, iz), s4.u.get(iv, ix, iy, iz));
-                    try std.testing.expectEqual(s1.p.get(iv, ix, iy, iz), s4.p.get(iv, ix, iy, iz));
+                    try std.testing.expectEqual(s1.core.u.get(iv, ix, iy, iz), s4.core.u.get(iv, ix, iy, iz));
+                    try std.testing.expectEqual(s1.core.p.get(iv, ix, iy, iz), s4.core.p.get(iv, ix, iy, iz));
                 }
             }
         }
@@ -124,8 +118,8 @@ test "M13 threading: nthreads=4 is bit-identical to nthreads=1 (2D radiation)" {
     try std.testing.expectEqual(s1.n_radimp_failures, s4.n_radimp_failures);
     try std.testing.expectEqual(s1.n_radimp_iters, s4.n_radimp_iters);
     // and the CFL dt reduction (per-worker max/min partials, merged)
-    try std.testing.expectEqual(s1.tstepdenmax, s4.tstepdenmax);
-    try std.testing.expectEqual(s1.tstepdenmin, s4.tstepdenmin);
+    try std.testing.expectEqual(s1.core.tstepdenmax, s4.core.tstepdenmax);
+    try std.testing.expectEqual(s1.core.tstepdenmin, s4.core.tstepdenmin);
 }
 
 // ---- the P1 whole-step gate on the real problem ---------------------------
@@ -137,21 +131,12 @@ const SimP = sim_mod.Sim(config.puffy);
 /// specific MKS2 BCs.
 fn puffyOpts(nthreads: usize) SimP.Options {
     return .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.gam,
-        .floors = invert.FloorParams.puffy,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = radforce.Params.puffy(),
-        .implicit = implicit.ImplicitParams.puffy,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .radviscosity = true,
-        .dynamo = true,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        .specific_bc = &puffy.Bc(SimP).calc,
-        .nthreads = nthreads,
+        .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.gam, .floors = invert.FloorParams.puffy, .rad = invert_rad.RadParams.puffy, .opac = radforce.Params.puffy(), .implicit = implicit.ImplicitParams.puffy },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{ .x = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } }, .y = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } } },
+        .radvisc = .{},
+        .dynamo = .{},
+        .parallel = .{ .nthreads = nthreads },
     };
 }
 
@@ -171,20 +156,20 @@ test "P1 threading: full PUFFY step nthreads=4 is bit-identical to nthreads=1" {
     // the production sequence: the tiny guess-dt startup step, then a
     // CFL-sized step (forced identically on both sims)
     for (0..2) |_| {
-        const dt = 1.0 / s1.tstepdenmax;
+        const dt = 1.0 / s1.core.tstepdenmax;
         try s1.step(dt);
         try s4.step(dt);
     }
 
     // full arrays incl. ghosts, every flag, the reductions — to the bit
-    for (s1.p.data, s4.p.data) |v1, v4| try std.testing.expectEqual(v1, v4);
-    for (s1.u.data, s4.u.data) |v1, v4| try std.testing.expectEqual(v1, v4);
-    for (s1.rijvisc.data, s4.rijvisc.data) |v1, v4| try std.testing.expectEqual(v1, v4);
-    for (s1.scaleth, s4.scaleth) |v1, v4| try std.testing.expectEqual(v1, v4);
-    for (s1.flags, s4.flags) |f1, f4| try std.testing.expectEqual(f1, f4);
+    for (s1.core.p.data, s4.core.p.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.core.u.data, s4.core.u.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.visc.?.rijvisc.data, s4.visc.?.rijvisc.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.dynamo.?.scaleth, s4.dynamo.?.scaleth) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.core.flags, s4.core.flags) |f1, f4| try std.testing.expectEqual(f1, f4);
     try std.testing.expectEqual(s1.n_radimp_failures, s4.n_radimp_failures);
     try std.testing.expectEqual(s1.n_radimp_iters, s4.n_radimp_iters);
-    try std.testing.expectEqual(s1.tstepdenmax, s4.tstepdenmax);
-    try std.testing.expectEqual(s1.tstepdenmin, s4.tstepdenmin);
+    try std.testing.expectEqual(s1.core.tstepdenmax, s4.core.tstepdenmax);
+    try std.testing.expectEqual(s1.core.tstepdenmin, s4.core.tstepdenmin);
     try std.testing.expectEqual(s1.t, s4.t);
 }

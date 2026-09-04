@@ -51,7 +51,7 @@ const Grid = grid_mod.Grid;
 
 fn tubeBc(
     ctx: ?*const anyopaque,
-    s: *const SimT,
+    s: *const SimT.CoreT,
     ix: i64,
     iy: i64,
     iz: i64,
@@ -97,15 +97,17 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
     floors.uurhoratiomax = 1.0e30;
     const g = Grid.init(.{ .nx = nx, .ng = 3, .minx = -20, .maxx = 20 });
     var s = try SimT.init(a, g, .{
-        .coords = .mink,
-        .gam = tube.gam,
-        .floors = floors,
-        .rad = invert_rad.RadParams.cdefault,
-        .opac = tube.params(),
-        .implicit = implicit.ImplicitParams.puffy,
-        .bc_x = .specific,
-        .specific_bc = &tubeBc,
-        .bc_ctx = tube, // which tube the BC samples (was a module-level var)
+        .phys = .{
+            .coords = .mink,
+            .gam = tube.gam,
+            .floors = floors,
+            .rad = invert_rad.RadParams.cdefault,
+            .opac = tube.params(),
+            .implicit = implicit.ImplicitParams.puffy,
+        },
+        // which tube the BC samples rides along as the callback context
+        // (was a module-level var)
+        .bc = .{ .x = .{ .specific = .{ .f = &tubeBc, .ctx = tube } } },
     });
     defer s.deinit();
 
@@ -126,26 +128,26 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
     var steps: usize = 0;
     while (s.t < t_end and steps < 50000) : (steps += 1) try s.step(null);
     var tp = s.t + 0.05 * t_end;
-    while (s.t < tp and steps < 80000) : (steps += 1) try s.step(0.2 / s.tstepdenmax);
+    while (s.t < tp and steps < 80000) : (steps += 1) try s.step(0.2 / s.core.tstepdenmax);
 
     const snap = try a.alloc(f64, nx * NV);
     defer a.free(snap);
     ix = 0;
     while (ix < s.nxi()) : (ix += 1) {
         var pp: [NV]f64 = undefined;
-        s.p.load(ix, 0, 0, &pp);
+        s.core.p.load(ix, 0, 0, &pp);
         @memcpy(snap[@as(usize, @intCast(ix)) * NV ..][0..NV], &pp);
     }
 
     tp = s.t + 0.05 * t_end;
-    while (s.t < tp and steps < 80000) : (steps += 1) try s.step(0.2 / s.tstepdenmax);
+    while (s.t < tp and steps < 80000) : (steps += 1) try s.step(0.2 / s.core.tstepdenmax);
 
     // per-variable scales for normalization
     var scale: [NV]f64 = @splat(1e-30);
     ix = 0;
     while (ix < s.nxi()) : (ix += 1) {
         var pp: [NV]f64 = undefined;
-        s.p.load(ix, 0, 0, &pp);
+        s.core.p.load(ix, 0, 0, &pp);
         for (0..NV) |iv| scale[iv] = @max(scale[iv], @abs(pp[iv]));
     }
 
@@ -162,7 +164,7 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
     var dmax: f64 = 0;
     ix = 1;
     while (ix < s.nxi()) : (ix += 1) {
-        const d = @abs(s.p.get(L.index(.rho), ix, 0, 0) - s.p.get(L.index(.rho), ix - 1, 0, 0));
+        const d = @abs(s.core.p.get(L.index(.rho), ix, 0, 0) - s.core.p.get(L.index(.rho), ix - 1, 0, 0));
         if (d > dmax) {
             dmax = d;
             ish = ix;
@@ -184,9 +186,9 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
         var pp: [NV]f64 = undefined;
         var ppm: [NV]f64 = undefined;
         var ppp: [NV]f64 = undefined;
-        s.p.load(ix, 0, 0, &pp);
-        s.p.load(ix - 1, 0, 0, &ppm);
-        s.p.load(ix + 1, 0, 0, &ppp);
+        s.core.p.load(ix, 0, 0, &pp);
+        s.core.p.load(ix - 1, 0, 0, &ppm);
+        s.core.p.load(ix + 1, 0, 0, &ppp);
         for (0..NV) |iv| {
             const grad = @max(@abs(pp[iv] - ppm[iv]), @abs(ppp[iv] - pp[iv])) / scale[iv];
             if (grad > 0.05) continue;
@@ -208,12 +210,12 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
     const fz0 = L.index(.fz);
     for (0..5) |i| {
         var pp: [NV]f64 = undefined;
-        s.p.load(@intCast(i), 0, 0, &pp);
+        s.core.p.load(@intCast(i), 0, 0, &pp);
         for (0..NV) |iv| {
             if (iv >= fx0 and iv <= fz0) continue;
             m.plat_l = @max(m.plat_l, @abs(pp[iv] - pl[iv]) / scale[iv]);
         }
-        s.p.load(@as(i64, @intCast(nx - 1 - i)), 0, 0, &pp);
+        s.core.p.load(@as(i64, @intCast(nx - 1 - i)), 0, 0, &pp);
         for (0..NV) |iv| {
             if (iv >= fx0 and iv <= fz0) continue;
             m.plat_r = @max(m.plat_r, @abs(pp[iv] - pr[iv]) / scale[iv]);
@@ -223,15 +225,15 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
     // (c) analytic total-flux constancy (vs the left state), excluding
     // ±8 cells around the steepest jump (LAXF-smeared intermediate states,
     // widened by the drift)
-    const geom_l = s.cache.fillGeometry(0, 0, 0);
+    const geom_l = s.core.cache.fillGeometry(0, 0, 0);
     const f_l = try totalFluxes(pl, &geom_l, tube.gam);
     var flux_ix: i64 = 0;
     ix = 0;
     while (ix < s.nxi()) : (ix += 1) {
         if (@abs(ix - ish) <= 8) continue;
         var pp: [NV]f64 = undefined;
-        s.p.load(ix, 0, 0, &pp);
-        const geom = s.cache.fillGeometry(ix, 0, 0);
+        s.core.p.load(ix, 0, 0, &pp);
+        const geom = s.core.cache.fillGeometry(ix, 0, 0);
         const f = try totalFluxes(pp, &geom, tube.gam);
         for (0..3) |c| {
             const d = @abs(f[c] - f_l[c]) / @abs(f_l[c]);
@@ -262,12 +264,12 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
                 var ppm: [NV]f64 = undefined;
                 var pp0: [NV]f64 = undefined;
                 var ppp: [NV]f64 = undefined;
-                s.p.load(ix - 1, 0, 0, &ppm);
-                s.p.load(ix, 0, 0, &pp0);
-                s.p.load(ix + 1, 0, 0, &ppp);
-                const geom_m = s.cache.fillGeometry(ix - 1, 0, 0);
-                const geom_0 = s.cache.fillGeometry(ix, 0, 0);
-                const geom_p = s.cache.fillGeometry(ix + 1, 0, 0);
+                s.core.p.load(ix - 1, 0, 0, &ppm);
+                s.core.p.load(ix, 0, 0, &pp0);
+                s.core.p.load(ix + 1, 0, 0, &ppp);
+                const geom_m = s.core.cache.fillGeometry(ix - 1, 0, 0);
+                const geom_0 = s.core.cache.fillGeometry(ix, 0, 0);
+                const geom_p = s.core.cache.fillGeometry(ix + 1, 0, 0);
                 const rm = try radiation.calcRij(cfg, ppm, &geom_m);
                 const rp = try radiation.calcRij(cfg, ppp, &geom_p);
                 const gi = try radforce.calcGi(cfg, pp0, &geom_0, tube.gam, &p);
@@ -296,9 +298,9 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
         inline for ([_]layout.VarTag{ .rho, .uu, .vx, .ee, .fx }) |tag| {
             const iv = comptime L.index(tag);
             std.debug.print("  {s}: L={e:.4} [{e:.4} {e:.4}] .. [{e:.4} {e:.4}] R={e:.4}\n", .{
-                @tagName(tag),                 pl[iv],
-                s.p.get(iv, 0, 0, 0),          s.p.get(iv, 2, 0, 0),
-                s.p.get(iv, @as(i64, @intCast(nx - 3)), 0, 0), s.p.get(iv, @as(i64, @intCast(nx - 1)), 0, 0),
+                @tagName(tag),                                      pl[iv],
+                s.core.p.get(iv, 0, 0, 0),                          s.core.p.get(iv, 2, 0, 0),
+                s.core.p.get(iv, @as(i64, @intCast(nx - 3)), 0, 0), s.core.p.get(iv, @as(i64, @intCast(nx - 1)), 0, 0),
                 pr[iv],
             });
         }
@@ -308,7 +310,7 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
         ix = 0;
         while (ix < s.nxi()) : (ix += 1) {
             var ppd: [NV]f64 = undefined;
-            s.p.load(ix, 0, 0, &ppd);
+            s.core.p.load(ix, 0, 0, &ppd);
             for (0..NV) |iv| {
                 mn[iv] = @min(mn[iv], ppd[iv]);
                 mx[iv] = @max(mx[iv], ppd[iv]);
@@ -397,10 +399,6 @@ test "radiative shock tube battery, slow set (tubes 1, 2, 3b, 4b, hi-res)" {
         // Tgas → 1e15 K with C's own "UNPHYSICALLY HIGH TEMPERATURE!"
         // diagnostics, γ_rad pinned at GAMMAMAXRAD). The κ-stiffness
         // regime is covered by the LTE pulse (τ_cell ≈ 16) and tube 4b.
-
-
-
-
 
     };
 

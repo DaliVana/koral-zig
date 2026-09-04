@@ -42,46 +42,52 @@ const a = std.testing.allocator;
 test "Sim.init rejects ghost depth below the reconstruction stencil" {
     // PPM loads i−2 and needs ng ≥ 3; ng = 2 would drive Field.cellOffset
     // negative deep in the sweep.
-    try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(2, 8), .{ .coords = .mink }));
-}
-
-test "Sim.init rejects a .specific boundary with a null specific_bc" {
-    try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(3, 8), .{ .coords = .mink, .bc_x = .specific }));
-    try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(3, 8), .{ .coords = .mink, .bc_y = .specific }));
+    try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(2, 8), .{
+        .phys = .{ .coords = .mink },
+    }));
 }
 
 test "Sim.init rejects runtime coords diverging from comptime cfg.coords" {
-    try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(3, 8), .{ .coords = .ks }));
+    try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(3, 8), .{
+        .phys = .{ .coords = .ks },
+    }));
 }
 
 test "Sim.init rejects radviscosity with a null opac" {
     // ν = α·mfp, mfp = 1/χ, χ needs opacities — the silent ν=0 no-op is the
     // outcome the check eliminates.
-    try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(3, 8), .{ .coords = .mink, .radviscosity = true }));
-}
-
-test "Sim.init rejects correct_polaraxis when ny <= 2*nccorrectpolar" {
-    try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(3, 4), .{
-        .coords = .mink,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
+    try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(3, 8), .{
+        .phys = .{ .coords = .mink },
+        .radvisc = .{},
     }));
 }
 
-test "Sim.init rejects correct_polaraxis on non-spherical coords" {
+test "Sim.init rejects num.polaraxis when ny <= 2*ncells" {
+    try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(3, 4), .{
+        .phys = .{ .coords = .mink },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+    }));
+}
+
+test "Sim.init rejects num.polaraxis on non-spherical coords" {
     // correctPolaraxis returns early on .mink but isCellCorrectedPolaraxis does
     // not: u2p would invert B only, cell_fixup and op_implicit would skip the
     // polar rows, and nothing would overwrite them — p silently decoupled from
     // u, with every fixup flag zeroed on that path. The spherical positive case
     // is covered by tests/polaraxis_tests.zig.
     try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(3, 8), .{
-        .coords = .mink,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
+        .phys = .{ .coords = .mink },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
     }));
 }
 
-test "Sim.init accepts a clean config" {
-    var s = try SimT.init(a, grid(3, 8), .{ .coords = .mink });
+test "Sim.init accepts a clean config and leaves horizon order reduction disabled" {
+    var s = try SimT.init(a, grid(3, 8), .{
+        .phys = .{ .coords = .mink },
+    });
     defer s.deinit();
+    // Sim.init builds `self` from undefined, so declaration defaults do not
+    // initialize this field.  An indeterminate positive value silently turns
+    // linear reconstruction into donor cell in optimized builds.
+    try std.testing.expectEqual(std.math.minInt(i64), s.core.reduce_order_ix_max);
 }

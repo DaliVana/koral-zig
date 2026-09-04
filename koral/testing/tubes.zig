@@ -79,24 +79,12 @@ pub const Tube = struct {
 /// Sądowski et al. (2013) Table 3 (= Farris et al. 2008 §6.3, plus the
 /// Roedig et al. 2012 high-opacity variants).
 pub const tubes = [_]Tube{
-    .{ .name = "1", .gam = 5.0 / 3.0, .kappa = 0.4, .smooth = false,
-        .left = .{ .rho = 1.0, .p = 3.0e-5, .ux = 0.015, .erad = 1.0e-8 },
-        .right = .{ .rho = 2.4, .p = 1.61e-4, .ux = 6.25e-3, .erad = 2.51e-7 } },
-    .{ .name = "2", .gam = 5.0 / 3.0, .kappa = 0.2, .smooth = false,
-        .left = .{ .rho = 1.0, .p = 4.0e-3, .ux = 0.25, .erad = 2.0e-5 },
-        .right = .{ .rho = 3.11, .p = 4.512e-2, .ux = 8.04e-2, .erad = 3.46e-3 } },
-    .{ .name = "3a", .gam = 2.0, .kappa = 0.3, .smooth = true,
-        .left = .{ .rho = 1.0, .p = 6.0e1, .ux = 10.0, .erad = 2.0 },
-        .right = .{ .rho = 8.0, .p = 2.34e3, .ux = 1.25, .erad = 1.14e3 } },
-    .{ .name = "3b", .gam = 2.0, .kappa = 25.0, .smooth = true,
-        .left = .{ .rho = 1.0, .p = 6.0e1, .ux = 10.0, .erad = 2.0 },
-        .right = .{ .rho = 8.0, .p = 2.34e3, .ux = 1.25, .erad = 1.14e3 } },
-    .{ .name = "4a", .gam = 5.0 / 3.0, .kappa = 0.08, .smooth = true,
-        .left = .{ .rho = 1.0, .p = 6.0e-3, .ux = 0.69, .erad = 0.18 },
-        .right = .{ .rho = 3.65, .p = 3.59e-2, .ux = 0.189, .erad = 1.30 } },
-    .{ .name = "4b", .gam = 5.0 / 3.0, .kappa = 0.7, .smooth = true,
-        .left = .{ .rho = 1.0, .p = 6.0e-3, .ux = 0.69, .erad = 0.18 },
-        .right = .{ .rho = 3.65, .p = 3.59e-2, .ux = 0.189, .erad = 1.30 } },
+    .{ .name = "1", .gam = 5.0 / 3.0, .kappa = 0.4, .smooth = false, .left = .{ .rho = 1.0, .p = 3.0e-5, .ux = 0.015, .erad = 1.0e-8 }, .right = .{ .rho = 2.4, .p = 1.61e-4, .ux = 6.25e-3, .erad = 2.51e-7 } },
+    .{ .name = "2", .gam = 5.0 / 3.0, .kappa = 0.2, .smooth = false, .left = .{ .rho = 1.0, .p = 4.0e-3, .ux = 0.25, .erad = 2.0e-5 }, .right = .{ .rho = 3.11, .p = 4.512e-2, .ux = 8.04e-2, .erad = 3.46e-3 } },
+    .{ .name = "3a", .gam = 2.0, .kappa = 0.3, .smooth = true, .left = .{ .rho = 1.0, .p = 6.0e1, .ux = 10.0, .erad = 2.0 }, .right = .{ .rho = 8.0, .p = 2.34e3, .ux = 1.25, .erad = 1.14e3 } },
+    .{ .name = "3b", .gam = 2.0, .kappa = 25.0, .smooth = true, .left = .{ .rho = 1.0, .p = 6.0e1, .ux = 10.0, .erad = 2.0 }, .right = .{ .rho = 8.0, .p = 2.34e3, .ux = 1.25, .erad = 1.14e3 } },
+    .{ .name = "4a", .gam = 5.0 / 3.0, .kappa = 0.08, .smooth = true, .left = .{ .rho = 1.0, .p = 6.0e-3, .ux = 0.69, .erad = 0.18 }, .right = .{ .rho = 3.65, .p = 3.59e-2, .ux = 0.189, .erad = 1.30 } },
+    .{ .name = "4b", .gam = 5.0 / 3.0, .kappa = 0.7, .smooth = true, .left = .{ .rho = 1.0, .p = 6.0e-3, .ux = 0.69, .erad = 0.18 }, .right = .{ .rho = 3.65, .p = 3.59e-2, .ux = 0.189, .erad = 1.30 } },
 };
 
 /// ZIGRADPULSE: an optically thick LTE temperature bump (gas and radiation

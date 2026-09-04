@@ -70,20 +70,11 @@ pub const all = [_]Scenario{ puffy_fast, puffy_full };
 /// option set at its validated defaults (the `.toml` knobs pinned).
 fn puffyOptions() SimP.Options {
     return .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.gam,
-        .floors = invert.FloorParams.puffy,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = radforce.Params.puffy(),
-        .implicit = implicit.ImplicitParams.puffy,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .radviscosity = true,
-        .dynamo = true,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        .specific_bc = &puffy.Bc(SimP).calc,
+        .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.gam, .floors = invert.FloorParams.puffy, .rad = invert_rad.RadParams.puffy, .opac = radforce.Params.puffy(), .implicit = implicit.ImplicitParams.puffy },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{ .x = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } }, .y = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } } },
+        .radvisc = .{},
+        .dynamo = .{},
     };
 }
 
@@ -100,9 +91,9 @@ pub fn run(allocator: std.mem.Allocator, sc: Scenario) !selfgolden.Writer {
         .nx = @intCast(sc.nx),
         .ny = @intCast(sc.ny),
         .nz = 1,
-        .ng = @intCast(s.grid.ng),
+        .ng = @intCast(s.core.grid.ng),
         .nv = SimP.nv,
-        .ncell = s.grid.cellCount(),
+        .ncell = s.core.grid.cellCount(),
         .nflags = storage.n_flags,
     }, sc.name);
     errdefer w.deinit();
@@ -111,11 +102,11 @@ pub fn run(allocator: std.mem.Allocator, sc: Scenario) !selfgolden.Writer {
     // note in selfgolden.zig — a perturbation at step k is still there at the
     // end, and each snapshot costs ~350 KiB of committed history).
     try addScalars(&w, &s);
-    try w.addSnapshot(0, s.u.data, s.p.data, s.flags);
+    try w.addSnapshot(0, s.core.u.data, s.core.p.data, s.core.flags);
     for (0..sc.nsteps) |istep| {
         try s.step(s.cflDt());
         try addScalars(&w, &s);
-        if (istep + 1 == sc.nsteps) try w.addSnapshot(istep + 1, s.u.data, s.p.data, s.flags);
+        if (istep + 1 == sc.nsteps) try w.addSnapshot(istep + 1, s.core.u.data, s.core.p.data, s.core.flags);
     }
     return w;
 }
@@ -125,8 +116,8 @@ fn addScalars(w: *selfgolden.Writer, s: *const SimP) !void {
         .t = s.t,
         .dt = s.dt,
         .own_dt = s.own_dt,
-        .tstepdenmax = s.tstepdenmax,
-        .tstepdenmin = s.tstepdenmin,
+        .tstepdenmax = s.core.tstepdenmax,
+        .tstepdenmin = s.core.tstepdenmin,
         .n_radimp_failures = @floatFromInt(s.n_radimp_failures),
         .n_radimp_iters = @floatFromInt(s.n_radimp_iters),
     });

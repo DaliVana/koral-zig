@@ -11,7 +11,10 @@
 //! (√−g|_{face+} − √−g|_{face−})/(Δx √−g|_c), distributing the correction
 //! over the four terms by their magnitude. This makes the geometric source
 //! terms telescope against the discrete flux divergence; uniform states
-//! stay uniform.
+//! stay uniform. Exact on the grid, not to truncation: a θ-independent
+//! pressure on a KS grid is balanced in the θ-momentum equation to roundoff
+//! (tests/ks_evolution_tests.zig holds the 2D Bondi profile θ-uniform at
+//! 1e-14; the FD-trace identity itself is pinned in tests/metric_tests.zig).
 
 const std = @import("std");
 const Grid = @import("../grid.zig").Grid;

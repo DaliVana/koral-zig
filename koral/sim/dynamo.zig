@@ -31,6 +31,49 @@
 //!    serial at any nthreads (pinned by the dynamo threading test).
 
 const std = @import("std");
+const field_mod = @import("../field.zig");
+const Grid = @import("../grid.zig").Grid;
+const threading_mod = @import("../threading.zig");
+
+/// The dynamo's scratch, owned by a Sim only when `opt.dynamo` is on
+/// (redesign step 3: pass-owned scratch). Lives at `core.dynamo`.
+pub const State = struct {
+    allocator: std.mem.Allocator,
+    /// PUFFY dynamo parameters (define.h:66-74).
+    params: Params,
+    /// C: ptemp1 — the dynamo's cell-centered ΔA_φ scratch (slot 2 = φ).
+    dyn_a: field_mod.Field(3),
+    /// C: scaleth_otg — the per-radius density-weighted scale height.
+    scaleth: []f64,
+    /// MPI plan §7.2: per-radius partial sums (Σρ√g, Σρ√g·Δθ²) for the
+    /// scale-height ring reduction — the pre-√ Allreduce(SUM) operands.
+    /// Only the ntz>1 path touches them; tiny (2·nx doubles).
+    scaleth_sig: []f64,
+    scaleth_sth: []f64,
+
+    pub fn init(allocator: std.mem.Allocator, g: Grid, team: ?*threading_mod.Team, params: Params) !State {
+        var dyn_a = try field_mod.Field(3).initUninitialized(allocator, g);
+        errdefer dyn_a.deinit();
+        threading_mod.parallelZero(team, dyn_a.data);
+        const scaleth = try allocator.alloc(f64, g.nx);
+        errdefer allocator.free(scaleth);
+        @memset(scaleth, 0);
+        const sig = try allocator.alloc(f64, g.nx);
+        errdefer allocator.free(sig);
+        @memset(sig, 0);
+        const sth = try allocator.alloc(f64, g.nx);
+        @memset(sth, 0);
+        return .{ .allocator = allocator, .params = params, .dyn_a = dyn_a, .scaleth = scaleth, .scaleth_sig = sig, .scaleth_sth = sth };
+    }
+
+    pub fn deinit(self: *State) void {
+        self.dyn_a.deinit();
+        self.allocator.free(self.scaleth);
+        self.allocator.free(self.scaleth_sig);
+        self.allocator.free(self.scaleth_sth);
+        self.* = undefined;
+    }
+};
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const relele = @import("../relele.zig");
@@ -82,7 +125,7 @@ pub const DynamoCell = struct {
     angle: f64, // field pitch −b^r b^φ √(g_rr g_φφ)/b² (fieldAngle)
     prermhd: f64, // (γ−1)u (+ Ê/3 with radiation) — the pressure feeding β
     gg33: f64, // MKS2 g_φφ at the cell
-    scaleth: f64, // sim.scaleth[clamp(ix)] — raw density-weighted scale height
+    scaleth: f64, // core.dynamo.?.scaleth[clamp(ix)] — raw density-weighted scale height
 };
 
 /// What the dynamo produces for one cell.
@@ -151,27 +194,33 @@ pub fn dynamoDeltaA(dp: Params, a: f64, dt: f64, rhor: f64, risco: f64, c: Dynam
 
 /// C: calc_avgs_throughout / CALCHRONTHEGO (mpi.c:3168). Density-weighted RMS
 /// angular scale height at each radius, sqrt(Σρ√g(π/2−θ)² / Σρ√g) over the
-/// θ(,φ) column. Fills sim.scaleth[0..nx). Single rank (TOI=0): gix==0 stays
+/// θ(,φ) column. Fills core.dynamo.?.scaleth[0..nx). Single rank (TOI=0): gix==0 stays
 /// the raw (unnormalized) sum, matching C's `if(gix>0 && gix<TNX)` guard.
 /// Band-parallel over ix: each worker owns whole columns, so every column's
 /// θ-sum accumulates in serial order; bit-identical at any nthreads.
-pub fn calcScaleHeight(comptime SimT: type, sim: *SimT) void {
+/// The scale-height passes' view: the Core plus the dynamo state.
+fn ShCtx(comptime CoreT: type) type {
+    return struct { core: *CoreT, dy: *State };
+}
+
+pub fn calcScaleHeight(comptime CoreT: type, core: *CoreT, dy: *State) void {
     // MPI plan §7.2: with ntz>1 the θ,φ column spans all ranks — take the
     // ring-reduced path (partial sums → Allreduce(SUM) → √). The world IS
     // the φ-ring (φ-only decomposition), matching C's world-Allreduce in
     // calc_avgs_throughout (mpi.c:3168).
-    if (sim.decomp.ntz > 1) {
-        calcScaleHeightRing(SimT, sim);
+    if (core.decomp.ntz > 1) {
+        calcScaleHeightRing(CoreT, core, dy);
         return;
     }
+    var ctx = ShCtx(CoreT){ .core = core, .dy = dy };
     const W = struct {
-        fn cols(s: *SimT, ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
+        fn cols(c: *ShCtx(CoreT), ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
             _ = res;
-            scaleHeightCols(SimT, s, ix0, ix1);
+            scaleHeightCols(CoreT, c, ix0, ix1);
         }
     };
     // the column worker is infallible — no result to check
-    _ = threading.parallelRange(SimT, sim, sim.team, 0, sim.nxi(), W.cols);
+    _ = threading.parallelRange(ShCtx(CoreT), &ctx, core.team, 0, core.nxi(), W.cols);
 }
 
 /// The ntz>1 scale height: per-radius partial sums over the LOCAL φ wedge
@@ -179,29 +228,32 @@ pub fn calcScaleHeight(comptime SimT: type, sim: *SimT) void {
 /// pre-√ Allreduce(SUM)s of the nx-length arrays, then the C finalize;
 /// ix==0 keeps the raw (now-global) sum (toi==0 identically, so the local
 /// index test IS C's `gix>0` global test).
-fn calcScaleHeightRing(comptime SimT: type, sim: *SimT) void {
+fn calcScaleHeightRing(comptime CoreT: type, core: *CoreT, dy: *State) void {
+    var ctx = ShCtx(CoreT){ .core = core, .dy = dy };
     const W = struct {
-        fn cols(s: *SimT, ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
+        fn cols(c: *ShCtx(CoreT), ix0: i64, ix1: i64, res: *threading.ChunkResult) void {
             _ = res;
-            partialSumCols(SimT, s, ix0, ix1);
+            partialSumCols(CoreT, c, ix0, ix1);
         }
     };
-    _ = threading.parallelRange(SimT, sim, sim.team, 0, sim.nxi(), W.cols);
-    const c = sim.opt.comm.?; // ntz>1 implies a backend (Sim.init check 6)
-    sim.timers.begin(.collect);
-    c.allreduceSum(sim.scaleth_sig);
-    c.allreduceSum(sim.scaleth_sth);
-    sim.timers.end();
-    for (sim.scaleth, sim.scaleth_sig, sim.scaleth_sth, 0..) |*out, sig, sth, ix| {
+    _ = threading.parallelRange(ShCtx(CoreT), &ctx, core.team, 0, core.nxi(), W.cols);
+    const c = core.comm.?; // ntz>1 implies a backend (Sim.init check 6)
+    core.timers.begin(.collect);
+    c.allreduceSum(dy.scaleth_sig);
+    c.allreduceSum(dy.scaleth_sth);
+    core.timers.end();
+    for (dy.scaleth, dy.scaleth_sig, dy.scaleth_sth, 0..) |*out, sig, sth, ix| {
         out.* = if (ix > 0) @sqrt(sth / sig) else sth;
     }
 }
 
-fn partialSumCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
-    const L = SimT.Layout;
+fn partialSumCols(comptime CoreT: type, c: *ShCtx(CoreT), ix0: i64, ix1: i64) void {
+    const core = c.core;
+    const dy = c.dy;
+    const L = CoreT.Layout;
     const rho_i = comptime L.index(.rho);
-    const ny = sim.nyi();
-    const nz = sim.nzi();
+    const ny = core.nyi();
+    const nz = core.nzi();
     var ix: i64 = ix0;
     while (ix < ix1) : (ix += 1) {
         var sigma: f64 = 0;
@@ -210,24 +262,24 @@ fn partialSumCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
         while (iy < ny) : (iy += 1) {
             var iz: i64 = 0;
             while (iz < nz) : (iz += 1) {
-                const gd = sim.cache.gdet(ix, iy, iz);
-                const th = sim.cache.blGeom(ix, iy, iz).xxvec[2];
-                const rho = sim.p.get(rho_i, ix, iy, iz);
+                const gd = core.cache.gdet(ix, iy, iz);
+                const th = core.cache.blGeom(ix, iy, iz).xxvec[2];
+                const rho = core.p.get(rho_i, ix, iy, iz);
                 const dth = pi / 2.0 - th;
                 sigma += rho * gd;
                 sth += rho * gd * dth * dth;
             }
         }
-        sim.scaleth_sig[@intCast(ix)] = sigma;
-        sim.scaleth_sth[@intCast(ix)] = sth;
+        dy.scaleth_sig[@intCast(ix)] = sigma;
+        dy.scaleth_sth[@intCast(ix)] = sth;
     }
 }
 
 /// The per-column scale-height body for ix ∈ [ix0, ix1).
-fn scaleHeightCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
+fn scaleHeightCols(comptime CoreT: type, c: *ShCtx(CoreT), ix0: i64, ix1: i64) void {
     var ix: i64 = ix0;
     while (ix < ix1) : (ix += 1) {
-        sim.scaleth[@intCast(ix)] = scaleHeightAtIx(SimT, sim, ix);
+        c.dy.scaleth[@intCast(ix)] = scaleHeightAtIx(CoreT, c.core, ix);
     }
 }
 
@@ -236,11 +288,11 @@ fn scaleHeightCols(comptime SimT: type, sim: *SimT, ix0: i64, ix1: i64) void {
 /// Split out so a globally-folded diagnostic (io/scalars.zig under MPI)
 /// can Allreduce(SUM) them before the finalize; the accumulation order is
 /// the load-bearing part (iy outer, iz inner; matches partialSumCols).
-pub fn scaleHeightPartsAtIx(comptime SimT: type, sim: *const SimT, ix: i64) struct { sig: f64, sth: f64 } {
-    const L = SimT.Layout;
+pub fn scaleHeightPartsAtIx(comptime CoreT: type, core: *const CoreT, ix: i64) struct { sig: f64, sth: f64 } {
+    const L = CoreT.Layout;
     const rho_i = comptime L.index(.rho);
-    const ny = sim.nyi();
-    const nz = sim.nzi();
+    const ny = core.nyi();
+    const nz = core.nzi();
 
     var sigma: f64 = 0;
     var scaleth: f64 = 0;
@@ -250,9 +302,9 @@ pub fn scaleHeightPartsAtIx(comptime SimT: type, sim: *const SimT, ix: i64) stru
         while (iz < nz) : (iz += 1) {
             // √−g and BL θ from the caches — no per-cell fill_geometry /
             // cocoN (finding #1); bit-identical to the recomputed values.
-            const gd = sim.cache.gdet(ix, iy, iz);
-            const th = sim.cache.blGeom(ix, iy, iz).xxvec[2];
-            const rho = sim.p.get(rho_i, ix, iy, iz);
+            const gd = core.cache.gdet(ix, iy, iz);
+            const th = core.cache.blGeom(ix, iy, iz).xxvec[2];
+            const rho = core.p.get(rho_i, ix, iy, iz);
             const dth = pi / 2.0 - th;
             sigma += rho * gd;
             scaleth += rho * gd * dth * dth;
@@ -269,12 +321,12 @@ pub fn scaleHeightFinalize(ix: i64, sig: f64, sth: f64) f64 {
 }
 
 /// The density-weighted scale height at a single radial index; the per-column
-/// body of calcScaleHeight as a pure read (no sim.scaleth write), so a
+/// body of calcScaleHeight as a pure read (no core.dynamo.?.scaleth write), so a
 /// diagnostic can query one radius without mutating the Sim or filling the
 /// whole grid. C's ix==0 quirk (raw, unnormalized sum) is preserved. Both
 /// paths route through here, so calcScaleHeight stays bit-identical.
-pub fn scaleHeightAtIx(comptime SimT: type, sim: *const SimT, ix: i64) f64 {
-    const parts = scaleHeightPartsAtIx(SimT, sim, ix);
+pub fn scaleHeightAtIx(comptime CoreT: type, core: *const CoreT, ix: i64) f64 {
+    const parts = scaleHeightPartsAtIx(CoreT, core, ix);
     return scaleHeightFinalize(ix, parts.sig, parts.sth);
 }
 
@@ -283,9 +335,9 @@ pub fn scaleHeightAtIx(comptime SimT: type, sim: *const SimT, ix: i64) f64 {
 /// MKS2/BL geometries and the MKS2→BL Jacobian are supplied precomputed
 /// (finding #1): the BL sidecar (MetricCache.blGeom/jacMy2Bl) is bit-identical
 /// to the per-cell fill_geometry_arb(BL) + coco.dxdx this used to do inline.
-fn fieldAngle(comptime SimT: type, geomMKS2: *const Geometry, geomBL: *const Geometry, jac: [4][4]f64, pp: *const [SimT.nv]f64) relele.Error!struct { angle: f64, bsq: f64 } {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
+fn fieldAngle(comptime CoreT: type, geomMKS2: *const Geometry, geomBL: *const Geometry, jac: [4][4]f64, pp: *const [CoreT.nv]f64) relele.Error!struct { angle: f64, bsq: f64 } {
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
 
     const ppbl = try frames.transPmhdCocoJ(cfg, pp.*, geomMKS2, geomBL, jac);
     const u = try relele.uconUcovFromPrims(
@@ -309,25 +361,30 @@ fn fieldAngle(comptime SimT: type, geomMKS2: *const Geometry, geomBL: *const Geo
 /// cell writes only its own ΔA_φ / B³ / B+u slots, so the result is
 /// bit-identical to serial; the cheap curl stencil between them stays serial
 /// (it reads the finished ΔA_φ of neighbour rows; a natural barrier).
-pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) Error!void {
-    const L = SimT.Layout;
+/// mimic_dynamo's view: the Core, the dynamo state, the CT work field.
+fn DynCtx(comptime CoreT: type) type {
+    return struct { core: *CoreT, dy: *State, cts: *ct.Scratch, dt: f64 };
+}
+
+pub fn mimicDynamo(comptime CoreT: type, core: *CoreT, dy: *State, cts: *ct.Scratch, dt: f64) Error!void {
+    const L = CoreT.Layout;
     if (comptime !L.hasVar(.b1)) return;
 
-    const ny = sim.nyi();
+    const ny = core.nyi();
     const ylim: i64 = if (ny > 1) 1 else 0;
 
-    threading.parallelZero(sim.team, sim.dyn_a.data);
+    threading.parallelZero(core.team, dy.dyn_a.data);
 
-    const Ctx = struct { sim: *SimT, dt: f64 };
-    var ctx = Ctx{ .sim = sim, .dt = dt };
+    const Ctx = DynCtx(CoreT);
+    var ctx = Ctx{ .core = core, .dy = dy, .cts = cts, .dt = dt };
     const W = struct {
         fn deltaA(c: *Ctx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            deltaARows(SimT, c.sim, c.dt, iy0, iy1) catch |e| {
+            deltaARows(CoreT, c, iy0, iy1) catch |e| {
                 res.err = e;
             };
         }
-        fn superpose(s: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            superposeRows(SimT, s, iy0, iy1) catch |e| {
+        fn superpose(c: *Ctx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            superposeRows(CoreT, c, iy0, iy1) catch |e| {
                 res.err = e;
             };
         }
@@ -335,34 +392,37 @@ pub fn mimicDynamo(comptime SimT: type, sim: *SimT, dt: f64) Error!void {
 
     // ---- ΔA_φ over the domain + one ring including corners (Nloop_6) ----
     {
-        const res = threading.parallelRange(Ctx, &ctx, sim.team, -ylim, ny + ylim, W.deltaA);
+        const res = threading.parallelRange(Ctx, &ctx, core.team, -ylim, ny + ylim, W.deltaA);
         if (res.err) |e| return e;
     }
 
     // ---- curl ΔA_φ → B^i in the scratch slots 3..5, superimpose on domain ----
-    // curlFromA clobbers &sim.vecpot 0..2 (corner A) and returns it with B in
-    // 3..5; the superpose pass below reads those slots from sim.vecpot.
-    _ = ct.curlFromA(SimT, sim, &sim.vecpot, &sim.dyn_a, 0);
+    // curlFromA clobbers &core.ct.vecpot 0..2 (corner A) and returns it with B in
+    // 3..5; the superpose pass below reads those slots from core.vecpot.
+    _ = ct.curlFromA(CoreT, core, &cts.vecpot, &dy.dyn_a, 0);
 
     {
-        const res = threading.parallelRange(SimT, sim, sim.team, 0, ny, W.superpose);
+        const res = threading.parallelRange(Ctx, &ctx, core.team, 0, ny, W.superpose);
         if (res.err) |e| return e;
     }
 }
 
 /// The ΔA_φ + DAMPBETA body for iy ∈ [iy0, iy1) (all iz, ix incl. the ring).
-fn deltaARows(comptime SimT: type, sim: *SimT, dt: f64, iy0: i64, iy1: i64) relele.Error!void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const dp = &sim.opt.dynamo_params;
+fn deltaARows(comptime CoreT: type, c: *DynCtx(CoreT), iy0: i64, iy1: i64) relele.Error!void {
+    const core = c.core;
+    const dy = c.dy;
+    const dt = c.dt;
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
+    const dp = &dy.params;
 
     const b3 = comptime L.index(.b3);
     const uu_i = comptime L.index(.uu);
 
-    const nx = sim.nxi();
-    const nz = sim.nzi();
-    const rhor = metric.rHorizonBL(sim.opt.mp.a);
-    const risco = metric.rIscoBL(sim.opt.mp.a);
+    const nx = core.nxi();
+    const nz = core.nzi();
+    const rhor = metric.rHorizonBL(core.phys.mp.a);
+    const risco = metric.rIscoBL(core.phys.mp.a);
 
     const xlim: i64 = if (nx > 1) 1 else 0;
     const zlim: i64 = if (nz > 1) 1 else 0;
@@ -373,14 +433,14 @@ fn deltaARows(comptime SimT: type, sim: *SimT, dt: f64, iy0: i64, iy1: i64) rele
         while (iy < iy1) : (iy += 1) {
             var ix: i64 = -xlim;
             while (ix < nx + xlim) : (ix += 1) {
-                const geom = sim.cache.fillGeometry(ix, iy, iz);
-                const geomBL = sim.cache.blGeom(ix, iy, iz);
-                const jac = sim.cache.jacMy2Bl(ix, iy, iz);
-                var pp: [SimT.nv]f64 = undefined;
-                sim.p.load(ix, iy, iz, &pp);
+                const geom = core.cache.fillGeometry(ix, iy, iz);
+                const geomBL = core.cache.blGeom(ix, iy, iz);
+                const jac = core.cache.jacMy2Bl(ix, iy, iz);
+                var pp: [CoreT.nv]f64 = undefined;
+                core.p.load(ix, iy, iz, &pp);
 
                 // dynamo scratch starts at zero (memset above)
-                const fa = try fieldAngle(SimT, &geom, geomBL, jac, &pp);
+                const fa = try fieldAngle(CoreT, &geom, geomBL, jac, &pp);
 
                 // BL {r, θ} come from the cached BL geometry's position vector
                 // (bit-identical to coco.cocoN(geom.xxvec, coords, .bl, mp)). The
@@ -392,7 +452,7 @@ fn deltaARows(comptime SimT: type, sim: *SimT, dt: f64, iy0: i64, iy1: i64) rele
                 if (r < 1.0001 * rhor) continue; // avoid the BH
 
                 // pressure feeding β: gas (+ radiation Ê/3 with the M1 closure)
-                const gamma = sim.opt.gam; // no CONSISTENTGAMMA
+                const gamma = core.phys.gam; // no CONSISTENTGAMMA
                 var prermhd = (gamma - 1.0) * pp[uu_i];
                 if (comptime L.hasVar(.ee)) {
                     const ff = try radiation.calcFfRtt(cfg, pp, &geom);
@@ -404,7 +464,7 @@ fn deltaARows(comptime SimT: type, sim: *SimT, dt: f64, iy0: i64, iy1: i64) rele
                 const gix = std.math.clamp(ix, 0, nx - 1);
 
                 // pure dynamo law over the gathered cell state
-                const out = dynamoDeltaA(dp.*, sim.opt.mp.a, dt, rhor, risco, .{
+                const out = dynamoDeltaA(dp.*, core.phys.mp.a, dt, rhor, risco, .{
                     .r = r,
                     .th = th,
                     .bphi = pp[b3],
@@ -412,11 +472,11 @@ fn deltaARows(comptime SimT: type, sim: *SimT, dt: f64, iy0: i64, iy1: i64) rele
                     .angle = fa.angle,
                     .prermhd = prermhd,
                     .gg33 = geom.gg[3][3],
-                    .scaleth = sim.scaleth[@intCast(gix)],
+                    .scaleth = dy.scaleth[@intCast(gix)],
                 });
 
-                sim.dyn_a.set(2, ix, iy, iz, out.aphi); // φ component (B3 slot)
-                if (dp.dampbeta) sim.p.set(b3, ix, iy, iz, out.bphi);
+                dy.dyn_a.set(2, ix, iy, iz, out.aphi); // φ component (B3 slot)
+                if (dp.dampbeta) core.p.set(b3, ix, iy, iz, out.bphi);
             }
         }
     }
@@ -424,13 +484,14 @@ fn deltaARows(comptime SimT: type, sim: *SimT, dt: f64, iy0: i64, iy1: i64) rele
 
 /// The superpose body for iy ∈ [iy0, iy1): add the curled ΔA_φ field
 /// (vecpot 3..5) to the domain B and refresh the magnetic conserveds.
-fn superposeRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) relele.Error!void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
+fn superposeRows(comptime CoreT: type, c: *DynCtx(CoreT), iy0: i64, iy1: i64) relele.Error!void {
+    const core = c.core;
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
     const b1 = comptime L.index(.b1);
 
-    const nx = sim.nxi();
-    const nz = sim.nzi();
+    const nx = core.nxi();
+    const nz = core.nzi();
 
     var jz: i64 = 0;
     while (jz < nz) : (jz += 1) {
@@ -438,17 +499,17 @@ fn superposeRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) relele.Err
         while (jy < iy1) : (jy += 1) {
             var jx: i64 = 0;
             while (jx < nx) : (jx += 1) {
-                var pp: [SimT.nv]f64 = undefined;
-                sim.p.load(jx, jy, jz, &pp);
-                pp[b1] += sim.vecpot.get(3, jx, jy, jz);
-                pp[b1 + 1] += sim.vecpot.get(4, jx, jy, jz);
-                pp[b1 + 2] += sim.vecpot.get(5, jx, jy, jz);
-                const geom = sim.cache.fillGeometry(jx, jy, jz);
-                const uu = try p2u_mod.p2u(cfg, pp, &geom, sim.opt.gam);
-                sim.p.store(jx, jy, jz, &pp);
-                sim.u.set(b1, jx, jy, jz, uu[b1]);
-                sim.u.set(b1 + 1, jx, jy, jz, uu[b1 + 1]);
-                sim.u.set(b1 + 2, jx, jy, jz, uu[b1 + 2]);
+                var pp: [CoreT.nv]f64 = undefined;
+                core.p.load(jx, jy, jz, &pp);
+                pp[b1] += c.cts.vecpot.get(3, jx, jy, jz);
+                pp[b1 + 1] += c.cts.vecpot.get(4, jx, jy, jz);
+                pp[b1 + 2] += c.cts.vecpot.get(5, jx, jy, jz);
+                const geom = core.cache.fillGeometry(jx, jy, jz);
+                const uu = try p2u_mod.p2u(cfg, pp, &geom, core.phys.gam);
+                core.p.store(jx, jy, jz, &pp);
+                core.u.set(b1, jx, jy, jz, uu[b1]);
+                core.u.set(b1 + 1, jx, jy, jz, uu[b1 + 1]);
+                core.u.set(b1 + 2, jx, jy, jz, uu[b1 + 2]);
             }
         }
     }
@@ -457,13 +518,15 @@ fn superposeRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64) relele.Err
 /// C: apply_dynamo (finite.c:1370). The full per-sub-step sequence,
 /// including its MPI order: mpi_exchangedata → calc_avgs_throughout →
 /// set_bc → mimic_dynamo → calc_u2p (the third canonical exchange site,
-/// MPI plan §6.1).
+/// MPI plan §6.1). Operator-level: takes the whole Sim because it composes
+/// the Sim's setBc / calcU2p with the kernels above.
 pub fn applyDynamo(comptime SimT: type, sim: *SimT, t: f64, dt: f64) Error!void {
     const L = SimT.Layout;
     if (comptime !L.hasVar(.b1)) return;
-    sim.exchangeHalos();
-    calcScaleHeight(SimT, sim);
+    const dy = &(sim.dynamo.?);
+    sim.core.exchangeHalos();
+    calcScaleHeight(SimT.CoreT, &sim.core, dy);
     try sim.setBc(t, false);
-    try mimicDynamo(SimT, sim, dt);
+    try mimicDynamo(SimT.CoreT, &sim.core, dy, &sim.ct, dt);
     try sim.calcU2p(t);
 }

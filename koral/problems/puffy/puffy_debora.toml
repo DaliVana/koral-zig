@@ -13,6 +13,8 @@
 #   * RESTART/RESTARTNUM — koral-zig restarts via KDMP checkpoints instead.
 #   * LT_NORM / LT_DIRECTION are dead defines in the fork (unused by its .c).
 
+problem = "puffy"   # the executable this file is for (checked by the driver)
+
 [physical]
 mass   = 10.0                  # MASS
 bhspin = 0.3                   # BHSPIN

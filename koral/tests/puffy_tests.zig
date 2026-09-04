@@ -244,12 +244,8 @@ const LP = SimP.Layout;
 
 fn puffyOptions() SimP.Options {
     return .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.gam,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        .specific_bc = &puffy.Bc(SimP).calc,
+        .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.gam },
+        .bc = .{ .x = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } }, .y = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } } },
     };
 }
 
@@ -274,8 +270,8 @@ test "puffy reduced-grid init: β ≡ MAXBETA, divB = 0, bc.c contract" {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
                 var pp: [SimP.nv]f64 = undefined;
-                s.p.load(ix, iy, 0, &pp);
-                const geom = s.cache.fillGeometry(ix, iy, 0);
+                s.core.p.load(ix, iy, 0, &pp);
+                const geom = s.core.cache.fillGeometry(ix, iy, 0);
                 const ug = try relele.uconUcovFromPrims(
                     .{ pp[LP.index(.vx)], pp[LP.index(.vy)], pp[LP.index(.vz)] },
                     &geom,
@@ -308,12 +304,12 @@ test "puffy reduced-grid init: β ≡ MAXBETA, divB = 0, bc.c contract" {
         while (iy < ny) : (iy += 1) {
             var ix: i64 = 1;
             while (ix < nx) : (ix += 1) {
-                worst_div = @max(worst_div, @abs(ct.calcDivB(SimP, &s, ix, iy, 0)));
+                worst_div = @max(worst_div, @abs(s.calcDivB(ix, iy, 0)));
             }
         }
     }
     // normalize by the largest gdet·B over the smallest cell size
-    const dxmin = @min(s.grid.cellSize(0, 0), s.grid.cellSize(0, 1));
+    const dxmin = @min(s.core.grid.cellSize(0, 0), s.core.grid.cellSize(0, 1));
     std.debug.print("puffy init: max|divB|·dx/max|gdetB| = {e:.3}\n", .{worst_div * dxmin / bmax});
     try std.testing.expect(worst_div * dxmin / bmax <= 1e-12);
 
@@ -326,14 +322,14 @@ test "puffy reduced-grid init: β ≡ MAXBETA, divB = 0, bc.c contract" {
             while (k <= 3) : (k += 1) {
                 var pg: [SimP.nv]f64 = undefined;
                 var ps: [SimP.nv]f64 = undefined;
-                s.p.load(ix, -k, 0, &pg);
-                s.p.load(ix, k - 1, 0, &ps);
+                s.core.p.load(ix, -k, 0, &pg);
+                s.core.p.load(ix, k - 1, 0, &ps);
                 for (0..SimP.nv) |iv| {
                     const expct = if (iv == LP.index(.vy) or iv == LP.index(.b2) or iv == LP.index(.fy)) -ps[iv] else ps[iv];
                     try std.testing.expectEqual(expct, pg[iv]);
                 }
-                s.p.load(ix, ny - 1 + k, 0, &pg);
-                s.p.load(ix, ny - k, 0, &ps);
+                s.core.p.load(ix, ny - 1 + k, 0, &pg);
+                s.core.p.load(ix, ny - k, 0, &ps);
                 for (0..SimP.nv) |iv| {
                     const expct = if (iv == LP.index(.vy) or iv == LP.index(.b2) or iv == LP.index(.fy)) -ps[iv] else ps[iv];
                     try std.testing.expectEqual(expct, pg[iv]);
@@ -347,8 +343,8 @@ test "puffy reduced-grid init: β ≡ MAXBETA, divB = 0, bc.c contract" {
         while (iy < ny) : (iy += 13) {
             var pg: [SimP.nv]f64 = undefined;
             var ps: [SimP.nv]f64 = undefined;
-            s.p.load(-2, iy, 0, &pg);
-            s.p.load(0, iy, 0, &ps);
+            s.core.p.load(-2, iy, 0, &pg);
+            s.core.p.load(0, iy, 0, &ps);
             for (0..SimP.nv) |iv| try std.testing.expectEqual(ps[iv], pg[iv]);
         }
     }
@@ -364,18 +360,18 @@ test "puffy reduced-grid init: β ≡ MAXBETA, divB = 0, bc.c contract" {
                 const ix = nx - 1 + k;
                 var pg: [SimP.nv]f64 = undefined;
                 var ps: [SimP.nv]f64 = undefined;
-                s.p.load(ix, iy, 0, &pg);
-                s.p.load(nx - 1, iy, 0, &ps);
+                s.core.p.load(ix, iy, 0, &pg);
+                s.core.p.load(nx - 1, iy, 0, &ps);
 
-                const gbl = puffy.fillGeometryBL(&s.grid, .mks2, ix, iy, 0);
-                const bbl = puffy.fillGeometryBL(&s.grid, .mks2, nx - 1, iy, 0);
+                const gbl = puffy.fillGeometryBL(&s.core.grid, .mks2, ix, iy, 0);
+                const bbl = puffy.fillGeometryBL(&s.core.grid, .mks2, nx - 1, iy, 0);
                 const scale1 = bbl.xxvec[1] * bbl.xxvec[1] / gbl.xxvec[1] / gbl.xxvec[1];
                 try std.testing.expect(
                     @abs(pg[LP.index(.rho)] - ps[LP.index(.rho)] * scale1) <=
                         1e-14 * ps[LP.index(.rho)] * scale1,
                 );
 
-                const geom = s.cache.fillGeometry(ix, iy, 0);
+                const geom = s.core.cache.fillGeometry(ix, iy, 0);
                 var ucon = [4]f64{ 0, pg[LP.index(.vx)], pg[LP.index(.vy)], pg[LP.index(.vz)] };
                 ucon = try relele.convert(ucon, .velr, .vel4, &geom, .recompute_ut);
                 ucon = frames.trans2Coco(geom.xxvec, ucon, .mks2, .bl, puffy.mp);
@@ -424,8 +420,8 @@ test "M14 puffy 3D reduced-grid init: β ≡ MAXBETA, divB = 0 (32×30×4)" {
                 var ix: i64 = 0;
                 while (ix < nx) : (ix += 1) {
                     var pp: [SimP.nv]f64 = undefined;
-                    s.p.load(ix, iy, iz, &pp);
-                    const geom = s.cache.fillGeometry(ix, iy, iz);
+                    s.core.p.load(ix, iy, iz, &pp);
+                    const geom = s.core.cache.fillGeometry(ix, iy, iz);
                     const ug = try relele.uconUcovFromPrims(
                         .{ pp[LP.index(.vx)], pp[LP.index(.vy)], pp[LP.index(.vz)] },
                         &geom,
@@ -467,12 +463,12 @@ test "M14 puffy 3D reduced-grid init: β ≡ MAXBETA, divB = 0 (32×30×4)" {
             while (iy < ny) : (iy += 1) {
                 var ix: i64 = 1;
                 while (ix < nx) : (ix += 1) {
-                    worst_div = @max(worst_div, @abs(ct.calcDivB(SimP, &s, ix, iy, iz)));
+                    worst_div = @max(worst_div, @abs(s.calcDivB(ix, iy, iz)));
                 }
             }
         }
     }
-    const dxmin = @min(s.grid.cellSize(0, 0), @min(s.grid.cellSize(0, 1), s.grid.cellSize(0, 2)));
+    const dxmin = @min(s.core.grid.cellSize(0, 0), @min(s.core.grid.cellSize(0, 1), s.core.grid.cellSize(0, 2)));
     std.debug.print("puffy 3D init 32×30×4: fac={e:.6}  max|divB|·dx/max|gdetB| = {e:.3}\n", .{ fac, worst_div * dxmin / bmax });
     try std.testing.expect(worst_div * dxmin / bmax <= 1e-12);
 }
@@ -505,17 +501,17 @@ fn hydroTorusInit(s: *SimH) !void {
     while (iy < s.nyi()) : (iy += 1) {
         var ix: i64 = 0;
         while (ix < s.nxi()) : (ix += 1) {
-            const geom = s.cache.fillGeometry(ix, iy, 0);
-            const geomBL = puffy.fillGeometryBL(&s.grid, .mks2, ix, iy, 0);
+            const geom = s.core.cache.fillGeometry(ix, iy, 0);
+            const geomBL = puffy.fillGeometryBL(&s.core.grid, .mks2, ix, iy, 0);
             var pp = try puffy.prepInitCell(cfg_hydro, &geom, &geomBL, &tc, &con, &atm);
             pp[LH.index(.entr)] = @import("../physics/hydro.zig").sFromU(
                 pp[LH.index(.rho)],
                 pp[LH.index(.uu)],
-                s.opt.gam,
+                s.core.phys.gam,
             );
-            const uu = try @import("../p2u.zig").p2u(cfg_hydro, pp, &geom, s.opt.gam);
-            s.p.store(ix, iy, 0, &pp);
-            s.u.store(ix, iy, 0, &uu);
+            const uu = try @import("../p2u.zig").p2u(cfg_hydro, pp, &geom, s.core.phys.gam);
+            s.core.p.store(ix, iy, 0, &pp);
+            s.core.u.store(ix, iy, 0, &uu);
         }
     }
     try s.finishInit(); // ghost fill + the C initial-dt guess (problem.c:59)
@@ -534,8 +530,8 @@ fn torusDrift(s: *SimH, p0: []const f64) f64 {
             const rho0 = p0[idx];
             if (rho0 <= 1e-21) continue;
             var pp: [SimH.nv]f64 = undefined;
-            s.p.load(ix, iy, 0, &pp);
-            const geom = s.cache.fillGeometry(ix, iy, 0);
+            s.core.p.load(ix, iy, 0, &pp);
+            const geom = s.core.cache.fillGeometry(ix, iy, 0);
             num += @abs(pp[LH.index(.rho)] - rho0) * geom.gdet;
             den += rho0 * geom.gdet;
         }
@@ -545,14 +541,9 @@ fn torusDrift(s: *SimH, p0: []const f64) f64 {
 
 fn runHydroTorus(a: std.mem.Allocator, n: usize, t_end: f64) !f64 {
     var s = try SimH.init(a, puffy.makeGrid(n, n), .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.lt.gamma, // 4/3: the polytrope the torus was built with
-        .bc_x = .specific,
-        .bc_y = .specific,
-        .specific_bc = &puffy.Bc(SimH).calc,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
+        .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.lt.gamma },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{ .x = .{ .specific = .{ .f = &puffy.Bc(SimH).calc } }, .y = .{ .specific = .{ .f = &puffy.Bc(SimH).calc } } },
     });
     defer s.deinit();
     try hydroTorusInit(&s);
@@ -567,7 +558,7 @@ fn runHydroTorus(a: std.mem.Allocator, n: usize, t_end: f64) !f64 {
             var ix: i64 = 0;
             while (ix < s.nxi()) : (ix += 1) {
                 var pp: [SimH.nv]f64 = undefined;
-                s.p.load(ix, iy, 0, &pp);
+                s.core.p.load(ix, iy, 0, &pp);
                 const idx: usize = @intCast((iy * s.nxi() + ix) * SimH.nv);
                 @memcpy(p0[idx .. idx + SimH.nv], &pp);
             }
@@ -650,9 +641,9 @@ test "puffy init perturbation: deterministic, bounded, off-by-default identical"
             var p0: [SimP.nv]f64 = undefined;
             var p1: [SimP.nv]f64 = undefined;
             var p2: [SimP.nv]f64 = undefined;
-            s0.p.load(ix, iy, 0, &p0);
-            s1.p.load(ix, iy, 0, &p1);
-            s2.p.load(ix, iy, 0, &p2);
+            s0.core.p.load(ix, iy, 0, &p0);
+            s1.core.p.load(ix, iy, 0, &p1);
+            s2.core.p.load(ix, iy, 0, &p2);
             // determinism: two perturbed inits are bit-identical
             try std.testing.expectEqual(p1[LP.index(.uu)], p2[LP.index(.uu)]);
             const uu_base = p0[LP.index(.uu)];
@@ -689,7 +680,7 @@ test "puffy seed quality: positive on the initialized torus and linear in B" {
         var ix: i64 = 0;
         while (ix < s.nxi()) : (ix += 1) {
             var pp: [SimP.nv]f64 = undefined;
-            s.p.load(ix, iy, 0, &pp);
+            s.core.p.load(ix, iy, 0, &pp);
             pp[LP.index(.b1)] *= 2.0;
             pp[LP.index(.b2)] *= 2.0;
             pp[LP.index(.b3)] *= 2.0;

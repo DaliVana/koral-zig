@@ -8,6 +8,10 @@
 //!    solution, Del Zanna et al. 2007)
 //!  * Balsara-1 / SR Brio-Wu tube: B^x exactly constant, self-convergent L1,
 //!    plateau structure sane
+//!
+//! All Minkowski. The curved-spacetime counterpart (flux-CT and the MHD
+//! sources on a KS grid, through the polar band) is the magnetized Bondi
+//! monopole in ks_evolution_tests.zig.
 
 const std = @import("std");
 const config = @import("../config.zig");
@@ -54,7 +58,7 @@ fn maxAbsDivB(s: *const SimM) f64 {
     while (iy < s.nyi()) : (iy += 1) {
         var ix: i64 = 0;
         while (ix < s.nxi()) : (ix += 1) {
-            worst = @max(worst, @abs(ct.calcDivB(SimM, s, ix, iy, 0)));
+            worst = @max(worst, @abs(s.calcDivB(ix, iy, 0)));
         }
     }
     return worst;
@@ -68,10 +72,8 @@ test "M6: calc_BfromA gives corner-divB at machine zero" {
     const gam: f64 = 5.0 / 3.0;
     const g = Grid.init(.{ .nx = 32, .ny = 32, .ng = 3, .minx = 0, .maxx = 1, .miny = 0, .maxy = 1 });
     var s = try SimM.init(std.testing.allocator, g, .{
-        .coords = .mink,
-        .gam = gam,
-        .bc_x = .periodic,
-        .bc_y = .periodic,
+        .phys = .{ .coords = .mink, .gam = gam },
+        .bc = .{ .x = .periodic, .y = .periodic },
     });
     defer s.deinit();
 
@@ -90,7 +92,7 @@ test "M6: calc_BfromA gives corner-divB at machine zero" {
         }
     }
     try s.setBc(0.0, true);
-    try ct.calcBfromA(SimM, &s, true);
+    try s.calcBfromA(true);
     try s.setBc(0.0, true);
 
     // scale: |B| / Δx
@@ -99,7 +101,7 @@ test "M6: calc_BfromA gives corner-divB at machine zero" {
     while (iy < s.nyi()) : (iy += 1) {
         var ix: i64 = 0;
         while (ix < s.nxi()) : (ix += 1) {
-            for (0..3) |c| bmax = @max(bmax, @abs(s.p.get(L.index(.b1) + c, ix, iy, 0)));
+            for (0..3) |c| bmax = @max(bmax, @abs(s.core.p.get(L.index(.b1) + c, ix, iy, 0)));
         }
     }
     try expect(bmax > 0.1); // the curl actually produced a field
@@ -116,10 +118,8 @@ test "M6: uniform magnetized state static over 50 steps" {
     const gam: f64 = 5.0 / 3.0;
     const g = Grid.init(.{ .nx = 16, .ny = 16, .ng = 3, .minx = 0, .maxx = 1, .miny = 0, .maxy = 1 });
     var s = try SimM.init(std.testing.allocator, g, .{
-        .coords = .mink,
-        .gam = gam,
-        .bc_x = .periodic,
-        .bc_y = .periodic,
+        .phys = .{ .coords = .mink, .gam = gam },
+        .bc = .{ .x = .periodic, .y = .periodic },
     });
     defer s.deinit();
 
@@ -141,7 +141,7 @@ test "M6: uniform magnetized state static over 50 steps" {
         while (ix < s.nxi()) : (ix += 1) {
             for (0..NV) |iv| {
                 const scale = @max(@abs(pp0[iv]), 1e-30);
-                const got = s.p.get(iv, ix, iy, 0);
+                const got = s.core.p.get(iv, ix, iy, 0);
                 const dev = @abs(got - pp0[iv]) / scale;
                 if (!(dev <= 1e-13)) {
                     std.debug.print("uniform-B drift: ix {d} iy {d} iv {d}: {e:.17} -> {e:.17} (dev {e})\n", .{ ix, iy, iv, pp0[iv], got, dev });
@@ -169,10 +169,8 @@ test "M6: Orszag-Tang keeps corner divB at machine zero over 200 steps" {
         .maxy = 2.0 * std.math.pi,
     });
     var s = try SimM.init(std.testing.allocator, g, .{
-        .coords = .mink,
-        .gam = gam,
-        .bc_x = .periodic,
-        .bc_y = .periodic,
+        .phys = .{ .coords = .mink, .gam = gam },
+        .bc = .{ .x = .periodic, .y = .periodic },
     });
     defer s.deinit();
 
@@ -197,7 +195,7 @@ test "M6: Orszag-Tang keeps corner divB at machine zero over 200 steps" {
         }
     }
     try s.setBc(0.0, true);
-    try ct.calcBfromA(SimM, &s, true);
+    try s.calcBfromA(true);
     try s.setBc(0.0, true);
     s.initTimestepGuess();
 
@@ -207,7 +205,7 @@ test "M6: Orszag-Tang keeps corner divB at machine zero over 200 steps" {
     while (iy < s.nyi()) : (iy += 1) {
         var ix: i64 = 0;
         while (ix < s.nxi()) : (ix += 1) {
-            for (0..3) |c| bmax = @max(bmax, @abs(s.p.get(L.index(.b1) + c, ix, iy, 0)));
+            for (0..3) |c| bmax = @max(bmax, @abs(s.core.p.get(L.index(.b1) + c, ix, iy, 0)));
         }
     }
     try expect(div0 * g.dx / bmax <= 1e-14);
@@ -224,7 +222,7 @@ test "M6: Orszag-Tang keeps corner divB at machine zero over 200 steps" {
     while (iy < s.nyi()) : (iy += 1) {
         var ix: i64 = 0;
         while (ix < s.nxi()) : (ix += 1) {
-            const d = @abs(ct.calcDivB(SimM, &s, ix, iy, 0));
+            const d = @abs(s.calcDivB(ix, iy, 0));
             if (d > wv) {
                 wv = d;
                 wx = ix;
@@ -274,7 +272,10 @@ fn runAlfven(a: std.mem.Allocator, nx: usize) !AlfvenResult {
     const va = cpAlfvenSpeed(gam, rho0, p0, b0, eta);
 
     const g = Grid.init(.{ .nx = nx, .ng = 3, .minx = 0, .maxx = 1 });
-    var s = try SimM.init(a, g, .{ .coords = .mink, .gam = gam, .bc_x = .periodic });
+    var s = try SimM.init(a, g, .{
+        .phys = .{ .coords = .mink, .gam = gam },
+        .bc = .{ .x = .periodic },
+    });
     defer s.deinit();
 
     const tp = 2.0 * std.math.pi;
@@ -294,7 +295,7 @@ fn runAlfven(a: std.mem.Allocator, nx: usize) !AlfvenResult {
     const tend = 1.0 / va;
     while (s.t < tend) {
         var dt: ?f64 = null;
-        if (s.t + 1.0 / s.tstepdenmax > tend) dt = tend - s.t;
+        if (s.t + 1.0 / s.core.tstepdenmax > tend) dt = tend - s.t;
         try s.step(dt);
     }
 
@@ -304,7 +305,7 @@ fn runAlfven(a: std.mem.Allocator, nx: usize) !AlfvenResult {
     ix = 0;
     while (ix < s.nxi()) : (ix += 1) {
         const x = g.xc(ix);
-        const by = s.p.get(L.index(.b2), ix, 0, 0);
+        const by = s.core.p.get(L.index(.b2), ix, 0, 0);
         c_amp += by * @cos(tp * x);
         s_amp += by * @sin(tp * x);
     }
@@ -336,7 +337,10 @@ test "M6: CP Alfvén wave — phase order ≥ 1.9, amplitude preserved" {
 fn runBalsara(a: std.mem.Allocator, nx: usize, out_rho: []f64) !void {
     const gam: f64 = 2.0;
     const g = Grid.init(.{ .nx = nx, .ng = 3, .minx = 0, .maxx = 1 });
-    var s = try SimM.init(a, g, .{ .coords = .mink, .gam = gam, .bc_x = .copy });
+    var s = try SimM.init(a, g, .{
+        .phys = .{ .coords = .mink, .gam = gam },
+        .bc = .{ .x = .copy },
+    });
     defer s.deinit();
 
     var ix: i64 = 0;
@@ -352,15 +356,15 @@ fn runBalsara(a: std.mem.Allocator, nx: usize, out_rho: []f64) !void {
     const tend = 0.4;
     while (s.t < tend) {
         var dt: ?f64 = null;
-        if (s.t + 1.0 / s.tstepdenmax > tend) dt = tend - s.t;
+        if (s.t + 1.0 / s.core.tstepdenmax > tend) dt = tend - s.t;
         try s.step(dt);
     }
 
     // B^x must remain exactly its initial constant (flux_ct zeroes flbx[B1])
     ix = 0;
     while (ix < s.nxi()) : (ix += 1) {
-        try std.testing.expectEqual(@as(f64, 0.5), s.p.get(L.index(.b1), ix, 0, 0));
-        try expect(std.math.isFinite(s.p.get(L.index(.rho), ix, 0, 0)));
+        try std.testing.expectEqual(@as(f64, 0.5), s.core.p.get(L.index(.b1), ix, 0, 0));
+        try expect(std.math.isFinite(s.core.p.get(L.index(.rho), ix, 0, 0)));
     }
 
     // sample rho onto the caller's grid (cell centers of out_rho length)
@@ -372,7 +376,7 @@ fn runBalsara(a: std.mem.Allocator, nx: usize, out_rho: []f64) !void {
         const fr = fx - @floor(fx);
         const jl = std.math.clamp(j0, 0, @as(i64, @intCast(nx - 1)));
         const jr = std.math.clamp(j0 + 1, 0, @as(i64, @intCast(nx - 1)));
-        out_rho[j] = (1.0 - fr) * s.p.get(L.index(.rho), jl, 0, 0) + fr * s.p.get(L.index(.rho), jr, 0, 0);
+        out_rho[j] = (1.0 - fr) * s.core.p.get(L.index(.rho), jl, 0, 0) + fr * s.core.p.get(L.index(.rho), jr, 0, 0);
     }
 }
 
@@ -414,11 +418,9 @@ fn runReduceStep(a: std.mem.Allocator, reduce_after_fixup: bool, poison: bool) !
     const gam: f64 = 5.0 / 3.0;
     const g = Grid.init(.{ .nx = 16, .ny = 16, .ng = 3, .minx = 0, .maxx = 1, .miny = 0, .maxy = 1 });
     var s = try SimM.init(a, g, .{
-        .coords = .mink,
-        .gam = gam,
-        .bc_x = .periodic,
-        .bc_y = .periodic,
-        .reduceorderafterfixup = reduce_after_fixup,
+        .phys = .{ .coords = .mink, .gam = gam },
+        .num = .{ .reduceorderafterfixup = reduce_after_fixup },
+        .bc = .{ .x = .periodic, .y = .periodic },
     });
     defer s.deinit();
 
@@ -437,12 +439,12 @@ fn runReduceStep(a: std.mem.Allocator, reduce_after_fixup: bool, poison: bool) !
     try s.setBc(0.0, true);
     if (poison) {
         var uu: [NV]f64 = undefined;
-        s.u.load(8, 8, 0, &uu);
+        s.core.u.load(8, 8, 0, &uu);
         uu[L.index(.rho)] = -uu[L.index(.rho)]; // u2p rejects → hd_fixup flagged
-        s.u.store(8, 8, 0, &uu);
+        s.core.u.store(8, 8, 0, &uu);
     }
     try s.step(1.0e-3);
-    return a.dupe(f64, s.u.data);
+    return a.dupe(f64, s.core.u.data);
 }
 
 test "reduceorderafterfixup: a fixup-flagged cell reconstructs one order lower" {

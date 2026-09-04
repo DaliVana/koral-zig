@@ -62,16 +62,9 @@ const toroidal = 8; // b3 — zero in 2D axisymmetry
 
 fn puffyOptions() SimP.Options {
     return .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.gam,
-        .floors = invert.FloorParams.puffy,
-        .rad = invert_rad.RadParams.puffy,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        .specific_bc = &puffy.Bc(SimP).calc,
+        .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.gam, .floors = invert.FloorParams.puffy, .rad = invert_rad.RadParams.puffy },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{ .x = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } }, .y = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } } },
     };
 }
 
@@ -92,7 +85,7 @@ fn compareBslots(s: *SimP, k: *const golden.Kini, tol: f64, is_field: [3]bool, l
             const iy = k.cellY(jy);
             const base = k.base(jx, jy, 0);
             var pp: [SimP.nv]f64 = undefined;
-            s.p.load(ix, iy, 0, &pp);
+            s.core.p.load(ix, iy, 0, &pp);
             for (0..3) |ib| {
                 dev[ib].addLoc(k.data[base + ib], pp[bslots[ib]], ix, iy);
                 absdiff[ib] = @max(absdiff[ib], @abs(k.data[base + ib] - pp[bslots[ib]]));
@@ -126,7 +119,7 @@ fn runKeystone(a: std.mem.Allocator) !void {
     }
 
     // -- stage 1: calc_BfromA + set_bc → all primitives (keystone) --------
-    try ct.calcBfromA(SimP, &s, true);
+    try s.calcBfromA(true);
     try s.setBc(0.0, true);
     {
         var kp = try golden.readKini(a, "init/puffy_t0_p.kini.gz");
@@ -142,7 +135,7 @@ fn runKeystone(a: std.mem.Allocator) !void {
                 const iy = kp.cellY(jy);
                 const base = kp.base(jx, jy, 0);
                 var pp: [SimP.nv]f64 = undefined;
-                s.p.load(ix, iy, 0, &pp);
+                s.core.p.load(ix, iy, 0, &pp);
                 for (0..13) |iv| dev[iv].addLoc(kp.data[base + iv], pp[iv], ix, iy);
                 b3_absdiff = @max(b3_absdiff, @abs(kp.data[base + toroidal] - pp[toroidal]));
             }
@@ -201,7 +194,7 @@ test "M11 keystone: qags attribution — epsrel 1e-12 collapses torus deviation"
     defer s.deinit();
     try puffy.prepInitDomain(SimP, &s);
     try s.setBc(0.0, true);
-    try ct.calcBfromA(SimP, &s, true);
+    try s.calcBfromA(true);
     try s.setBc(0.0, true);
 
     var dev_rho: FieldDev = .{};
@@ -214,7 +207,7 @@ test "M11 keystone: qags attribution — epsrel 1e-12 collapses torus deviation"
             const iy = ke.cellY(jy);
             const base = ke.base(jx, jy, 0);
             var pp: [SimP.nv]f64 = undefined;
-            s.p.load(ix, iy, 0, &pp);
+            s.core.p.load(ix, iy, 0, &pp);
             if (ke.data[base + LP.index(.rho)] > 1e-22) { // torus cells
                 dev_rho.addLoc(ke.data[base + LP.index(.rho)], pp[LP.index(.rho)], ix, iy);
                 dev_uu.addLoc(ke.data[base + LP.index(.uu)], pp[LP.index(.uu)], ix, iy);

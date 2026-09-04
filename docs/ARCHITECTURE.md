@@ -104,15 +104,20 @@ The build produces two main kinds of artifact:
 
 - **The `koral` library.** `koral/…` contains the physics and numerics and starts at
   `koral/koral.zig`.
-- **Problem executables.** Each `koral/problems/<name>/main.zig` is a thin driver that picks a
-  comptime `Config`, load runtime `Params`, call the problem's `setup` (Physics +
-  grid + `Sim.Options`), build a `Sim`, run the time loop, and write output through
-  `koral/io/dump.zig`. Currently the only problem is `koral/problems/puffy/` (with
-  its `.toml` presets alongside).
+- **Problem executables.** Each `koral/problems/<name>/main.zig` is one line:
+  `koral.driver.run(App, init)`. The generic driver (`koral/driver.zig`) parses the
+  CLI, loads `Params`, opens the MPI world and φ-ring, decomposes the grid, builds
+  the `Sim`, restarts or initialises, runs the time loop and writes every output.
+  `App` is the problem's comptime contract (name, `cfg`, `default_params`,
+  `scalar_radii`, `Physics`, `setup`, `initAll`, optional `banner` / `afterInit` /
+  `reportSetupError`). Currently the only problem is `koral/problems/puffy/` (with
+  its `.toml` presets alongside); `koral/problems/common/` holds the library pieces
+  torus problems share (limotorus solver, floor atmospheres, β normalization, the
+  stock `bc.c` fragments, the seed-MRI diagnostic, the init perturbation).
 
-`build.zig` discovers every subdirectory of `koral/problems/` and, per directory, builds
-one executable importing `koral`, plus `<name>` (build) and `run-<name>` (build & run)
-steps. A single `test` step (`zig build test`) runs one `addTest` over the whole `koral`
+`build.zig` discovers every subdirectory of `koral/problems/` that has a `main.zig` and,
+per directory, builds one executable importing `koral`, plus `<name>` (build) and
+`run-<name>` (build & run) steps (`problems/common/` has no `main.zig` and is skipped). A single `test` step (`zig build test`) runs one `addTest` over the whole `koral`
 module; `-Dtest-filter` narrows it and `-Dslow-tests` enables the full-grid keystones.
 A configure-time guard fails the build with `error.UnregisteredTestFile` if any
 `koral/tests/*_tests.zig` or `koral/tests/golden/*_golden_tests.zig` is missing from
@@ -133,14 +138,18 @@ does `const koral = @import("koral");` and reaches everything through it.
 
 ```
   ┌──────────────────────────────────────────────────────────────────────┐
-  │ koral/problems/puffy/main.zig (driver: Config + setup → Sim → loop)  │
-  │   puffy.Physics / puffy.setup / puffy.initAllWith                    │
+  │ koral/problems/puffy/main.zig = koral.driver.run(App, init)          │
+  │   App: puffy.Physics / puffy.setup / puffy.initAllWith / banner      │
+  │   (problems/common/: limotorus · atmosphere · magnetize · bcs · mri) │
   └───────────────┬──────────────────────────────────────────────────────┘
                   │  imports koral
   ┌───────────────▼──────────────────────────────────────────────────────┐
-  │ sim.zig , Sim(cfg): owns all state buffers, orchestrates the step    │
-  │   (+ sim/storage · sim/bc · sim/polaraxis · sim/timers · sim/rijvisc │
-  │      · sim/ct · sim/dynamo)                                          │
+  │ sim.zig , Sim(cfg): composition root — embeds Core, owns the pass    │
+  │   scratch + stage buffers, exposes the operators; sim/rk2imex.zig is │
+  │   the integrator. Every pass takes *CoreT (sim/core.zig) plus its own│
+  │   scratch: sim/{timestep,u2p,fixup,explicit,implicit_op,entropy,     │
+  │   stage,bc,polaraxis,ct,dynamo,rijvisc}.zig; sim/options.zig is the  │
+  │   Options a problem builds.                                          │
   └── calls ─┬───────────┬───────────┬──────────┬────────────────────────┘
              │           │           │          │
     ┌────────▼──┐  ┌─────▼────┐ ┌────▼─────┐ ┌──▼─────────┐
@@ -467,54 +476,81 @@ This is the centerpiece. One time step is `Sim.step(forced_dt)` in `koral/sim.zi
 `γ = 1 − 1/√2 ≈ 0.29289`. The implicit operator handles the stiff radiation-gas four-force
 exchange; the explicit operator handles the hyperbolic MHD/radiation transport.
 
-### 5.1 The `Sim(cfg)` object
+### 5.1 The `Sim(cfg)` object and its `Core`
 
-`Sim(comptime cfg)` is a factory returning a struct specialised to the config. It owns
-**all** grid state: the primitive field `p` and conserved field `u`, all the RK stage
-buffers listed below, the `MetricCache`, per-cell wavespeed/timestep scalars (`scal`),
-per-cell integer `flags`, the face flux/state stores (`flb`, `fl_l`, `fl_r`, `pb_l`,
-`pb_r`), the constrained-transport `emf`/`vecpot` scratch, the once-per-step viscous stress
-`rijvisc`, the dynamo `dynA`/`scaleth` scratch, and the `Options` bundle. `wide =
-cfg.has(.mhd)` (mirrors C's `MPI4CORNERS`) makes MHD sweeps reach ±1 ghost row and fill 2D
-corners; `base_order` (0/1/2) comes from `cfg.reconstruction`.
+`Sim(comptime cfg)` is a factory returning the composition root specialised to the
+config. It embeds a `Core(cfg)` (`koral/sim/core.zig`) as `sim.core`: the grid, the
+`MetricCache`, the primitive field `p` and conserved field `u`, the per-cell integer
+`flags` and wavespeed/timestep scalars (`scal`), the `Physics` and `Numerics` option
+groups, the worker team, the decomposition and comm backend, the pass timers, and
+the CFL / order-reduction scalars the passes write. The Core also carries the small
+accessors (`nxi/nyi/nzi`, `getFlag/setFlag`, `scGet/scSet`, `isCorner`,
+`isCellCorrectedPolaraxis`, `initCell`, `cflDt`) and the MPI seam (`exchangeHalos`,
+`globalMax/Sum`). `wide = cfg.has(.mhd)` (mirrors C's `MPI4CORNERS`) makes MHD sweeps
+reach ±1 ghost row and fill 2D corners; `base_order` (0/1/2) comes from
+`cfg.reconstruction`; both are `pub const`s of the Core.
 
-`sim.zig` itself is a facade over four support modules it re-exports: `sim/storage.zig`
-(`FaceStore`, the `Flag`/`Scal` enums and slot tables), `sim/bc.zig` (all boundary-
-condition logic, [§9](#9-boundary-conditions-and-polar-axis-correction)),
-`sim/polaraxis.zig` (the polar-axis band, same section), and
-`sim/timers.zig`, always-on per-pass wall-clock self-time instrumentation (`Pass`,
-`PassTimers`; a pass stack prevents nested timed calls from double-counting) that
-`step()` feeds via `timers.begin/end` and the driver prints at scalar cadence.
-The worker team ([§10](#10-the-threading-model)) lives in the root-level
-`threading.zig`, project-wide infrastructure, also used by `metric/precompute.zig`
-and the PUFFY driver. Three more sim/ modules are called internally without being
-re-exported: `sim/ct.zig` (flux-CT + the vector-potential machinery,
-[§8.1](#81-constrained-transport-flux-ct)), `sim/dynamo.zig` (the mimic dynamo,
-[§8.4](#84-the-mimic-dynamo-run-after-each-explicit-sub-step)), and
-`sim/rijvisc.zig`, the sim-coupled half of the radiative shear
-viscosity ([§8.3](#83-radiative-shear-viscosity-filled-oncestep-added-at-faces):
-the FD shear gather, the ν-input gathering, and the once-per-step threaded pass
-filling `sim.rijvisc`); its pure per-cell kernels live in `physics/radvisc.zig`.
+**Every pass takes `*CoreT` plus its own scratch as explicit arguments**, so a pass
+cannot reach the integrator's stage buffers, the face stores or another pass's
+scratch — ownership is enforced by the type. The Sim owns what is not core state:
 
-`Options` carries the runtime configuration: `coords`, metric params `mp`, `gam`,
-`tsteplim`, `minmod_theta`, `floors` (`FloorParams`), `rad` (`RadParams`), `opac`
-(`?radforce.Params`; **null ≡ SKIPRADSOURCE**, no implicit operator), `implicit`
-(`ImplicitParams`), fixup toggles, `correct_polaraxis`/`nccorrectpolar`, `radviscosity` +
-`radvisc` params, `dynamo` + params, `reduceorderatbh` (C `REDUCEORDERATBH`: drop one
-reconstruction order inside the BL horizon), `dampradwavespeednearaxis`, per-axis
-`bc_x/bc_y/bc_z`, `specific_bc` + its opaque `bc_ctx` user pointer, and `nthreads`.
+| `Sim` field | owner | holds |
+| --- | --- | --- |
+| `integ` | `sim/rk2imex.zig` `Integrator(NV)` | the eight RK2IMEX stage buffers ([§5.2](#52-the-stage-buffers-what-each-one-holds)) |
+| `faces` | `sim/explicit.zig` `Faces(NV)` | `pb_l/pb_r`, `fl_l/fl_r`, `flb`; flux-CT rewrites `flb`'s B rows |
+| `bak` | `sim/fixup.zig` `Backups(NV)` | the whole-grid u/p fixup backups |
+| `ct` | `sim/ct.zig` `Scratch` | corner EMFs + the vector-potential work field; `void` without MHD |
+| `visc` | `sim/rijvisc.zig` `State` | `?`: the viscosity parameters + per-cell R^i_j, only when `radvisc` is set |
+| `dynamo` | `sim/dynamo.zig` `State` | `?`: the dynamo parameters + ΔA_φ / scale-height scratch, only when `dynamo` is set |
+| `bc`, `parallel` | `sim/options.zig` | the per-axis boundary kinds and the team knobs |
+| `t`, `dt`, `nstep`, `n_radimp_*` | `Sim` | the clock and the implicit-solver diagnostics |
 
-`Sim.init` validates runtime preconditions and returns `error.InvalidConfig` in every
-build mode. It checks `g.ng ≥ cfg.ghostCells()` because PPM's `i−2` load would otherwise
-address a negative padded index. It also checks that a
-`.specific` axis requires a non-null `specific_bc`, `opt.coords == cfg.coords` (the runtime
-metric coords must match the comptime coords the physics layer reads via `Cfg.coords`),
-`radviscosity` requires a non-null `opac` (ν = α·mfp needs opacities, otherwise C's
-SKIPRADSOURCE keeps viscosity active but the Zig path would silently store ν = 0),
-`correct_polaraxis` requires `ny > 2·nccorrectpolar`, and `correct_polaraxis` requires
-spherical coords. On `.mink`, the overwrite returns early but
+The pass modules are `sim/timestep.zig` (wavespeeds + CFL), `sim/u2p.zig`,
+`sim/fixup.zig`, `sim/explicit.zig` (sweeps, flux combination, metric source,
+conserved update, driven through its `Ctx`), `sim/implicit_op.zig`,
+`sim/entropy.zig`, `sim/stage.zig` (the exact-shape stage arithmetic), `sim/bc.zig`
+(all boundary-condition logic, [§9](#9-boundary-conditions-and-polar-axis-correction)),
+`sim/polaraxis.zig` (the polar-axis band, same section), `sim/ct.zig` (flux-CT + the
+vector-potential machinery, [§8.1](#81-constrained-transport-flux-ct)),
+`sim/dynamo.zig` (the mimic dynamo, [§8.4](#84-the-mimic-dynamo-run-after-each-explicit-sub-step);
+`applyDynamo` is operator-level and takes the Sim because it composes `setBc` and
+`calcU2p`), and `sim/rijvisc.zig` (the sim-coupled half of the radiative shear
+viscosity, [§8.3](#83-radiative-shear-viscosity-filled-oncestep-added-at-faces); its
+pure per-cell kernels live in `physics/radvisc.zig`). `sim/storage.zig` holds
+`FaceStore`, the `Flag`/`Scal` enums and slot tables; `sim/timers.zig` the always-on
+per-pass wall-clock instrumentation (`Pass`, `PassTimers`) that the operators feed and
+the driver prints at scalar cadence. The worker team ([§10](#10-the-threading-model))
+lives in the root-level `threading.zig`. The Sim's methods are the operators
+(`calcWavespeeds`, `calcU2p`, `cellFixup`, `opExplicit`, `opImplicit`, `doCorrect`,
+`fluxCt`, `calcBfromA`, `calcRijViscTotal`, `applyDynamo`, `updateEntropy`, `setBc`,
+`step`): thin, they own the timers and hand each pass its banded worker.
+
+`Sim.Options` (`koral/sim/options.zig`, generic over the Core) is what a problem
+builds, grouped by owner: `phys: Physics` (`coords`, metric params `mp`, `gam`,
+`floors` (`FloorParams`), `rad` (`RadParams`), `opac` (`?radforce.Params`; **null ≡
+SKIPRADSOURCE**, no implicit operator), `implicit` (`ImplicitParams`)); `num: Numerics`
+(`tsteplim`, `minmod_theta`, the `fixups` switches, `reduceorderatbh` (C
+`REDUCEORDERATBH`: drop one reconstruction order inside the BL horizon),
+`reduceorderafterfixup`, `dampradwavespeednearaxis`, `polaraxis: ?PolarAxis` with
+`ncells`); `bc` (per-axis `x/y/z: BcKind`, where `.specific` carries the callback and
+its opaque context, so "specific without a callback" cannot be expressed);
+`radvisc: ?radvisc.Params`; `dynamo: ?dynamo.Params`; `parallel` (`nthreads`,
+`pin_threads`); `comm`; `decomp`. The three optional passes follow the `opac` idiom —
+null means off — so the old bool-plus-params pairs are gone. `Options.applyParams(p)`
+is the generic TOML mapping every problem shares (floors, radiative floors, implicit
+solver, numerics, threads); `Options.validate(cfg, g)` holds the init-time checks.
+
+`Sim.init` calls `validate` and returns `error.InvalidConfig` in every build mode. It
+checks `g.ng ≥ cfg.ghostCells()` because PPM's `i−2` load would otherwise address a
+negative padded index; `phys.coords == cfg.coords` (the runtime metric coords must match
+the comptime coords the physics layer reads via `Cfg.coords`); `radvisc` requires a
+non-null `opac` (ν = α·mfp needs opacities, otherwise C's SKIPRADSOURCE keeps viscosity
+active but the Zig path would silently store ν = 0); `polaraxis` requires
+`ny > 2·ncells` and spherical coords (on `.mink`, the overwrite returns early but
 `isCellCorrectedPolaraxis` does not, so three evolution passes would skip polar rows
-without another pass supplying them. See [§9](#9-boundary-conditions-and-polar-axis-correction).
+without another pass supplying them); and the MPI consistency of grid, decomposition and
+backend. See [§9](#9-boundary-conditions-and-polar-axis-correction). Every allocation in
+`init` carries an `errdefer`, so a failed init leaks nothing.
 
 ### 5.2 The stage buffers (what each one holds)
 
@@ -548,7 +584,9 @@ Read this alongside `step()` in `sim.zig`. `own_dt = cflDt() = 1/tstepdenmax` is
 that the *previous* step accumulated; `dt = forced_dt orelse own_dt`. `step()` first asserts
 the denominator was seeded (`forced_dt != null or tstepdenmax > 0`) so a forgotten
 `initTimestepGuess` fails immediately instead of stepping with `dt = +inf`; the driver calls
-the same `cflDt()` so the two cannot drift. The wavespeed accumulators are then reset
+the same `cflDt()` so the two cannot drift (the bound itself, per-dimension speeds summed
+over `Δx_d`, is gated against the SR eigenvalues in `tests/timestep_tests.zig`). The
+wavespeed accumulators are then reset
 (`tstepdenmax = -1`), the once-per-step viscous stress is filled (if `radviscosity`),
 `γ = 1 − 1/√2`, and `saveTimesteps()` records each cell's `dt`. Then:
 
@@ -850,8 +888,10 @@ dynamo calls.
 
 ### 8.3 Radiative shear viscosity, filled once/step, added at faces
 
-`calcRijViscTotal(sim, dt)` (`koral/sim/rijvisc.zig`) runs **once per step** (from
-`step()`, before the RK stages) with `global_dt = this step's dt`, populating `sim.rijvisc`
+`Sim.calcRijViscTotal(dt)` → `rijvisc.calcRijViscTotal(CoreT, core, visc, dt)`
+(`koral/sim/rijvisc.zig`) runs **once per step** (from `step()`, before the RK stages) with
+`global_dt = this step's dt`, populating `sim.visc.?.rijvisc` (the `rijvisc.State` the Sim
+owns only when `radvisc` is set)
 (the viscous R^i_j over domain + one ghost ring). The stress is `R^{ij}_visc = −2ν Ê σ^{ij}`,
 with the shear tensor σ from the radiation-frame velocity field (`calcShearLab` gathers the
 FD gradients, the pure `shearFromGradients` builds σ) and the viscosity coefficient
@@ -866,7 +906,7 @@ and adds `gdet·dampfac·R^i_j` into the M1 radiation flux rows. The pure kernel
 
 `dynamo.applyDynamo(SimT, sim, t, dt)` runs after *each* explicit sub-step (see the two
 `applyDynamo` calls in `step()`). The sequence is `calcScaleHeight` (density-weighted RMS
-angular scale height per radius, into `sim.scaleth`) → `setBc` → `mimicDynamo` → `calcU2p`.
+angular scale height per radius, into `sim.dynamo.?.scaleth`, the `dynamo.State` the Sim owns only when `dynamo` is set) → `setBc` → `mimicDynamo` → `calcU2p`.
 `mimicDynamo` builds a toroidal δA_φ (an α-Ω prescription gated by field pitch angle,
 plasma β, radius, and scale height, with `ALPHAFLIPSSIGN` making α antisymmetric about the
 midplane), applies `DAMPBETA` azimuthal-field damping to `p[b3]`, curls δA_φ into a poloidal
@@ -882,8 +922,10 @@ for each ghost depth. Per-axis behaviour is `BcKind`:
 
 - **`.periodic`**, wraps the index (plus the C quirk: if `NY < NG` pin the index to 0).
 - **`.copy`**, clamps to the domain edge (outflow copy).
-- **`.specific`.** Calls `opt.specific_bc`, the user-supplied `SpecificBc` function pointer
-  (PUFFY uses this for both radial and both polar faces). The callback is **fallible**
+- **`.specific`.** Carries the user-supplied `SpecificBc` function pointer and its
+  opaque context (PUFFY uses this for both radial and both polar faces); the callback
+  receives `*const CoreT`, so it sees the grid, the cache, `p` and the physics options
+  and nothing else of the Sim. The callback is **fallible**
   (`relele.Error![NV]f64`): a boundary-adjacent cell can transiently reach a spacelike
   velocity in a frame conversion, and `setBcCell` propagates that with `try` rather than
   letting the BC swallow it (`catch unreachable` → panic in safe builds, UB in ReleaseFast).
@@ -895,24 +937,42 @@ from adjacent domain rows/columns and averaging diagonal cells. The only unimple
 case is the x-z 2D layout (`ny==1, nz>1`), which `@panic`s (no target needs it). All of
 this lives in `koral/sim/bc.zig`, re-exported by `sim.zig`.
 
+The diagonal average is C's rule (`finite.c:3203`), not an interpolation: a corner
+ghost is the mean of two ghosts at *different* radii, so for any field that varies
+in `r` the four domain-corner cells never see a consistent neighbour. On a monopole
+`B^r ∝ 1/r²` this seeds a small `B^θ` at the corners that the edge rows then carry a
+few cells inward; the magnetized-Bondi gate measures its field diagnostics on a fixed
+physical interior region for exactly this reason. It is a boundary property, not a
+solver one, and PUFFY inherits it unchanged.
+
 **Polar-axis correction.** Lives in `koral/sim/polaraxis.zig`, fronted by `sim.zig`'s
 `doCorrect` and `isCellCorrectedPolaraxis`. `polaraxis.correct` overwrites the
-`nccorrectpolar` most-polar rows at each θ-edge from a source row, scaling the θ-velocity
+`num.polaraxis.ncells` (C: `NCCORRECTPOLAR`) most-polar rows at each θ-edge from a source row, scaling the θ-velocity
 components by `fac = |θ − θ_axis|/|θ_src − θ_axis|` (so they ramp to zero at the pole)
 while copying other scalars/velocities verbatim; p2u at the *target* geometry rewrites the
 conserveds. B is untouched.
+
+Two practical facts about the grid the band sits on. The grid must never put a face on
+the axis itself, `g^φφ = 1/sin²θ` diverges there; PUFFY's `MINY = 0.001` (in MKS2 `x²`)
+is that offset, and the band and the reflection BC act on the *first face*, not on
+θ = 0. And the physics anchor for the whole arrangement is the 2D Bondi/Michel flow in
+`koral/tests/ks_evolution_tests.zig`: driven through the band and the stock reflection
+on a full-θ KS grid, the drift converges at second order and the profile stays θ-uniform
+to roundoff (the Christoffel-trace correction makes the discrete θ-balance of a uniform
+pressure exact).
 
 The overwrite and predicate form one contract. Corrected polar cells are
 special-cased in four places, `u2pRows` (B-only inversion), `cellFixup` (skipped),
 `implicitRowsWorker` (skipped), and the overwrite itself, which is what supplies the
 values the other three decline to compute. Both halves derive their row set from a single
-`polaraxis.band()`, which returns null (treatment inactive) unless `opt.correct_polaraxis`
-is set *and* the coords are spherical; `Sim.init` preconditions (5) and (7) reject the two
+`polaraxis.band()`, which returns null (treatment inactive) unless `num.polaraxis`
+is set *and* the coords are spherical; `Options.validate` rejects the two
 configs that would make the contract unsatisfiable. The polar-axis EMF zeroing
 (`adjust_fluxcttoth_emfs`) belongs in this module when it is transcribed, even though C
 keeps it in `magn.c`.
 
-The PUFFY driver's `specific_bc` implements: xhi outflow with radial rescaling and a
+PUFFY's `SpecificBc` callback (`Bc(SimT).calc` in `puffy.zig`, dispatching on the face to the
+fragments in `koral/problems/common/bcs.zig`) implements: xhi outflow with radial rescaling and a
 no-inflow clamp; xlo plain copy (no inflow check because `RMIN = 1.85 < r_horizon = 2`, so
 material only leaves the grid); and ylo/yhi polar reflection with VY/B2/FY sign flips.
 The z faces are `unreachable` (TNZ=1).
@@ -964,7 +1024,11 @@ threading bit-identity, not from a single long integration.
 1. **Theory gates** (`*_tests.zig`), mathematical identities and documented quirks, no
    golden data: conservation, symmetry, the M1 closure trace `R^μ_μ = 0`, round-trips
    (e.g. `sFromU`/`uFromS` to 1e-12), reconstruction convergence orders, IMEX L-stability,
-   div(B), floor properties, dynamo saturation, and threading bit-identity.
+   div(B), floor properties, dynamo saturation, and threading bit-identity; analytic
+   solutions evolved through the full step: Sod, acoustic and Alfvén waves, Bondi/Michel
+   in 1D and, through the polar band on a KS grid, in 2D (`ks_evolution_tests.zig`, with
+   the Gammie et al. 2003 magnetized-Bondi monopole for flux-CT in curved spacetime); and
+   the CFL bound against the SR hydro eigenvalues (`timestep_tests.zig`).
 2. **Function-level C goldens** (`*_golden_tests.zig` reading `.kgld` files), diff Zig
    against C at recorded input points. State/flux/rad records embed **C's own geometry**
    (`geomFromRecord`) so only the state *algebra* is compared, keeping gates tight (1e-13
@@ -1061,9 +1125,11 @@ deviations are expected rather than regressions. A real bug lands far above that
 | **Opacities / thermodynamics / four-force** | `koral/physics/thermo.zig`, `koral/physics/opacities.zig`, `koral/physics/mesa.zig`, `koral/physics/radforce.zig`, `koral/units.zig` |
 | **Implicit radiation-gas source solver** | `koral/solve/implicit.zig` |
 | **Reconstruction + wavespeeds + flux + Riemann** | `koral/fv/recon.zig`, `koral/physics/wavespeeds.zig`, `koral/physics/flux.zig`, `koral/fv/laxf.zig` |
-| **Evolution driver** | `koral/sim.zig`, `koral/sim/storage.zig`, `koral/sim/bc.zig`, `koral/sim/polaraxis.zig`, `koral/sim/timers.zig`, `koral/threading.zig` |
+| **Run driver + problem contract** | `koral/driver.zig` (`run(App, init)`), `koral/problems/puffy/main.zig` (the `App`) |
+| **Evolution driver** | `koral/sim.zig` (composition root + operators), `koral/sim/core.zig` (`Core`: the state every pass sees), `koral/sim/options.zig` (`Options`, `applyParams`, `validate`), `koral/sim/rk2imex.zig` (integrator + stage buffers), `koral/sim/{timestep,u2p,fixup,explicit,implicit_op,entropy,stage}.zig` (the passes), `koral/sim/storage.zig`, `koral/sim/bc.zig`, `koral/sim/polaraxis.zig`, `koral/sim/timers.zig`, `koral/threading.zig` |
 | **Constrained transport + dynamo + radiative viscosity** | `koral/sim/ct.zig`, `koral/sim/dynamo.zig`, `koral/physics/radvisc.zig` (pure kernels), `koral/sim/rijvisc.zig` (gather + per-step pass) |
-| **PUFFY problem (Physics, IC, driver, quadrature, presets)** | `koral/problems/puffy/puffy.zig` (`Physics`, `setup`, `initAllWith`, `Bc`), `koral/problems/puffy/main.zig`, `koral/problems/puffy/*.toml`, `koral/math/quad.zig` |
+| **PUFFY problem (Physics, IC, presets)** | `koral/problems/puffy/puffy.zig` (`Physics`, `setup`, `initAllWith`, `Bc` dispatch), `koral/problems/puffy/*.toml` |
+| **Shared torus-problem library** | `koral/problems/common/limotorus.zig` (tools.c solver, `Params`), `atmosphere.zig` (floor atmospheres, LTE split), `magnetize.zig` (β normalization), `bcs.zig` (bc.c fragments), `mri.zig` (seed quality), `perturb.zig`, `koral/math/quad.zig`, `koral/math/misc.zig` (`rtbis`) |
 | **Diagnostics + output** | `koral/io/scalars.zig`, `koral/io/dump.zig`, `koral/io/silo.zig` (+ `silo_disabled.zig` stub) |
 | **Build + oracle + goldens + tools** | `build.zig`, `tools/gen_golden.sh`, `tools/{res2kdmp,kdmp2silo,qmri,kdmp2png,kdmp2lc,goldtest,mpi_gates,bench_implicit}.zig`, `koral/testing/golden.zig`, `koral/testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/**` |
 | **Self-goldens (Zig-generated baseline)** | `koral/testing/selfgolden.zig`, `koral/testing/selfscenarios.zig`, `koral/tests/selfgolden_tests.zig`, `tools/gen_self_golden.zig`, `tests/selfgolden/**` |
@@ -1083,8 +1149,9 @@ deviations are expected rather than regressions. A real bug lands far above that
   runtime-overridable from the params file via `Physics.fromParams` (the optional-override
   group in §3.6).
 - **Instantiate a new problem** → create `koral/problems/<name>/` with a value-typed
-  physics bundle (see `puffy.Physics`), init/BC hooks, and a thin `main.zig` that
-  calls `setup` → `Sim.init` → `step` → `dump.writePrim`; `build.zig` auto-discovers it.
+  physics bundle (see `puffy.Physics`), init/BC hooks composed from `problems/common/`,
+  and a `main.zig` whose `App` satisfies the `koral/driver.zig` contract and whose `main`
+  is `koral.driver.run(App, init)`; `build.zig` auto-discovers it (USER_GUIDE §7).
 - **Regenerate goldens after a koral_lite change** → run `tools/gen_golden.sh` and commit
   `tests/golden/**` + `manifest.json` ([§11](#11-testing-and-the-oracle)).
 - **Deliberately change the numerics** → review what the self-golden reports moved, then

@@ -40,6 +40,8 @@
 # (vs GM/c^3 = 4.9e-5 s at 10 M_sun, where 10000 code-time ~= 0.49 s.)
 # ============================================================================
 
+problem = "puffy"   # the executable this file is for (checked by the driver)
+
 [physical]
 mass = 4.297e6     # Sagittarius A*: (4.297 +/- 0.012 +/- 0.040)e6 M_sun
                    # (GRAVITY Collaboration; EHT 2022 horizon-scale imaging

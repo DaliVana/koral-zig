@@ -10,6 +10,10 @@
 const std = @import("std");
 
 pub const Params = struct {
+    /// Which problem this file is for (redesign step 6). Optional; when set,
+    /// the driver refuses to run a different problem's executable on it, and
+    /// tools that rebuild a Sim can dispatch on it. "" ≡ unchecked.
+    problem: []const u8 = "",
     // physical
     /// BH mass in solar masses (C: MASS).
     mass: f64 = 1.0 / 147700.0,

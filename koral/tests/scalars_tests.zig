@@ -34,7 +34,10 @@ fn uniformBox(a: std.mem.Allocator, nx: usize, ny: usize, rho: f64, u: f64, vx: 
     // z extent = 2π so the single axisymmetric slice spans a full revolution;
     // totalMass uses the actual cell dz (unlike mdot/lum, which force 2π).
     const g = Grid.init(.{ .nx = nx, .ny = ny, .ng = 3, .minx = 0, .maxx = 2.0, .miny = 0, .maxy = 3.0, .minz = 0, .maxz = twopi });
-    var s = try SimT.init(a, g, .{ .coords = .mink, .gam = 5.0 / 3.0, .bc_x = .copy, .bc_y = .copy });
+    var s = try SimT.init(a, g, .{
+        .phys = .{ .coords = .mink, .gam = 5.0 / 3.0 },
+        .bc = .{ .x = .copy, .y = .copy },
+    });
     errdefer s.deinit();
     var pp: [SimT.nv]f64 = @splat(0);
     pp[L.index(.rho)] = rho;

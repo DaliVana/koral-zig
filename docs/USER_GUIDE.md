@@ -112,7 +112,7 @@ before using either AGN-oriented preset.
 | `-Dtarget=...` | Standard Zig cross-compile target. |
 | `-Dmpi=true` | Link the system MPI and swap the comm seam to the real backend (`koral/comm/mpi/`). `build.zig` probes `mpicc` for the lib dirs and detects the ABI family (MPICH vs Open MPI) from `mpi.h`; overrides: `-Dmpi-family=mpich\|ompi`, `-Dmpi-lib=<dir>`, `-Dmpi-include=<dir>`. See "Running under MPI" below. |
 | `-Dsilo=true` | Build the optional `.silo` field export (`koral/io/silo.zig`, §4). The build compiles LLNL Silo 4.12 from source with the PDB driver and no HDF5, then links it statically through `silo-zig`. A system Silo or VisIt installation is not required. The dependency remains untouched without this flag. |
-| `-Dslow-tests=true` | Enables the slow test bodies (convergence studies, soaks, the full-grid PUFFY t=0 keystone). See §5. |
+| `-Dslow-tests=true` | Enables the slow test bodies (convergence studies, soaks, the full-grid PUFFY t=0 keystone, the t = 10 repeat of the KS Bondi gates). See §5. |
 | `-Dtest-filter=<substr>` | Passed to `addTest` `.filters`; restrict the single test artifact to tests whose name contains the substring. Repeatable. |
 
 ### Running under MPI (P4a+P4b, 3D wedges, node-to-node only)
@@ -260,6 +260,7 @@ From `koral/params.zig` (defaults shown):
 | `tstart` | `0.0` | Start time. |
 | `tmax` | `0.0` | Stop time (code units). |
 | `nstep_max` | `maxInt(usize)` | Max number of steps. |
+| `problem` | `""` | Optional problem tag (top-level key). A non-empty tag that names a different problem is refused by the driver with `error.ProblemMismatch`; every shipped PUFFY preset carries `problem = "puffy"`. |
 | `tsteplim` | `0.5` | CFL factor (`TSTEPLIM`). |
 | `dtout1` | `0.0` | Output cadence (code time): scalars + KDMP checkpoint + silo, all on the same frame. |
 | `dtout2` | `0.0` | **Reserved / unread** (C's avg-file cadence). KDMP dumps are written on *every* output frame, not gated by this. |
@@ -323,6 +324,7 @@ run without a recompile; see `docs/PUFFY_AGN_DIVERGENCES.md`)
 
 ```toml
 # PUFFY, radiative-MHD limotorus, 10 M☉ Schwarzschild, MKS2
+problem = "puffy"  # optional tag; the driver refuses a file tagged for another problem
 
 [physical]
 mass = 10.0        # MASS (solar masses)
@@ -500,6 +502,48 @@ zig build test -Dtest-filter="radtube"
 zig build test -Dtest-filter="golden" -Dtest-filter="implicit"
 ```
 
+### Sadowski et al. (2013) reproduction gates
+
+Two test files reproduce published, quantitative results using the algorithms
+that exist in this port:
+
+```sh
+# Figure 1 at 500 cells and t=50, for linear theta=1 and theta=2
+zig build test -Dtest-filter="Sadowski 2013 section 4.1"
+
+# Figure 9 at its first published time, with the paper's grid and opacity
+zig build test -Dtest-filter="thick pulse has the early Figure 9"
+
+# All four Figure 9 times through t=100000
+zig build test -Dslow-tests=true -Dtest-filter="full four-time Figure 9"
+```
+
+`paper2013_hydro_tests.zig` compares the paper's Table 1 shock directly with a
+test-local exact relativistic Riemann solution. It checks both profile errors,
+the shock position, and the reported result that theta=1 is more diffusive than
+theta=2. MP5 is not available in this port and is not approximated by another
+reconstruction method.
+
+`paper2013_pulse_tests.zig` uses the Section 4.4 domain, 101 cells, temperature
+profile, radiative constant, scattering optical depth, and output times. The
+analytic diffusion curve is evaluated directly by expanding the fourth power
+of the temperature profile into Gaussian terms. A mathematically exact
+pure-scattering scaling multiplies rho, gas energy, and radiation energy by the
+same factor while dividing the opacity per mass by that factor; this preserves
+temperature, E/rho, chi, D, and the dimensionless solution while keeping the
+implicit solve away from absolute tolerances at E of order 1e-40.
+
+The Section 4.3 radiative shock tubes are already covered by
+`radtube_tests.zig`: tubes 3a and 4a run normally, with tubes 1, 2, 4b and
+higher-resolution checks under `-Dslow-tests=true`. Those runs validate the
+published plateau states and the stationary radiation equations, but use the
+current M1/PPM/RK2IMEX solver. The paper used Eddington closure for those plots,
+so they are physics checks rather than pixel or raw-data reproductions.
+
+The tests do not claim direct reproduction of results that require unavailable
+features or inputs: MP5, the Eddington-closure comparison, the removed original
+problem directories, or numerical data behind the published figures.
+
 ### Reading the results
 
 `zig build test` compiles *one* test artifact from `koral/koral.zig`'s `test {}`
@@ -544,11 +588,16 @@ data:
 - `metric_tests.zig`, `evolution_tests.zig`, `mhd_evolution_tests.zig`,
   `radiation_tests.zig`, `opacity_tests.zig`, `implicit_tests.zig`,
   `state_tests.zig`, `flux_tests.zig`, `polaraxis_tests.zig`,
-  `radstep_tests.zig`, `radtube_tests.zig`, `dynamo_tests.zig`,
+  `radstep_tests.zig`, `radtube_tests.zig`, `paper2013_hydro_tests.zig`,
+  `paper2013_pulse_tests.zig`, `dynamo_tests.zig`,
   `radvisc_tests.zig`, `scalars_tests.zig`, `threading_tests.zig`,
-  `puffy_tests.zig`, `sim_tests.zig` (`Sim.init` precondition rejection),
+  `puffy_tests.zig`, `sim_tests.zig` (`Sim.init` validation and initializer invariants),
   `restart_tests.zig` (KDMP round-trip), `simd_tests.zig` (scalar ↔ SIMD
-  bit-identity), plus in-module `test` blocks in nearly every source file.
+  bit-identity), `ks_evolution_tests.zig` (2D Bondi/Michel through the polar axis
+  in KS, and the Gammie et al. 2003 magnetized Bondi monopole: exact discrete
+  monopole, divB at machine zero, stationarity converging), `timestep_tests.zig`
+  (`Core.cflDt` against the CFL bound with the SR hydro eigenvalues), plus
+  in-module `test` blocks in nearly every source file.
 
 **2. Function-level C goldens.** `.kgld` records compare Zig and C at recorded input
 points, with C's *own* geometry embedded per record (`geomFromRecord`) so only the
@@ -644,11 +693,14 @@ generator and the checker; edit them there and regenerate, never one side alone.
 ## 7. Recipe: creating a new problem
 
 A **problem** is: a comptime `Config`, a runtime `Params` file, an
-initial-condition + boundary-condition module, and a small driver executable.
-PUFFY keeps its C `define.h` knobs in a value type (`puffy.Physics`) so a
-preset is `fromParams`, not process-wide mutation; a simple tube can skip that
-and build `Sim.Options` directly. The library (`koral`) provides everything
-else. This section walks through a complete minimal example, a **relativistic
+initial-condition + boundary-condition module, and a one-line driver executable
+that hands an `App` contract to `koral.driver.run`. PUFFY keeps its C `define.h`
+knobs in a value type (`puffy.Physics`) so a preset is `fromParams`, not
+process-wide mutation; a simple tube can skip that and build `Sim.Options`
+directly (`Options.applyParams` maps the generic TOML keys). The library
+(`koral`) provides everything else, including the pieces torus problems share
+in `koral/problems/common/` (limotorus solver, floor atmospheres, β
+normalization, the stock `bc.c` fragments). This section walks through a complete minimal example, a **relativistic
 MHD shock tube in flat (Minkowski) space**, and then notes the extra pieces
 PUFFY needs.
 
@@ -658,7 +710,7 @@ in one directory, like `koral/problems/puffy/`):
 ```
 koral/config.zig                       # (optional) add a comptime Config const
 koral/problems/mytube/mytube.zig       # init conditions + boundary conditions
-koral/problems/mytube/main.zig         # the driver executable (auto-discovered)
+koral/problems/mytube/main.zig         # the App contract + koral.driver.run (auto-discovered)
 koral/problems/mytube/mytube.toml      # runtime params
 koral/koral.zig                        # register mytube under `problems` + tests
 ```
@@ -700,18 +752,34 @@ hydro/MHD/radiation tube you need none of this; the tags already exist.
 Two responsibilities: build each domain cell's primitive vector, and supply the
 `SpecificBc` callback for any axis using `.specific` boundaries.
 
-**Boundary-condition callback signature** (from `Sim(cfg).SpecificBc`,
-`koral/sim.zig`):
+**Boundary-condition callback signature** (`Sim(cfg).SpecificBc`, defined in
+`koral/sim/options.zig`):
 
 ```zig
 pub const SpecificBc = *const fn (
-    sim: *const Self,
+    ctx: ?*const anyopaque,      // the opaque context you register with the face
+    core: *const Sim.CoreT,      // grid, metric cache, p, physics options — not the whole Sim
     ix: i64, iy: i64, iz: i64,   // ghost-cell indices (signed; ghosts are <0 or ≥n)
     t: f64,
     ifinit: bool,                // true during initial set_bc
     face: BcFace,                // .xlo/.xhi/.ylo/.yhi/.zlo/.zhi
 ) relele.Error![NV]f64;          // ghost-cell primitives, or a conversion error
 ```
+
+A face is registered as `.bc = .{ .x = .{ .specific = .{ .f = &calc, .ctx = ... } } }`;
+the callback travels with the face, so a `.specific` axis without a callback cannot
+be expressed.
+
+**Spherical grids.** Never put a grid face on the axis itself: `g^φφ = 1/sin²θ` diverges
+there and the first sweep returns a flux NaN. PUFFY's `MINY = 0.001` (in MKS2 `x²`) is that
+offset; the polar band (`num.polaraxis`) and `polarReflect` act on the first face, not on
+θ = 0. C's 2D corner-ghost fill averages two ghosts at different radii, so the four
+domain-corner cells cannot hold a field that varies in `r` (a `1/r²` monopole, say);
+measure field diagnostics on an interior region. Both facts are exercised by the 2D Bondi
+gates in `koral/tests/ks_evolution_tests.zig`, which is also the template for any new
+curved-spacetime test: exact analytic prims on the radial faces, `polarReflect` on the
+polar faces, a `phase` in the BC context if the B slots carry a vector potential before
+`calcBfromA`.
 
 The callback is fallible. Any frame or velocity conversion it performs
 (`frames.transPmhdCoco`, `relele.convert`, …) returns `relele.Error`, so use
@@ -773,9 +841,9 @@ const right = Side{ .rho = 0.125, .pgas = 0.1, .vx = 0.0, .bx = 0.5, .by = -1.0 
 pub fn initAll(comptime SimT: type, sim: *SimT) !void {
     var ix: i64 = 0;
     while (ix < sim.nxi()) : (ix += 1) {
-        const x = sim.grid.xc(ix);           // cell-center internal coord
+        const x = sim.core.grid.xc(ix);      // cell-center internal coord
         const s = if (x < 0.0) left else right;
-        try sim.initCell(ix, 0, 0, primsFor(s, sim.opt.gam)); // pp → p2u → store p,u
+        try sim.initCell(ix, 0, 0, primsFor(s, sim.core.phys.gam)); // pp → p2u → store p,u
     }
     try sim.finishInit();                    // halo + set_bc(t) + initial dt guess
 }
@@ -784,19 +852,20 @@ pub fn initAll(comptime SimT: type, sim: *SimT) !void {
 pub fn Bc(comptime SimT: type) type {
     return struct {
         pub fn calc(
-            sim: *const SimT, ix: i64, iy: i64, iz: i64,
+            ctx: ?*const anyopaque,
+            core: *const SimT.CoreT, ix: i64, iy: i64, iz: i64,
             t: f64, ifinit: bool, face: sim_mod.BcFace,
         ) relele.Error![SimT.nv]f64 {   // fallible: `try` any frame conversion
-            _ = t; _ = ifinit;
+            _ = ctx; _ = t; _ = ifinit;
             // Copy the nearest domain cell (simple outflow). For a static tube
             // you could instead return the fixed left/right asymptotic state.
             const src: i64 = switch (face) {
                 .xlo => 0,
-                .xhi => sim.nxi() - 1,
+                .xhi => core.nxi() - 1,
                 else => unreachable,          // ny=nz=1: no y/z faces
             };
             var pp: [SimT.nv]f64 = undefined;
-            sim.p.load(src, iy, iz, &pp);
+            core.p.load(src, iy, iz, &pp);
             return pp;   // no conversion here, so a plain return is fine
         }
     };
@@ -814,86 +883,92 @@ Key API points, all real:
   the checkpoint clock therefore fills ghosts at the resumed time.
 - `sim.cflDt()` returns the CFL timestep `1/tstepdenmax` from the last wavespeeds,
   the one place the driver and `step()` share the dt expression.
-- `sim.grid.xc(ix)` is the cell-center internal coordinate (the two-face average,
+- `sim.core.grid.xc(ix)` is the cell-center internal coordinate (the two-face average,
   `0.5*(xl(i)+xl(i+1))`, an intentional ulp-level match to C; do not "simplify").
+  Everything a pass may read lives on `sim.core` (grid, cache, `p`, `u`, flags,
+  `phys`, `num`); the Sim itself holds the scratch and the operators.
 - `sim.nxi()/nyi()/nzi()` are the interior cell counts.
 - `hydro.sFromU(rho, u, gam)` fills the entropy slot; the layout is indexed by
   `L.index(.rho)` etc., which `@compileError`s if the variable is absent for the
   active module set.
 
 If your tube needs the vector-potential path (seed **B** from A rather than
-directly), store A_φ in the B slots and call `ct.calcBfromA(SimT, sim, true)` then
+directly), store A_φ in the B slots and call `sim.calcBfromA(true)` then
 `setBc` before `finishInit`, exactly as PUFFY's `initAll` / `initAllWith` does
-(which also runs β-normalization in `postinit`). See `koral/sim/ct.zig`.
+(which also runs β-normalization through `problems/common/magnetize.zig`).
 
 ### (d) Write `koral/problems/<name>/main.zig`, the driver
 
-The driver is auto-discovered by `build.zig`. Use `koral/problems/puffy/main.zig` as the
-template; a minimal version:
+The driver is auto-discovered by `build.zig`, and it is one line: the generic
+`koral.driver.run(App, init)` (`koral/driver.zig`) does the CLI, the params file,
+the MPI world and φ-ring, the decomposition, `Sim.init`, restart or init, the
+RK2IMEX loop with its dt guard, the heartbeat and every output. What you write
+is the `App` contract. Use `koral/problems/puffy/main.zig` as the template; a
+minimal version:
 
 ```zig
 const std = @import("std");
 const koral = @import("koral");
 
-const cfg  = koral.config.mytube;
 const mytube = koral.problems.mytube;      // after registering it (step e)
-const SimT = koral.Sim(cfg);
 
-fn options(p: *const koral.Params) SimT.Options {
-    return .{
-        .coords = .mink,
-        .gam = p.gam,
-        .tsteplim = p.tsteplim,
-        .floors = koral.solve.invert.FloorParams.cdefault,
-        // opac = null  ⇒ no radiation source (SKIPRADSOURCE); fine for MHD-only.
-        .bc_x = .specific,
-        .specific_bc = &mytube.Bc(SimT).calc,
-        .nthreads = p.nthreads,
-    };
-}
+const App = struct {
+    pub const name = "mytube";                       // log prefix, Silo file stem
+    pub const cfg = koral.config.mytube;             // the comptime Config
+    pub const default_params = "koral/problems/mytube/mytube.toml";
+    pub const scalar_radii: koral.driver.ScalarRadii = .{ .lum = 1.0, .scale = 1.0 };
+    pub const Physics = mytube.Physics;              // any value type; can be `struct {}`
+
+    /// grid + Options (+ whatever the problem loads) from a params file.
+    pub fn setup(comptime SimT: type, a: std.mem.Allocator, io: std.Io, p: *const koral.Params) !mytube.Setup(SimT) {
+        var opt: SimT.Options = .{
+            .phys = .{
+                .coords = .mink,
+                .floors = koral.solve.invert.FloorParams.cdefault,
+                // opac = null  ⇒ no radiation source (SKIPRADSOURCE); fine for MHD-only.
+            },
+            .bc = .{ .x = .{ .specific = .{ .f = &mytube.Bc(SimT).calc } } },
+        };
+        opt.applyParams(p);   // gam, tsteplim, floors, implicit, threads … from the TOML
+        _ = a; _ = io;
+        return .{ .physics = .{}, .grid_global = mytube.makeGrid(p.nx), .options = opt };
+    }
+
+    /// Fill the domain; returns the β-normalization factor (1 for a tube).
+    pub fn initAll(comptime SimT: type, s: *SimT, phys: *const Physics) !f64 {
+        _ = phys;
+        try mytube.initAll(SimT, s);
+        return 1.0;
+    }
+};
 
 pub fn main(init: std.process.Init) !void {
-    const a = init.gpa;
-    const io = init.io;
-
-    var args = std.process.Args.Iterator.init(init.minimal.args);
-    defer args.deinit();
-    _ = args.next();
-    const params_path = args.next() orelse "koral/problems/mytube/mytube.toml";
-
-    var p = try koral.Params.load(a, io, params_path);
-    defer p.deinit(a);              // frees every heap-owned string field
-
-    // SimT.init validates its preconditions and returns error.InvalidConfig on
-    // a mismatch (ghost depth < reconstruction stencil, a `.specific` axis with
-    // no `specific_bc`, opt.coords ≠ cfg.coords, radviscosity with a null opac,
-    // or correct_polaraxis with ny ≤ 2·nccorrectpolar), so `try` it.
-    var s = try SimT.init(a, mytube.makeGrid(p.nx), options(&p));
-    defer s.deinit();
-
-    try mytube.initAll(SimT, &s);
-
-    while (s.t < p.tmax and s.nstep < p.nstep_max) {
-        var dt = s.cflDt();                    // = 1/s.tstepdenmax, previous step
-        if (s.t + dt > p.tmax) dt = p.tmax - s.t;
-        // Guard before stepping: a global blow-up leaves tstepdenmax at its −1
-        // reset sentinel (NaN fails the `>` update) → dt = −1 and time marches
-        // backwards; a diverging denominator stalls at dt = 0. Abort loudly.
-        if (!(dt > 0) or !std.math.isFinite(dt)) return error.InvalidTimestep;
-        try s.step(dt);
-    }
-    std.debug.print("mytube: done (t={d}, {d} steps)\n", .{ s.t, s.nstep });
+    return koral.driver.run(App, init);
 }
 ```
 
-The core loop is `dt = s.cflDt()` (= `1/s.tstepdenmax`) then `s.step(dt)`. `Sim.step` runs one full
-RK2IMEX step, alternating the implicit radiative-source operator with the explicit
-operator across the stages. The explicit operator (`opExplicit`) itself is:
-wavespeeds → reconstruction sweep → face fluxes → flux-CT for MHD → conserved
-update (the flux divergence **and** the metric source term `ms[iv]*dt` are added
-together here) → `calcU2p` inversion. Polar-axis correction (`doCorrect`) and the
-final entropy update (`updateEntropy`) happen at the stage boundaries in `step`
-(`koral/sim.zig`). `step` asserts `cfg.timestepping == .rk2imex`.
+`Setup(SimT)` is a struct with `.physics`, `.grid_global`, `.options` and a
+`deinit(allocator)` (PUFFY's carries an optional MESA table; a tube's can be
+empty). Optional `App` members: `banner(SimT, phys, p, grid_global)` for startup
+notes, `afterInit(SimT, sim, phys, is_root)` for a post-init report, and
+`reportSetupError(err, p)` for friendlier setup failures. The TOML may carry
+`problem = "mytube"`; the driver refuses a file tagged for another problem.
+
+`SimT.init` validates its preconditions through `Options.validate` and returns
+`error.InvalidConfig` on a mismatch (ghost depth < reconstruction stencil,
+`phys.coords ≠ cfg.coords`, `radvisc` with a null `opac`, `polaraxis` with
+`ny ≤ 2·ncells` or on flat coords, an inconsistent decomposition).
+
+Inside the driver's loop the core is `dt = s.cflDt()` (= `1/s.core.tstepdenmax`)
+then `s.step(dt)`. `Sim.step` runs one full RK2IMEX step (`koral/sim/rk2imex.zig`),
+alternating the implicit radiative-source operator with the explicit operator
+across the stages. The explicit operator (`opExplicit`) itself is: wavespeeds →
+reconstruction sweep → face fluxes → flux-CT for MHD → conserved update (the flux
+divergence **and** the metric source term `ms[iv]*dt` are added together here) →
+`calcU2p` inversion. Polar-axis correction (`doCorrect`) and the final entropy
+update (`updateEntropy`) happen at the stage boundaries in `step`. `cfg.timestepping`
+selects the integrator at comptime; only `.rk2imex` is implemented, the other
+schemes fail to compile.
 
 ### (e) Register in `koral/koral.zig`
 
@@ -1061,13 +1136,15 @@ constants, exact `M_PI` in synchrotron's `bsqcgs`), but the port uses one exact
 
 ### Add or modify a boundary-condition type
 
-Per-axis handling is `bc_x/bc_y/bc_z: BcKind` on `Sim.Options`, where
-`BcKind = { periodic, copy, specific }` (defined in `koral/sim/bc.zig`,
-re-exported by `sim.zig`). `.copy` clamps to the domain edge; `.periodic` wraps
-(with the `NY<NG ⇒ pin to 0` C quirk); `.specific` calls your `specific_bc`
-callback (§7c). To add a brand-new *built-in* kind, extend the `BcKind` enum and
-handle it in `setBcCell` (and, if it needs corners, `fillCorners2d`/
-`fillCorners3d`). Arbitrary/boundary-varying conditions should go through the
+Per-axis handling is `bc.x/bc.y/bc.z: BcKind` on `Sim.Options`, where
+`BcKind = union(enum) { periodic, copy, specific: { f, ctx } }` (defined in
+`koral/sim/options.zig`, re-exported as `Sim.BcKind`). `.copy` clamps to the
+domain edge; `.periodic` wraps (with the `NY<NG ⇒ pin to 0` C quirk);
+`.specific` carries your callback and its opaque context (§7c). The stock
+fragments a callback can compose are in `koral/problems/common/bcs.zig`
+(outflow with r-rescaling, inner copy, polar reflection). To add a brand-new
+*built-in* kind, extend the `BcKind` union and handle it in `setBcCell`
+(`koral/sim/bc.zig`; and, if it needs corners, `fillCorners2d`/`fillCorners3d`). Arbitrary/boundary-varying conditions should go through the
 `.specific` callback rather than a new enum value.
 
 Note: both 2D x-y (`fillCorners2d`) and 3D (`fillCorners3d`) ghost-corner
@@ -1100,7 +1177,7 @@ MINK radiation box and a full PUFFY torus step). The 2D ghost-corner fill,
 flux-CT region boundary, and dynamo curl remain serial and form
 natural barriers between regions. Spawn failure at init just means fewer
 helpers. Any new independent per-cell pass dispatches with
-`threading.parallelRange(CtxT, ctx, sim.team, lo, hi, worker)` and a worker
+`threading.parallelRange(CtxT, ctx, core.team, lo, hi, worker)` and a worker
 matching `fn(*CtxT, i64, i64, *ChunkResult) void`; pass extra per-region
 parameters (like the sub-step `dt`) through a small stack context struct.
 
@@ -1109,7 +1186,7 @@ parameters (like the sub-step `dt`) through a small stack context struct.
 In `koral/io/scalars.zig` and `koral/io/dump.zig`:
 
 1. Write a pure reduction in `scalars.zig` following the `mdot`/`lum` pattern
-   (loop `nzi/nyi/nxi`, `sim.p.load`, `sim.cache.fillGeometry` for MYCOORDS or
+   (loop `nzi/nyi/nxi`, `sim.core.p.load`, `sim.core.cache.fillGeometry` for MYCOORDS or
    `blGeom` for BL-frame quantities, accumulate). Reuse `hydro.calcTij` /
    `radiation.calcRij` + `relele.lowerSecond` for tensor fluxes rather than
    re-deriving the stress tensors.
@@ -1138,9 +1215,12 @@ This is the large change. In canonical order:
    by `L.hasVar(...)`), the wavespeeds, and the `p2u`/`u2p` conversions. Kernels
    dispatch on `cfg.has(m)` / `L.hasVar(tag)` at comptime, so inactive modules cost
    nothing.
-4. **`koral/sim.zig`.** If the module needs an explicit source, add it to
-   `opExplicit`'s conserved-update (alongside `metricSource*dt`); an implicit source
-   goes in `opImplicit` / `solve/implicit.zig`.
+4. **`koral/sim/explicit.zig` and `koral/sim/implicit_op.zig`.** If the module needs
+   an explicit source, add it to `explicit.update`'s conserved-update (alongside
+   `metricSource*dt`); an implicit source goes in `implicit_op` / `solve/implicit.zig`.
+   `sim.zig` only composes the passes (`opExplicit`, `opImplicit`); the passes read
+   `*CoreT` plus their own scratch, so a new source term that needs state the `Core`
+   does not carry belongs in a new pass-owned scratch struct, not in `Core`.
 
 Because everything is comptime-gated on the module set, enabling the module for a
 problem is just a `Config` change; the layout and indices follow automatically.
@@ -1163,16 +1243,19 @@ Where the major pieces live (all under `koral/` unless noted):
 | Microphysics (thermo, opacities, four-force) | `physics/thermo.zig`, `physics/opacities.zig`, `physics/mesa.zig` (+ `data/mesa_tables/`), `physics/radforce.zig`, `units.zig` |
 | Implicit rad-gas source | `solve/implicit.zig` |
 | Reconstruction / wavespeeds / flux / Riemann | `fv/recon.zig`, `physics/wavespeeds.zig`, `physics/flux.zig`, `fv/laxf.zig` |
-| Evolution driver | `sim.zig`, `sim/storage.zig`, `sim/bc.zig`, `sim/timers.zig`, `threading.zig` |
+| Evolution core | `sim.zig` (the `Sim` composition), `sim/core.zig` (the state every pass sees), `sim/options.zig` (`Options`, `applyParams`, `validate`), `sim/rk2imex.zig` (integrator + stage buffers), the passes `sim/{timestep,u2p,fixup,explicit,implicit_op,entropy,stage,bc,polaraxis}.zig`, `sim/storage.zig`, `sim/timers.zig`, `threading.zig` |
+| Run driver | `driver.zig` (`run(App, init)`: CLI, params, restart, loop, output, NaN abort) |
 | Constrained transport, dynamo, radiative viscosity | `sim/ct.zig`, `sim/dynamo.zig`, `physics/radvisc.zig` (pure kernels), `sim/rijvisc.zig` (gather + per-step pass) |
-| PUFFY problem + quadrature | `problems/puffy/puffy.zig` (`Physics`, `setup`, `initAllWith`), `problems/puffy/main.zig`, `problems/puffy/*.toml`, `math/quad.zig` |
+| PUFFY problem + quadrature | `problems/puffy/puffy.zig` (`Physics`, `setup`, `initAllWith`, `Bc`), `problems/puffy/main.zig` (the `App`), `problems/puffy/*.toml`, `math/quad.zig` |
+| Shared problem library | `problems/common/{limotorus,atmosphere,magnetize,mri,bcs,perturb}.zig` (any spherical torus problem; JETCOORDS will build on it), `math/misc.zig` (`rtbis`) |
 | Diagnostics / I/O | `io/scalars.zig`, `io/dump.zig`, `io/silo.zig` (+ `io/silo_disabled.zig`) |
 | Build / tests / oracle / tools | `build.zig`, `koral.zig` (`test {}`), `tools/gen_golden.sh`, `tools/{res2kdmp,kdmp2silo,qmri,kdmp2png,kdmp2lc,goldtest,mpi_gates,bench_implicit}.zig`, `testing/golden.zig`, `testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/` |
 
 The library imports almost nothing outward. The foundation (`config`/`layout`/
 `grid`/`field`/`units`/`params`) is leaf infrastructure consumed by every physics
-and solve module; `sim.zig` is the orchestrator that ties them together. Problems
-sit on top and are the only executables.
+and solve module; `sim/core.zig` is the state every pass sees, `sim.zig` composes the
+passes into `step()`, and `driver.zig` runs a problem's `App`. Problems sit on top and
+are the only executables.
 
 ---
 

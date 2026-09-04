@@ -10,6 +10,8 @@
 # taste — only the resolution is read here; the extents are fixed problem
 # constants (makeGridNz hardcodes RMIN/RMAX, MINY/MAXY, ±PHIWEDGE/2).
 
+problem = "puffy"   # the executable this file is for (checked by the driver)
+
 [physical]
 mass = 10.0        # MASS (solar masses)
 

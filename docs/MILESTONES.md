@@ -340,6 +340,49 @@ driver and the replay tools (`kdmp2silo`, `kdmp2png`, `kdmp2lc`, `qmri`).
 `main.zig` is the thin driver the architecture described. Goldens and the
 validated `defaults` are unchanged.
 
+**sim.zig redesign and the problem boundary, 2026-09-04.** Six bit-identical
+steps, each gated by the full battery, self-golden identity, and a byte-level
+`cmp` of 20-step 2D (1 and 8 threads) and 10-step 3D KDMP dumps against the
+pre-refactor binary; the 2-rank 3D dump is byte-identical before vs after as
+well, and `mpi-gates` is green at 1–4 ranks. (1) The generic run driver left
+`problems/puffy/main.zig` for `koral/driver.zig` (`driver.run(App, init)` over a
+small comptime contract; PUFFY's `main.zig` is the `App` + one line). (2) The six
+pass groups that ran inline in `sim.zig` moved to `sim/{timestep,u2p,fixup,
+explicit,implicit_op,entropy,stage}.zig`. (3) Each pass owns its scratch
+(`sim.faces`, `sim.bak`, `sim.ct`, `sim.visc`, `sim.dynamo`); `Sim.init` composes
+them with an `errdefer` per allocation, and scratch a disabled pass never touches
+is not allocated. (4) The RK2IMEX integrator and its stage buffers moved to
+`sim/rk2imex.zig`; `Sim.step` selects it from `cfg.timestepping` at comptime.
+(5) The generic pieces of `puffy.zig` moved to `problems/common/` (limotorus
+solver with a `Params` value, floor atmospheres + LTE split, β normalization,
+the seed-MRI diagnostic, the `bc.c` fragments, the init perturbation) and
+`rtbis` to `math/misc.zig`; `puffy.zig` re-exports every moved name (674 lines,
+from 1,194). (6) The one API break: `Core(cfg)` (`sim/core.zig`) is the state
+every pass sees and every pass takes `*CoreT` plus its own scratch, so ownership
+is compiler-enforced; `Options` (`sim/options.zig`) is grouped by owner
+(`phys`, `num`, `bc`, `radvisc: ?`, `dynamo: ?`, `parallel`) with
+`applyParams` and `validate`; `BcKind` is a union carrying the callback, so
+"specific without a callback" is unrepresentable; the callback receives
+`*const CoreT`; `Params` gained an optional `problem` key the driver checks.
+`sim.zig` is about 500 lines. Goldens unchanged.
+
+**Theory anchors for the spherical machinery and the CFL seam, 2026-09-04.** Two gate
+files close gaps the redesign made visible: every MHD analytic test was Minkowski, the
+polar-axis band had contract tests but no physics anchor, and `Core.cflDt` had none.
+`tests/ks_evolution_tests.zig` runs the 2D axisymmetric Bondi/Michel flow on a full-θ KS
+grid through the polar band, the stock `polarReflect` BC and the θ metric sources: the ρ
+drift converges at order ≈ 2.3 (the 1D gate's numbers) and the profile stays θ-uniform to
+roundoff, because the Christoffel-trace correction makes the discrete θ-balance of a
+uniform pressure exact. Its magnetized variant (Gammie, McKinney & Tóth 2003 §5.3; the
+same `A_φ = B0(1−cos θ)` as C's FFBONDI) shows the discrete curl of that potential is an
+exact monopole (4e-15), corner divB stays at machine zero through the run, and the field is
+preserved to ~1e-7 on a fixed interior region; the domain corners carry C's diagonal-average
+ghost artifact (`finite.c:3203`) and are excluded by construction, not by tolerance.
+`tests/timestep_tests.zig` pins `Core.cflDt` to the CFL bound with the SR hydro
+eigenvalues (velocity addition along the boost, `c_s√(1−v²)/√(1−v²c_s²)` transverse,
+per-dimension speeds summed) at 1e-12. Battery: 304 tests, ~5.6 min Debug; the KS pair
+is ~66 s of that, and a t = 10 repeat sits under `-Dslow-tests`.
+
 **Test hardening and golden reorganization, 2026-07-15.** New invariant gates cover the
 M12 physics, `dynamo_tests.zig` (the per-cell dynamo law `dynamoDeltaA` extracted as a pure
 function) and `radvisc_tests.zig` (`shearFromGradients` extracted from `calcShearLab`;

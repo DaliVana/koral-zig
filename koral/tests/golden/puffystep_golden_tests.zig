@@ -55,20 +55,11 @@ const LP = SimP.Layout;
 
 fn puffyOptions() SimP.Options {
     return .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.gam,
-        .floors = invert.FloorParams.puffy,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = radforce.Params.puffy(),
-        .implicit = implicit.ImplicitParams.puffy,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .radviscosity = true,
-        .dynamo = true,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        .specific_bc = &puffy.Bc(SimP).calc,
+        .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.gam, .floors = invert.FloorParams.puffy, .rad = invert_rad.RadParams.puffy, .opac = radforce.Params.puffy(), .implicit = implicit.ImplicitParams.puffy },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{ .x = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } }, .y = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } } },
+        .radvisc = .{},
+        .dynamo = .{},
     };
 }
 
@@ -84,7 +75,7 @@ fn loadKiniIntoP(s: *SimP, k: *const golden.Kini) void {
             const base = k.base(jx, jy, 0);
             var pp: [SimP.nv]f64 = undefined;
             for (0..SimP.nv) |iv| pp[iv] = k.data[base + iv];
-            s.p.store(ix, iy, 0, &pp);
+            s.core.p.store(ix, iy, 0, &pp);
         }
     }
 }
@@ -176,8 +167,8 @@ fn checkStepGolden(a: std.mem.Allocator, comptime relpath: []const u8) !void {
         for (0..k.ny) |iy| {
             for (0..k.nx) |ix| {
                 for (0..k.nv) |iv| {
-                    s.u.set(iv, @intCast(ix), @intCast(iy), @intCast(iz), r0.u[k.idx(iv, ix, iy, iz)]);
-                    s.p.set(iv, @intCast(ix), @intCast(iy), @intCast(iz), r0.p[k.idx(iv, ix, iy, iz)]);
+                    s.core.u.set(iv, @intCast(ix), @intCast(iy), @intCast(iz), r0.u[k.idx(iv, ix, iy, iz)]);
+                    s.core.p.set(iv, @intCast(ix), @intCast(iy), @intCast(iz), r0.p[k.idx(iv, ix, iy, iz)]);
                 }
             }
         }
@@ -208,7 +199,7 @@ fn checkStepGolden(a: std.mem.Allocator, comptime relpath: []const u8) !void {
         var worst_iv: usize = 0;
         var n_over: usize = 0; // cells with any-var dev > 1e-3
         var interior_max: f64 = 0; // excluding the plunge + polar-axis rim
-        const nc = s.opt.nccorrectpolar;
+        const nc = s.core.num.polaraxis.?.ncells;
         for (0..k.nz) |iz| for (0..k.ny) |iy| for (0..k.nx) |ix| {
             const zx: i64 = @intCast(ix);
             const zy: i64 = @intCast(iy);
@@ -233,7 +224,7 @@ fn checkStepGolden(a: std.mem.Allocator, comptime relpath: []const u8) !void {
             var cell_max: f64 = 0;
             for (0..k.nv) |iv| {
                 const cp = r.p[k.idx(iv, ix, iy, iz)];
-                const zp = s.p.get(iv, zx, zy, zz);
+                const zp = s.core.p.get(iv, zx, zy, zz);
                 const d = @abs(cp - zp) / scale[iv];
                 cell_max = @max(cell_max, d);
                 if (d > step_max) {

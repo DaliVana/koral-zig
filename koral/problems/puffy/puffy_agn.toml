@@ -33,6 +33,8 @@
 # treating any output as "the koral_lite_puffy run."
 # ============================================================================
 
+problem = "puffy"   # the executable this file is for (checked by the driver)
+
 [physical]
 mass   = 1.0e9     # MASS  (was 10 for the validated torus)
 bhspin = 0.0       # BHSPIN — Schwarzschild

@@ -449,10 +449,8 @@ test "M7: uniform MINK state with radiation static over 50 steps (rest and boost
     for (cases) |c| {
         const g = Grid.init(.{ .nx = 24, .ng = 3, .minx = 0, .maxx = 1 });
         var s = try SimT.init(std.testing.allocator, g, .{
-            .coords = .mink,
-            .gam = gam,
-            .rad = invert_rad.RadParams.puffy,
-            .bc_x = .periodic,
+            .phys = .{ .coords = .mink, .gam = gam, .rad = invert_rad.RadParams.puffy },
+            .bc = .{ .x = .periodic },
         });
         defer s.deinit();
 
@@ -464,14 +462,14 @@ test "M7: uniform MINK state with radiation static over 50 steps (rest and boost
         try s.finishInit();
 
         var pp0: [NV]f64 = undefined;
-        s.p.load(10, 0, 0, &pp0);
+        s.core.p.load(10, 0, 0, &pp0);
 
         for (0..50) |_| try s.step(null);
 
         ix = 0;
         while (ix < s.nxi()) : (ix += 1) {
             var pp: [NV]f64 = undefined;
-            s.p.load(ix, 0, 0, &pp);
+            s.core.p.load(ix, 0, 0, &pp);
             for (0..NV) |iv| {
                 const scale = @max(@abs(pp0[iv]), 1e-30);
                 const dev = @abs(pp[iv] - pp0[iv]) / scale;
