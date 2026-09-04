@@ -206,7 +206,7 @@ test "op_implicit skips polar rows; cell_fixup never targets them" {
     defer a.free(p_before);
     @memcpy(p_before, s.p.data);
 
-    try s.opImplicit(0.0, 1.0e3);
+    try s.opImplicit(1.0e3);
 
     const ny = s.nyi();
     var changed_interior = false;

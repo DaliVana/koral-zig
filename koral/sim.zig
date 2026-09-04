@@ -74,14 +74,13 @@ const explicit_pass = @import("sim/explicit.zig");
 const implicit_op = @import("sim/implicit_op.zig");
 const entropy_pass = @import("sim/entropy.zig");
 const stage = @import("sim/stage.zig");
+const rk2imex = @import("sim/rk2imex.zig");
 const comm_mod = @import("comm/comm.zig");
 
 const Grid = grid_mod.Grid;
 const Geometry = geometry.Geometry;
 
 pub const Error = relele.Error || error{OutOfMemory};
-
-const big: f64 = 1.0e50; // C: BIG (ko.h) — only compared against, value moot
 
 // Storage & bookkeeping (face buffers, integer-flag / scalar-slot enums) live
 // in sim/storage.zig; the boundary-condition enums + logic in sim/bc.zig;
@@ -236,15 +235,8 @@ pub fn Sim(comptime cfg: config.Config) type {
         // state
         p: FieldT,
         u: FieldT,
-        // RK2IMEX stage buffers (problem.c)
-        ut0: FieldT,
-        ut1: FieldT,
-        ut2: FieldT,
-        dut1: FieldT,
-        dut2: FieldT,
-        drt1: FieldT,
-        drt2: FieldT,
-        uforget: FieldT,
+        /// The integrator's stage buffers (sim/rk2imex.zig, problem.c).
+        integ: rk2imex.Integrator(NV),
         // Pass-owned scratch (redesign step 3): each pass module declares the
         // buffers it needs and Sim composes them; the optional ones exist
         // only when the option that uses them is on.
@@ -269,13 +261,11 @@ pub fn Sim(comptime cfg: config.Config) type {
         dynamo: ?dynamo_mod.Scratch,
 
         t: f64 = 0,
-        /// C: global_time. Frozen at step start, used by set_bc.
-        time: f64 = 0,
         dt: f64 = 0,
         /// dt the CFL logic would have chosen this step (before forcing).
         own_dt: f64 = 0,
         tstepdenmax: f64 = 0,
-        tstepdenmin: f64 = big,
+        tstepdenmin: f64 = storage.big,
         min_dx: f64 = 0,
         min_dy: f64 = 0,
         min_dz: f64 = 0,
@@ -298,14 +288,6 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// P0 per-pass wall-clock instrumentation (sim/timers.zig); always
         /// accumulating: the driver prints/resets it at its output cadence.
         timers: timers_mod.PassTimers = .{},
-
-        /// The full-Field members allocated in init and freed in deinit, in one
-        /// place so the two lists cannot drift (P5): the live p/u pair and the
-        /// RK2IMEX stage buffers. Every other buffer is pass-owned scratch.
-        const heap_field_names = .{
-            "p",    "u",    "ut0",  "ut1",  "ut2",
-            "dut1", "dut2", "drt1", "drt2", "uforget",
-        };
 
         pub fn init(allocator: std.mem.Allocator, g: Grid, opt: Options) !Self {
             // Runtime precondition checks (P1 correctness). Each unchecked
@@ -370,11 +352,10 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.decomp = dc;
             self.n_radimp_fail_step = 0;
             self.t = 0;
-            self.time = 0;
             self.dt = 0;
             self.own_dt = 0;
             self.tstepdenmax = 0;
-            self.tstepdenmin = big;
+            self.tstepdenmin = storage.big;
             self.nstep = 0;
             // `self` starts as undefined, so field declaration defaults do
             // not run here.  Keep order reduction disabled unless the
@@ -412,17 +393,14 @@ pub fn Sim(comptime cfg: config.Config) type {
             // (team == null degenerates to one whole-range memset).
             // Every allocation carries an errdefer, so a failed init leaks
             // nothing (redesign step 3; previously fatal-and-leak).
-            var n_fields: usize = 0;
-            errdefer {
-                inline for (heap_field_names, 0..) |name, k| {
-                    if (k < n_fields) @field(self, name).deinit();
-                }
-            }
-            inline for (heap_field_names) |name| {
-                @field(self, name) = try FieldT.initUninitialized(allocator, g);
-                n_fields += 1;
-                threading.parallelZero(self.team, @field(self, name).data);
-            }
+            self.p = try FieldT.initUninitialized(allocator, g);
+            errdefer self.p.deinit();
+            threading.parallelZero(self.team, self.p.data);
+            self.u = try FieldT.initUninitialized(allocator, g);
+            errdefer self.u.deinit();
+            threading.parallelZero(self.team, self.u.data);
+            self.integ = try rk2imex.Integrator(NV).init(allocator, g, self.team);
+            errdefer self.integ.deinit();
             // MPI plan §6.2: the four persistent zero-copy channels bind
             // directly into p's storage, which never moves after this.
             if (opt.comm) |c| try c.bindExchange(self.p.data, g, NV);
@@ -507,9 +485,9 @@ pub fn Sim(comptime cfg: config.Config) type {
             const allocator = self.allocator;
             if (self.opt.comm) |c| c.unbindExchange();
             if (self.team) |tm| tm.deinit();
-            inline for (heap_field_names) |name| {
-                @field(self, name).deinit();
-            }
+            self.p.deinit();
+            self.u.deinit();
+            self.integ.deinit();
             self.faces.deinit();
             self.bak.deinit();
             self.scal.deinit();
@@ -612,7 +590,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// Allreduce(MAX) of [tstepdenmax, −tstepdenmin, this step's local
         /// implicit-failure count]. MAX is exactly associative → bitwise
         /// reproducible at any rank count.
-        fn reduceStepGlobals(self: *Self, fail_before: u64) void {
+        pub fn reduceStepGlobals(self: *Self, fail_before: u64) void {
             const local_fail = self.n_radimp_failures - fail_before;
             self.n_radimp_fail_step = local_fail;
             if (self.opt.comm) |c| {
@@ -792,28 +770,6 @@ pub fn Sim(comptime cfg: config.Config) type {
             // (MIXENTROPIESPROPERLY off)
         }
 
-        // ---- stage arithmetic (exact C expression shapes; sim/stage.zig) ----------
-
-        fn copyFull(self: *Self, dst: *FieldT, src: *const FieldT) void {
-            self.timers.begin(.stage);
-            defer self.timers.end();
-            stage.copyFull(Self, self, dst, src);
-        }
-
-        /// dst = (1/Δ)·a + (−1/Δ)·b over the domain (problem.c:181/230/…).
-        fn stageDeriv(self: *Self, dst: *FieldT, a_f: *const FieldT, b_f: *const FieldT, delta: f64) void {
-            self.timers.begin(.stage);
-            defer self.timers.end();
-            stage.deriv(Self, self, dst, a_f, b_f, delta);
-        }
-
-        /// dst = a + f1·b + f2·c over the domain (problem.c:243/357).
-        fn stageCombine(self: *Self, dst: *FieldT, a_f: *const FieldT, f1: f64, b_f: *const FieldT, f2: f64, c_f: *const FieldT) void {
-            self.timers.begin(.stage);
-            defer self.timers.end();
-            stage.combine(Self, self, dst, a_f, f1, b_f, f2, c_f);
-        }
-
         /// C: update_entropy (u2p.c:2257). Recompute S(ρ,u) and refresh the
         /// MHD conserveds. Band-parallel over iy (cell-local).
         pub fn updateEntropy(self: *Self) Error!void {
@@ -826,8 +782,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// operator: per-cell solve_implicit_lab, RADIMPFIXUPFLAG, then
         /// cell_fixup(FIXUP_RADIMP). Structural no-op without radiation or
         /// when opt.opac is null (≡ SKIPRADSOURCE).
-        pub fn opImplicit(self: *Self, t: f64, dtin: f64) Error!void {
-            _ = t;
+        pub fn opImplicit(self: *Self, dtin: f64) Error!void {
             if (comptime !L.hasVar(.ee)) return;
             _ = self.opt.opac orelse return;
 
@@ -855,115 +810,16 @@ pub fn Sim(comptime cfg: config.Config) type {
             return polaraxis.correct(Self, self);
         }
 
-        // ---- one full RK2IMEX step (problem.c:141-402) ----------------------------
+        // ---- one full RK2IMEX step (problem.c:141-402; sim/rk2imex.zig) ---------
 
+        /// Advance one step. The integrator is selected from cfg.timestepping
+        /// at comptime; only RK2IMEX is implemented, the other schemes the
+        /// Config enum names fail here at compile time.
         pub fn step(self: *Self, forced_dt: ?f64) Error!void {
-            comptime std.debug.assert(cfg.timestepping == .rk2imex);
-
-            self.timers.begin(.step);
-            defer self.timers.end();
-
-            const t = self.t;
-            self.time = t; // C: global_time = t (write-only: kept to mirror C; calcU2p now takes t explicitly)
-
-            // The CFL denominator must have been seeded (initTimestepGuess, part
-            // of C's solve preamble) or be forced — otherwise tstepdenmax is 0
-            // and own_dt is +inf → NaNs on the first step, diagnosed only far
-            // downstream. Turn that ordering bug into an immediate failure.
-            std.debug.assert(forced_dt != null or self.tstepdenmax > 0);
-            self.own_dt = self.cflDt();
-            const dt = forced_dt orelse self.own_dt;
-            self.dt = dt;
-            // Baseline for the end-of-step failure fold (§7.1): the counter
-            // is run-cumulative, the collective reduces this step's delta.
-            const radimp_fail_at_step_start = self.n_radimp_failures;
-
-            // reset wavespeed accumulators for this step
-            self.tstepdenmax = -1;
-            self.tstepdenmin = big;
-
-            // C: calc_Rij_visc_total (problem.c:127) — once per step, with
-            // global_dt = this step's dt, feeding the RADVISCNUDAMP cap.
-            if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
-                self.timers.begin(.radvisc);
-                defer self.timers.end();
-                try rijvisc_mod.calcRijViscTotal(Self, self, dt);
-            }
-
-            const gam_imex = 1.0 - 1.0 / @sqrt(2.0);
-
-            // my_finger: PR_FINGER not defined for any target problem
-            timestep.saveTimesteps(Self, self);
-            // set_gammagas: CONSISTENTGAMMA off
-
-            // ---- 1st implicit ----
-            self.copyFull(&self.ut0, &self.u);
-            // (C copies p→ptm1 and, post-implicit, p→ppostimplicit here; both
-            //  are write-only on this path — no Zig consumer — so dropped.)
-            try self.opImplicit(t, dt * gam_imex); // U(1)
-            self.stageDeriv(&self.drt1, &self.u, &self.ut0, dt * gam_imex);
-
-            // ---- 1st explicit ----
-            self.copyFull(&self.ut1, &self.u);
-            try self.calcU2p(t);
-            try self.doCorrect();
-            self.exchangeHalos(); // C: mpi_exchangedata BEFORE set_bc (problem.c:198-204)
-            try self.setBc(t, false);
-            try self.opExplicit(t, dt); // F(U(1))
-            if (self.opt.dynamo and comptime L.hasVar(.b1)) {
-                self.timers.begin(.dynamo);
-                defer self.timers.end();
-                try dynamo_mod.applyDynamo(Self, self, t, dt);
-            }
-            // op_intermediate (electrons) — no-op
-            entropy_pass.copyEntropyCount(Self, self);
-            self.stageDeriv(&self.dut1, &self.u, &self.ut1, dt);
-
-            // ---- 1st together: u = ut0 + dt·dut1 + dt(1−2γ)·drt1 ----
-            self.stageCombine(&self.u, &self.ut0, dt, &self.dut1, dt * (1.0 - 2.0 * gam_imex), &self.drt1);
-
-            // ---- 2nd implicit ----
-            self.copyFull(&self.uforget, &self.u);
-            try self.calcU2p(t);
-            // (C copies p→ptm1 / p→ppostimplicit here; write-only, dropped.)
-            try self.doCorrect();
-            try self.opImplicit(t, gam_imex * dt); // U(2)
-            self.stageDeriv(&self.drt2, &self.u, &self.uforget, dt * gam_imex);
-
-            // ---- 2nd explicit ----
-            self.copyFull(&self.ut2, &self.u);
-            try self.calcU2p(t);
-            try self.doCorrect();
-            self.exchangeHalos(); // C: problem.c:314-320
-            try self.setBc(t, false);
-            try self.opExplicit(t, dt); // F(U(2))
-            if (self.opt.dynamo and comptime L.hasVar(.b1)) {
-                self.timers.begin(.dynamo);
-                defer self.timers.end();
-                try dynamo_mod.applyDynamo(Self, self, t, dt);
-            }
-            self.stageDeriv(&self.dut2, &self.u, &self.ut2, dt);
-
-            // ---- explicit together: u = ut0 + dt/2·(dut1 + dut2) ----
-            self.stageCombine(&self.u, &self.ut0, dt / 2.0, &self.dut1, dt / 2.0, &self.dut2);
-            // ---- implicit together: u += dt/2·(drt1 + drt2) ----
-            self.stageCombine(&self.u, &self.u, dt / 2.0, &self.drt1, dt / 2.0, &self.drt2);
-
-            // ---- final inversion & bookkeeping ----
-            try self.calcU2p(t);
-            try self.doCorrect();
-            // C: problem.c:386-392 — the THIRD per-step exchange site, and
-            // not optional. `calcRijViscTotal` runs at the TOP of the next
-            // step (before that step's first exchange) and reads z-ghost
-            // primitives over iz ∈ [−1, nz+1); without this the radiative
-            // shear viscosity would consume ghosts a full RK stage stale.
-            self.exchangeHalos();
-            try self.setBc(t, false);
-
-            self.t = t + dt;
-            try self.updateEntropy();
-            self.reduceStepGlobals(radimp_fail_at_step_start);
-            self.nstep += 1;
+            return switch (comptime cfg.timestepping) {
+                .rk2imex => rk2imex.step(Self, self, forced_dt),
+                else => @compileError("Sim.step: only .rk2imex is implemented (cfg.timestepping = " ++ @tagName(cfg.timestepping) ++ ")"),
+            };
         }
     };
 }
