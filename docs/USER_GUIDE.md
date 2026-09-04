@@ -112,7 +112,7 @@ before using either AGN-oriented preset.
 | `-Dtarget=...` | Standard Zig cross-compile target. |
 | `-Dmpi=true` | Link the system MPI and swap the comm seam to the real backend (`koral/comm/mpi/`). `build.zig` probes `mpicc` for the lib dirs and detects the ABI family (MPICH vs Open MPI) from `mpi.h`; overrides: `-Dmpi-family=mpich\|ompi`, `-Dmpi-lib=<dir>`, `-Dmpi-include=<dir>`. See "Running under MPI" below. |
 | `-Dsilo=true` | Build the optional `.silo` field export (`koral/io/silo.zig`, §4). The build compiles LLNL Silo 4.12 from source with the PDB driver and no HDF5, then links it statically through `silo-zig`. A system Silo or VisIt installation is not required. The dependency remains untouched without this flag. |
-| `-Dslow-tests=true` | Enables the slow test bodies (convergence studies, soaks, the full-grid PUFFY t=0 keystone). See §5. |
+| `-Dslow-tests=true` | Enables the slow test bodies (convergence studies, soaks, the full-grid PUFFY t=0 keystone, the t = 10 repeat of the KS Bondi gates). See §5. |
 | `-Dtest-filter=<substr>` | Passed to `addTest` `.filters`; restrict the single test artifact to tests whose name contains the substring. Repeatable. |
 
 ### Running under MPI (P4a+P4b, 3D wedges, node-to-node only)
@@ -767,6 +767,17 @@ pub const SpecificBc = *const fn (
 A face is registered as `.bc = .{ .x = .{ .specific = .{ .f = &calc, .ctx = ... } } }`;
 the callback travels with the face, so a `.specific` axis without a callback cannot
 be expressed.
+
+**Spherical grids.** Never put a grid face on the axis itself: `g^φφ = 1/sin²θ` diverges
+there and the first sweep returns a flux NaN. PUFFY's `MINY = 0.001` (in MKS2 `x²`) is that
+offset; the polar band (`num.polaraxis`) and `polarReflect` act on the first face, not on
+θ = 0. C's 2D corner-ghost fill averages two ghosts at different radii, so the four
+domain-corner cells cannot hold a field that varies in `r` (a `1/r²` monopole, say);
+measure field diagnostics on an interior region. Both facts are exercised by the 2D Bondi
+gates in `koral/tests/ks_evolution_tests.zig`, which is also the template for any new
+curved-spacetime test: exact analytic prims on the radial faces, `polarReflect` on the
+polar faces, a `phase` in the BC context if the B slots carry a vector potential before
+`calcBfromA`.
 
 The callback is fallible. Any frame or velocity conversion it performs
 (`frames.transPmhdCoco`, `relele.convert`, …) returns `relele.Error`, so use

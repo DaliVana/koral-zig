@@ -584,7 +584,9 @@ Read this alongside `step()` in `sim.zig`. `own_dt = cflDt() = 1/tstepdenmax` is
 that the *previous* step accumulated; `dt = forced_dt orelse own_dt`. `step()` first asserts
 the denominator was seeded (`forced_dt != null or tstepdenmax > 0`) so a forgotten
 `initTimestepGuess` fails immediately instead of stepping with `dt = +inf`; the driver calls
-the same `cflDt()` so the two cannot drift. The wavespeed accumulators are then reset
+the same `cflDt()` so the two cannot drift (the bound itself, per-dimension speeds summed
+over `Δx_d`, is gated against the SR eigenvalues in `tests/timestep_tests.zig`). The
+wavespeed accumulators are then reset
 (`tstepdenmax = -1`), the once-per-step viscous stress is filled (if `radviscosity`),
 `γ = 1 − 1/√2`, and `saveTimesteps()` records each cell's `dt`. Then:
 
@@ -933,12 +935,29 @@ from adjacent domain rows/columns and averaging diagonal cells. The only unimple
 case is the x-z 2D layout (`ny==1, nz>1`), which `@panic`s (no target needs it). All of
 this lives in `koral/sim/bc.zig`, re-exported by `sim.zig`.
 
+The diagonal average is C's rule (`finite.c:3203`), not an interpolation: a corner
+ghost is the mean of two ghosts at *different* radii, so for any field that varies
+in `r` the four domain-corner cells never see a consistent neighbour. On a monopole
+`B^r ∝ 1/r²` this seeds a small `B^θ` at the corners that the edge rows then carry a
+few cells inward; the magnetized-Bondi gate measures its field diagnostics on a fixed
+physical interior region for exactly this reason. It is a boundary property, not a
+solver one, and PUFFY inherits it unchanged.
+
 **Polar-axis correction.** Lives in `koral/sim/polaraxis.zig`, fronted by `sim.zig`'s
 `doCorrect` and `isCellCorrectedPolaraxis`. `polaraxis.correct` overwrites the
 `nccorrectpolar` most-polar rows at each θ-edge from a source row, scaling the θ-velocity
 components by `fac = |θ − θ_axis|/|θ_src − θ_axis|` (so they ramp to zero at the pole)
 while copying other scalars/velocities verbatim; p2u at the *target* geometry rewrites the
 conserveds. B is untouched.
+
+Two practical facts about the grid the band sits on. The grid must never put a face on
+the axis itself, `g^φφ = 1/sin²θ` diverges there; PUFFY's `MINY = 0.001` (in MKS2 `x²`)
+is that offset, and the band and the reflection BC act on the *first face*, not on
+θ = 0. And the physics anchor for the whole arrangement is the 2D Bondi/Michel flow in
+`koral/tests/ks_evolution_tests.zig`: driven through the band and the stock reflection
+on a full-θ KS grid, the drift converges at second order and the profile stays θ-uniform
+to roundoff (the Christoffel-trace correction makes the discrete θ-balance of a uniform
+pressure exact).
 
 The overwrite and predicate form one contract. Corrected polar cells are
 special-cased in four places, `u2pRows` (B-only inversion), `cellFixup` (skipped),
@@ -950,7 +969,7 @@ configs that would make the contract unsatisfiable. The polar-axis EMF zeroing
 (`adjust_fluxcttoth_emfs`) belongs in this module when it is transcribed, even though C
 keeps it in `magn.c`.
 
-The PUFFY driver's `specific_bc` implements: xhi outflow with radial rescaling and a
+The PUFFY driver's `specific_bc` (fragments in `koral/problems/common/bcs.zig`) implements: xhi outflow with radial rescaling and a
 no-inflow clamp; xlo plain copy (no inflow check because `RMIN = 1.85 < r_horizon = 2`, so
 material only leaves the grid); and ylo/yhi polar reflection with VY/B2/FY sign flips.
 The z faces are `unreachable` (TNZ=1).
@@ -1002,7 +1021,11 @@ threading bit-identity, not from a single long integration.
 1. **Theory gates** (`*_tests.zig`), mathematical identities and documented quirks, no
    golden data: conservation, symmetry, the M1 closure trace `R^μ_μ = 0`, round-trips
    (e.g. `sFromU`/`uFromS` to 1e-12), reconstruction convergence orders, IMEX L-stability,
-   div(B), floor properties, dynamo saturation, and threading bit-identity.
+   div(B), floor properties, dynamo saturation, and threading bit-identity; analytic
+   solutions evolved through the full step: Sod, acoustic and Alfvén waves, Bondi/Michel
+   in 1D and, through the polar band on a KS grid, in 2D (`ks_evolution_tests.zig`, with
+   the Gammie et al. 2003 magnetized-Bondi monopole for flux-CT in curved spacetime); and
+   the CFL bound against the SR hydro eigenvalues (`timestep_tests.zig`).
 2. **Function-level C goldens** (`*_golden_tests.zig` reading `.kgld` files), diff Zig
    against C at recorded input points. State/flux/rad records embed **C's own geometry**
    (`geomFromRecord`) so only the state *algebra* is compared, keeping gates tight (1e-13

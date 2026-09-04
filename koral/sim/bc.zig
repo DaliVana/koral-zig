@@ -281,6 +281,12 @@ fn avgCellP(comptime CoreT: type, core: *CoreT, dix: i64, diy: i64, ax: i64, ay:
 /// finite.c:3203-3403; 2D (TNZ==1) total-corner filling: NG−1 deep
 /// one-cell surfaces copied from the adjacent domain row/column, then
 /// two diagonal cells averaged (periodic runs wrap the diagonals).
+///
+/// The diagonal average is C's rule, not an interpolation: it mixes two
+/// ghosts at different radii, so a field varying in r (a 1/r² monopole)
+/// has no consistent neighbour at the four domain corners; the CT EMF
+/// there seeds a small transverse B. tests/ks_evolution_tests.zig measures
+/// its field diagnostics on an interior region for this reason.
 fn fillCorners2d(comptime CoreT: type, core: *CoreT, bcopt: *const options.Bc(CoreT)) Error!void {
     const nx = core.nxi();
     const ny = core.nyi();

@@ -199,7 +199,12 @@ $$\alpha = \sqrt{-1/g^{tt}}$$
 (`precompute.geometryAt`). At cell centers the Christoffel trace is replaced by a
 finite-difference $\sqrt{-g}$-gradient (`applyKrisCorrection`, KORAL's `GDETIN=1`
 / `MODYFIKUJKRZYSIE`) so that geometric source terms telescope against discrete
-flux divergence and uniform states stay uniform.
+flux divergence and uniform states stay uniform. This is exact on the grid, not
+a truncation-level statement: on a Kerr-Schild grid a θ-independent pressure is
+balanced in the θ-momentum equation to roundoff (the 2D Bondi gate in
+[`koral/tests/ks_evolution_tests.zig`](../koral/tests/ks_evolution_tests.zig)
+holds the profile θ-uniform at 1e-14; the FD-trace identity itself is pinned in
+`metric_tests.zig`).
 
 ### 2.6 Coordinate transforms
 
@@ -867,7 +872,7 @@ radial-inner boundary is a plain copy (the inner edge $r_{\rm in,grid} =
 0.925\,r_h$ is inside the horizon, computed per run from the spin); the
 $\theta$ boundaries are polar reflection
 with sign flips of $v^\theta, B^\theta, F^\theta$ (`Bc.calc`). The driver runs the
-RK2IMEX loop with the CFL $dt = 1/\mathrm{tstepdenmax}$, emitting `scalars.dat`
+RK2IMEX loop with the CFL $dt = 1/\mathrm{tstepdenmax}$ (the denominator is the domain maximum of $\sum_d \lambda_d^{\max}/\Delta x_d$ divided by `tsteplim`, the per-dimension speeds summed rather than maxed; pinned against the SR hydro eigenvalues in [`koral/tests/timestep_tests.zig`](../koral/tests/timestep_tests.zig)), emitting `scalars.dat`
 diagnostics, total mass, accretion rate $\dot M$ at the horizon shell,
 radiative/total luminosity at the outer shell, disk scale height, maximum
 magnetization, and periodic binary primitive dumps

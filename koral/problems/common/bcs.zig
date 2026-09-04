@@ -102,6 +102,11 @@ pub fn copyXlo(comptime CoreT: type, core: *const CoreT, iy: i64, iz: i64) [Core
 
 /// YBC polar reflection (bc.c:150-190): mirror the θ index across the axis
 /// and flip the θ components of v, B and F. `face` must be .ylo or .yhi.
+///
+/// "Axis" here is the first grid face (PUFFY: MINY = 0.001), never θ = 0
+/// itself, where g^φφ diverges. Physics anchor: the 2D Bondi gates in
+/// tests/ks_evolution_tests.zig run through this reflection and the polar
+/// band on a KS grid (stationary, θ-uniform to roundoff).
 pub fn polarReflect(comptime CoreT: type, core: *const CoreT, ix: i64, iy: i64, iz: i64, face: BcFace) [CoreT.nv]f64 {
     const cfg = CoreT.Cfg;
     const L = CoreT.Layout;

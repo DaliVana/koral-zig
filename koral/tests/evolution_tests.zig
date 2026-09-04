@@ -9,6 +9,9 @@
 //!    L1 few %, converging with N, shock position within 2 cells
 //!  * small-amplitude acoustic wave: combined space-time order ≥ 1.9
 //!  * Bondi/Michel stationarity in KS coordinates: L1 drift ~ 2nd order in N
+//!
+//! `Michel` and `michel_gam` are pub: ks_evolution_tests.zig reuses the
+//! solver for the 2D (full-θ, polar band) and magnetized variants.
 
 const std = @import("std");
 const config = @import("../config.zig");

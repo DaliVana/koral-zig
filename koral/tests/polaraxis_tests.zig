@@ -10,7 +10,9 @@
 //!   cell_fixup (finite.c:5042): polar cells never fixup targets
 //!
 //! Pure-Zig pins of the transcription; the C-diff of the whole pipeline on
-//! a spherical grid arrives with the PUFFY t=0 + step goldens (M11/M13).
+//! a spherical grid arrives with the PUFFY t=0 + step goldens (M11/M13), and
+//! the physics anchor (2D Bondi/Michel driven through the band: stationary,
+//! θ-uniform to roundoff) is ks_evolution_tests.zig.
 
 const std = @import("std");
 const config = @import("../config.zig");

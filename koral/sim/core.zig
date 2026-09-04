@@ -332,7 +332,8 @@ pub fn Core(comptime cfg: config.Config) type {
         /// uses and the driver recomputes; call it in both so they cannot
         /// drift. Requires the denominator to have been seeded
         /// (initTimestepGuess or a prior step); returns +inf if tstepdenmax is
-        /// still 0, which the driver's pre-step guard rejects.
+        /// still 0, which the driver's pre-step guard rejects. The bound
+        /// itself (sim/timestep.zig) is gated in tests/timestep_tests.zig.
         pub fn cflDt(self: *const Self) f64 {
             return 1.0 / self.tstepdenmax;
         }

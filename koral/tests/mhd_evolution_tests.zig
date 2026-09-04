@@ -8,6 +8,10 @@
 //!    solution, Del Zanna et al. 2007)
 //!  * Balsara-1 / SR Brio-Wu tube: B^x exactly constant, self-convergent L1,
 //!    plateau structure sane
+//!
+//! All Minkowski. The curved-spacetime counterpart (flux-CT and the MHD
+//! sources on a KS grid, through the polar band) is the magnetized Bondi
+//! monopole in ks_evolution_tests.zig.
 
 const std = @import("std");
 const config = @import("../config.zig");

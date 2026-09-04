@@ -8,6 +8,12 @@
 //!   saveTimesteps:     C: save_timesteps (finite.c:490), no SHORTERTIMESTEP.
 //!   initTimestepGuess: problem.c:59-82; initial dt guess from max_ws = 10⁴.
 //!
+//! The CFL denominator per cell is Σ_d ws_d/Δx_d divided by tsteplim, the
+//! per-dimension speeds SUMMED (C's conservative multi-D bound), and dt is
+//! 1/max over the domain. Gate: tests/timestep_tests.zig pins Core.cflDt to
+//! that bound with the SR hydro eigenvalues (velocity addition along a
+//! boost, c_s√(1−v²)/√(1−v²c_s²) transverse) at 1e-12.
+//!
 //! Moved verbatim out of sim.zig (redesign step 2, 2026-09-04); the
 //! bodies, loop orders and expression shapes are unchanged.
 

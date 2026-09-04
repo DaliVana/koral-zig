@@ -26,6 +26,13 @@
 //! `Sim.isCellCorrectedPolaraxis`; as thin delegates, the same way it fronts
 //! sim/bc.zig with `Sim.setBc`.
 //!
+//! Physics anchor: tests/ks_evolution_tests.zig drives the 2D Bondi/Michel
+//! flow through the band and the stock polar reflection on a full-θ KS grid;
+//! the drift converges at 2nd order and the profile stays θ-uniform to
+//! roundoff. The grid must not put a face on the axis itself (g^φφ = 1/sin²θ
+//! diverges there): PUFFY's MINY = 0.001 is that offset, and the band's
+//! `thaxis` is the first face, not θ = 0.
+//!
 //! Not yet transcribed, but lands here rather than in sim/ct.zig when it does:
 //! adjust_fluxcttoth_emfs (polar-axis EMF zeroing), which is CORRECT_POLARAXIS
 //! machinery that happens to live in magn.c.

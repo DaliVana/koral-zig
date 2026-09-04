@@ -245,7 +245,13 @@ fn rebuildBand(comptime CoreT: type, c: *FluxCtx(CoreT), iy0: i64, iy1: i64) voi
 /// Reads cell-centered A_i from the B1..B3 slots of `core.p`, averages to
 /// corners, takes the curl, and (ifoverwrite) writes B into p/u everywhere;
 /// ghost cells get the stale scratch (zeros) exactly like C, so call setBc
-/// afterwards, as ko.c does.
+/// afterwards, as ko.c does. The ghost cells must hold A (not B) when this
+/// runs: the corner average reads one ghost layer.
+///
+/// Curved-space check (tests/ks_evolution_tests.zig): on a KS grid the curl
+/// of A_φ = B0 (1 − cos θ) is an exact monopole, B^r r² = const to 4e-15,
+/// because the corner average of a θ-only A_φ and the center √−g = r² sin θ
+/// leave only a sin Δθ/Δθ factor on B0.
 pub fn calcBfromA(comptime CoreT: type, core: *CoreT, cts: *Scratch, ifoverwrite: bool) relele.Error!void {
     const L = CoreT.Layout;
     if (comptime !L.hasVar(.b1)) return;
@@ -400,6 +406,10 @@ fn calcBfromACore(comptime CoreT: type, core: *CoreT, scratch: anytype) void {
 
 /// C: calc_divB (magn.c:693). Corner-based ∇·(√−g B)/√−g at cell corners
 /// using cell-centered values. Returns 0 outside the domain, like C.
+/// Flux-CT keeps it at machine zero through a run in Minkowski
+/// (tests/mhd_evolution_tests.zig) and in KS (tests/ks_evolution_tests.zig,
+/// 4e-15 after the magnetized Bondi run); the cell-(0,0) stencil is the one
+/// that reads the diagonal-averaged corner ghost, see bc.zig fillCorners2d.
 pub fn calcDivB(comptime CoreT: type, core: *const CoreT, ix: i64, iy: i64, iz: i64) f64 {
     const L = CoreT.Layout;
     if (comptime !L.hasVar(.b1)) return 0;
