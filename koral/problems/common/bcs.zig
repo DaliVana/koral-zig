@@ -1,5 +1,5 @@
 //! Stock boundary-condition fragments from KORAL's per-problem bc.c files,
-//! generic over SimT. A problem's `SpecificBc` callback is a switch on the
+//! generic over CoreT. A problem's `SpecificBc` callback is a switch on the
 //! face that returns one of these (or its own arm):
 //!
 //!   outflowRescaleXhi  bc.c:23-121   XBCHI: copy the last cell, rescale
@@ -23,24 +23,24 @@ const BcFace = @import("../../sim/bc.zig").BcFace;
 
 /// XBCHI outflow with r-rescaling and no-inflow (bc.c:23-121). Reads the
 /// last radial domain cell of the same (iy, iz) column.
-pub fn outflowRescaleXhi(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64) relele.Error![SimT.nv]f64 {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const NV = SimT.nv;
+pub fn outflowRescaleXhi(comptime CoreT: type, core: *const CoreT, ix: i64, iy: i64, iz: i64) relele.Error![CoreT.nv]f64 {
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
+    const NV = CoreT.nv;
     const has_rad = comptime cfg.has(.radiation);
     const has_b = comptime L.hasVar(.b1);
-    const nx: i64 = @intCast(sim.grid.nx);
+    const nx: i64 = @intCast(core.grid.nx);
     var pp: [NV]f64 = undefined;
 
-    sim.p.load(nx - 1, iy, iz, &pp);
+    core.p.load(nx - 1, iy, iz, &pp);
 
-    const geom = sim.cache.fillGeometry(ix, iy, iz);
-    const geomBL = precompute.geometryBLat(&sim.grid, cfg.coords, sim.opt.mp, ix, iy, iz);
+    const geom = core.cache.fillGeometry(ix, iy, iz);
+    const geomBL = precompute.geometryBLat(&core.grid, cfg.coords, core.phys.mp, ix, iy, iz);
 
     // MHD prims to BL (ghost-cell geometries, as in C)
-    pp = try frames.transPmhdCoco(cfg, pp, &geom, &geomBL, sim.opt.mp);
+    pp = try frames.transPmhdCoco(cfg, pp, &geom, &geomBL, core.phys.mp);
 
-    const geombdBL = precompute.geometryBLat(&sim.grid, cfg.coords, sim.opt.mp, nx - 1, iy, iz);
+    const geombdBL = precompute.geometryBLat(&core.grid, cfg.coords, core.phys.mp, nx - 1, iy, iz);
     const rghost = geomBL.xxvec[1];
     const rbound = geombdBL.xxvec[1];
     const scale1 = rbound * rbound / rghost / rghost;
@@ -63,15 +63,15 @@ pub fn outflowRescaleXhi(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64
         pp[L.index(.fz)] *= scale1;
     }
 
-    pp = try frames.transPmhdCoco(cfg, pp, &geomBL, &geom, sim.opt.mp);
+    pp = try frames.transPmhdCoco(cfg, pp, &geomBL, &geom, core.phys.mp);
 
     // no-inflow: gas
     var ucon = [4]f64{ 0.0, pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] };
     ucon = try relele.convert(ucon, .velr, .vel4, &geom, .recompute_ut);
-    ucon = frames.trans2Coco(geom.xxvec, ucon, cfg.coords, .bl, sim.opt.mp);
+    ucon = frames.trans2Coco(geom.xxvec, ucon, cfg.coords, .bl, core.phys.mp);
     if (ucon[1] < 0.0) {
         ucon[1] = 0.0;
-        ucon = frames.trans2Coco(geomBL.xxvec, ucon, .bl, cfg.coords, sim.opt.mp);
+        ucon = frames.trans2Coco(geomBL.xxvec, ucon, .bl, cfg.coords, core.phys.mp);
         ucon = try relele.convert(ucon, .vel4, .velr, &geom, .recompute_ut);
         pp[L.index(.vx)] = ucon[1];
         pp[L.index(.vy)] = ucon[2];
@@ -80,10 +80,10 @@ pub fn outflowRescaleXhi(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64
     if (comptime has_rad) {
         var urf = [4]f64{ 0.0, pp[L.index(.fx)], pp[L.index(.fy)], pp[L.index(.fz)] };
         urf = try relele.convert(urf, .velr, .vel4, &geom, .recompute_ut);
-        urf = frames.trans2Coco(geom.xxvec, urf, cfg.coords, .bl, sim.opt.mp);
+        urf = frames.trans2Coco(geom.xxvec, urf, cfg.coords, .bl, core.phys.mp);
         if (urf[1] < 0.0) {
             urf[1] = 0.0;
-            urf = frames.trans2Coco(geomBL.xxvec, urf, .bl, cfg.coords, sim.opt.mp);
+            urf = frames.trans2Coco(geomBL.xxvec, urf, .bl, cfg.coords, core.phys.mp);
             urf = try relele.convert(urf, .vel4, .velr, &geom, .recompute_ut);
             pp[L.index(.fx)] = urf[1];
             pp[L.index(.fy)] = urf[2];
@@ -94,27 +94,27 @@ pub fn outflowRescaleXhi(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64
 }
 
 /// XBCLO plain copy of the first radial domain cell (bc.c:126).
-pub fn copyXlo(comptime SimT: type, sim: *const SimT, iy: i64, iz: i64) [SimT.nv]f64 {
-    var pp: [SimT.nv]f64 = undefined;
-    sim.p.load(0, iy, iz, &pp);
+pub fn copyXlo(comptime CoreT: type, core: *const CoreT, iy: i64, iz: i64) [CoreT.nv]f64 {
+    var pp: [CoreT.nv]f64 = undefined;
+    core.p.load(0, iy, iz, &pp);
     return pp;
 }
 
 /// YBC polar reflection (bc.c:150-190): mirror the θ index across the axis
 /// and flip the θ components of v, B and F. `face` must be .ylo or .yhi.
-pub fn polarReflect(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64, face: BcFace) [SimT.nv]f64 {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
+pub fn polarReflect(comptime CoreT: type, core: *const CoreT, ix: i64, iy: i64, iz: i64, face: BcFace) [CoreT.nv]f64 {
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
     const has_rad = comptime cfg.has(.radiation);
     const has_b = comptime L.hasVar(.b1);
-    const ny: i64 = @intCast(sim.grid.ny);
-    var pp: [SimT.nv]f64 = undefined;
+    const ny: i64 = @intCast(core.grid.ny);
+    var pp: [CoreT.nv]f64 = undefined;
     const iiy: i64 = switch (face) {
         .ylo => -iy - 1, // upper axis
         .yhi => ny - (iy - ny) - 1, // lower axis
         else => unreachable,
     };
-    sim.p.load(ix, iiy, iz, &pp);
+    core.p.load(ix, iiy, iz, &pp);
     pp[L.index(.vy)] = -pp[L.index(.vy)];
     if (comptime has_b) pp[L.index(.b2)] = -pp[L.index(.b2)];
     if (comptime has_rad) pp[L.index(.fy)] = -pp[L.index(.fy)];

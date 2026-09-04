@@ -21,8 +21,10 @@ Choose the document by task:
 
 M0-M14 are complete. Later work added MESA Rosseland opacity tables, runtime
 physics overrides for the AGN and Sgr A* presets, opt-in φ-only MPI, a SIMD
-implicit-solver Jacobian, GRRT tools, and the `koral/fv/` finite-volume
-reorganization. See
+implicit-solver Jacobian, GRRT tools, the `koral/fv/` finite-volume
+reorganization, and the 2026-09 `sim.zig` redesign (a `Core` every pass sees,
+pass-owned scratch, a separate integrator, a generic run driver and the shared
+`problems/common/` library). See
 [`MILESTONES.md`](MILESTONES.md) for the milestone checklist and each milestone's
 validation summary, or the top-level [`README.md`](../README.md) for the project
 overview and quickstart.

@@ -1,5 +1,5 @@
-//! Wavespeeds and the CFL timestep, generic over SimT (the house
-//! `fn f(comptime SimT: type, sim: *SimT)` pattern, like sim/bc.zig):
+//! Wavespeeds and the CFL timestep, generic over CoreT (the house
+//! `fn f(comptime CoreT: type, sim: *CoreT)` pattern, like sim/bc.zig):
 //!
 //!   calcWavespeeds:    C: calc_wavespeeds (finite.c:356) over domain + 1
 //!                      ghost layer; band-parallel over iy with the CFL
@@ -21,7 +21,7 @@ const storage = @import("storage.zig");
 const Error = relele.Error || error{OutOfMemory};
 
 /// problem.c:59-82; initial dt guess from max_ws = 10⁴.
-pub fn initTimestepGuess(comptime SimT: type, self: *SimT) void {
+pub fn initTimestepGuess(comptime CoreT: type, self: *CoreT) void {
     const ws: f64 = 10000.0;
     var tsd: f64 = undefined;
     if (self.grid.nz > 1) {
@@ -31,7 +31,7 @@ pub fn initTimestepGuess(comptime SimT: type, self: *SimT) void {
     } else {
         tsd = ws / self.min_dx;
     }
-    tsd /= self.opt.tsteplim;
+    tsd /= self.num.tsteplim;
     self.tstepdenmax = tsd;
     self.tstepdenmin = tsd;
 
@@ -52,18 +52,18 @@ pub fn initTimestepGuess(comptime SimT: type, self: *SimT) void {
 /// Band-parallel over iy; the CFL-denominator max/min reduce runs as
 /// per-worker partials merged after the region (max/min are
 /// order-insensitive, so this is bit-identical to the serial scan).
-pub fn calcWavespeeds(comptime SimT: type, self: *SimT) Error!void {
+pub fn calcWavespeeds(comptime CoreT: type, self: *CoreT) Error!void {
     const ly: i64 = if (self.grid.ny > 1) 1 else 0;
-    const res = threading.parallelRange(SimT, self, self.team, -ly, self.nyi() + ly, rowsWorker(SimT));
+    const res = threading.parallelRange(CoreT, self, self.team, -ly, self.nyi() + ly, rowsWorker(CoreT));
     if (res.err) |e| return e;
     if (res.tsd_max > self.tstepdenmax) self.tstepdenmax = res.tsd_max;
     if (res.tsd_min < self.tstepdenmin) self.tstepdenmin = res.tsd_min;
 }
 
-fn rowsWorker(comptime SimT: type) fn (*SimT, i64, i64, *threading.ChunkResult) void {
+fn rowsWorker(comptime CoreT: type) fn (*CoreT, i64, i64, *threading.ChunkResult) void {
     return struct {
-        fn w(self: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            wavespeedRows(SimT, self, iy0, iy1, res) catch |e| {
+        fn w(self: *CoreT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            wavespeedRows(CoreT, self, iy0, iy1, res) catch |e| {
                 res.err = e;
             };
         }
@@ -72,10 +72,10 @@ fn rowsWorker(comptime SimT: type) fn (*SimT, i64, i64, *threading.ChunkResult) 
 
 /// The per-cell wavespeed body for iy ∈ [iy0, iy1) (all iz, all ix
 /// incl. the ±1 ghost layer).
-fn wavespeedRows(comptime SimT: type, self: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) Error!void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const NV = SimT.nv;
+fn wavespeedRows(comptime CoreT: type, self: *CoreT, iy0: i64, iy1: i64, res: *threading.ChunkResult) Error!void {
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
+    const NV = CoreT.nv;
     const active_dims = [3]bool{ self.grid.nx > 1, self.grid.ny > 1, self.grid.nz > 1 };
     const lx: i64 = if (active_dims[0]) 1 else 0;
     const lz: i64 = if (active_dims[2]) 1 else 0;
@@ -86,13 +86,13 @@ fn wavespeedRows(comptime SimT: type, self: *SimT, iy0: i64, iy1: i64, res: *thr
         while (iy < iy1) : (iy += 1) {
             var ix: i64 = -lx;
             while (ix < self.nxi() + lx) : (ix += 1) {
-                if (comptime !SimT.wide) {
+                if (comptime !CoreT.wide) {
                     if (self.isCorner(ix, iy, iz)) continue;
                 }
                 var pp: [NV]f64 = undefined;
                 self.p.load(ix, iy, iz, &pp);
                 const geom = self.cache.fillGeometry(ix, iy, iz);
-                const aaa = try wavespeeds.gasWavespeedsLr(cfg, pp, &geom, self.opt.gam, active_dims);
+                const aaa = try wavespeeds.gasWavespeedsLr(cfg, pp, &geom, self.phys.gam, active_dims);
 
                 var rad0: [6]f64 = @splat(0);
                 var radl: [6]f64 = @splat(0);
@@ -101,8 +101,8 @@ fn wavespeedRows(comptime SimT: type, self: *SimT, iy0: i64, iy1: i64, res: *thr
                     // ix could be a face index in C, hence the max of
                     // left/right sizes
                     var tautot: [3]f64 = @splat(0);
-                    if (self.opt.opac) |*op| {
-                        const chi = try radforce.calcChiSlim(cfg, pp, &geom, self.opt.gam, op);
+                    if (self.phys.opac) |*op| {
+                        const chi = try radforce.calcChiSlim(cfg, pp, &geom, self.phys.gam, op);
                         const idx3 = [3]i64{ ix, iy, iz };
                         for (0..3) |d| {
                             const sg = @sqrt(geom.gg[d + 1][d + 1]);
@@ -119,8 +119,8 @@ fn wavespeedRows(comptime SimT: type, self: *SimT, iy0: i64, iy1: i64, res: *thr
                     // undamped value 1/3 (raising near-axis diffusion for
                     // stability). Zeroing tautot is equivalent: it drives
                     // calcRadWavespeeds' tautot≤0 branch → rv²=1/3.
-                    if (self.opt.dampradwavespeednearaxis > 0) {
-                        const nc: i64 = @intCast(self.opt.dampradwavespeednearaxis);
+                    if (self.num.dampradwavespeednearaxis > 0) {
+                        const nc: i64 = @intCast(self.num.dampradwavespeednearaxis);
                         const ny: i64 = @intCast(self.grid.ny);
                         if (iy < nc or iy >= ny - nc) tautot = @splat(0);
                     }
@@ -137,7 +137,7 @@ fn wavespeedRows(comptime SimT: type, self: *SimT, iy0: i64, iy1: i64, res: *thr
                         if (rad0[2 * d + 1] < 0.0) rad0[2 * d + 1] = 0.0;
                     }
                 }
-                saveWavespeeds(SimT, self, ix, iy, iz, aaa, rad0, radl, res);
+                saveWavespeeds(CoreT, self, ix, iy, iz, aaa, rad0, radl, res);
             }
         }
     }
@@ -148,8 +148,8 @@ fn wavespeedRows(comptime SimT: type, self: *SimT, iy0: i64, iy1: i64, res: *thr
 /// rad0 (unlimited by τ) only enters the timestep; radl (τ-limited)
 /// is what the flux combination reads. The dt max/min go into the
 /// worker's ChunkResult partials (merged after the region).
-fn saveWavespeeds(comptime SimT: type, self: *SimT, ix: i64, iy: i64, iz: i64, aaa: [6]f64, rad0: [6]f64, radl: [6]f64, res: *threading.ChunkResult) void {
-    const L = SimT.Layout;
+fn saveWavespeeds(comptime CoreT: type, self: *CoreT, ix: i64, iy: i64, iz: i64, aaa: [6]f64, rad0: [6]f64, radl: [6]f64, res: *threading.ChunkResult) void {
+    const L = CoreT.Layout;
     for (0..3) |d| {
         self.scSet(storage.ahd_l[d], ix, iy, iz, aaa[2 * d]);
         self.scSet(storage.ahd_r[d], ix, iy, iz, aaa[2 * d + 1]);
@@ -193,14 +193,14 @@ fn saveWavespeeds(comptime SimT: type, self: *SimT, ix: i64, iy: i64, iz: i64, a
     } else {
         tsd = wsx / dx;
     }
-    tsd /= self.opt.tsteplim;
+    tsd /= self.num.tsteplim;
     self.scSet(.tstepden, ix, iy, iz, tsd);
     if (tsd > res.tsd_max) res.tsd_max = tsd;
     if (tsd < res.tsd_min) res.tsd_min = tsd;
 }
 
 /// C: save_timesteps (finite.c:490), no SHORTERTIMESTEP.
-pub fn saveTimesteps(comptime SimT: type, self: *SimT) void {
+pub fn saveTimesteps(comptime CoreT: type, self: *CoreT) void {
     var iz: i64 = 0;
     while (iz < self.nzi()) : (iz += 1) {
         var iy: i64 = 0;

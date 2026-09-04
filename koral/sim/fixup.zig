@@ -1,4 +1,4 @@
-//! Cell fixups (C: cell_fixup, finite.c:5012), generic over SimT: average
+//! Cell fixups (C: cell_fixup, finite.c:5012), generic over CoreT: average
 //! cells flagged by the inversion / implicit passes from their non-flagged
 //! in-domain neighbours through the whole-grid u_bak/p_bak backups.
 //! `Sim.cellFixup(which)` is the stable entry point (timers + the enable
@@ -47,7 +47,7 @@ pub fn Backups(comptime NV: usize) type {
 /// cellFixup: reads one i32/cell (getFlag is inline) and returns on the
 /// first hit. Serial: the scan is ~NV× cheaper than the copies it may
 /// save, and short-circuits (P2 #3).
-fn anyFlagSet(comptime SimT: type, self: *const SimT, comptime which: Flag) bool {
+fn anyFlagSet(comptime CoreT: type, self: *const CoreT, comptime which: Flag) bool {
     const nx = self.nxi();
     const ny = self.nyi();
     const nz = self.nzi();
@@ -68,7 +68,7 @@ fn anyFlagSet(comptime SimT: type, self: *const SimT, comptime which: Flag) bool
 /// FIXUP_RADIMP. Averages flagged cells from their non-flagged in-domain
 /// neighbors. U2PMHD never averages rho or the magnetic field (iv != RHO &&
 /// iv < B1); U2PRAD averages only the radiative block (EE..FZ).
-pub fn cellFixup(comptime SimT: type, self: *SimT, comptime which: Flag) Error!void {
+pub fn cellFixup(comptime CoreT: type, self: *CoreT, bak: *Backups(CoreT.nv), comptime which: Flag) Error!void {
     // Common case: no cell carries `which` this pass. Then fixupRows
     // writes nothing (every cell hits `getFlag == 0 → continue`), so the
     // four full-grid copies below (u↔u_bak, p↔p_bak — ~4×NV×cells×8 B,
@@ -77,32 +77,40 @@ pub fn cellFixup(comptime SimT: type, self: *SimT, comptime which: Flag) Error!v
     // less traffic than the copies — and skip the whole staging dance.
     // Bit-identical: with nothing flagged, u/p are unchanged either way
     // (P2 #3).
-    if (!anyFlagSet(SimT, self, which)) return;
+    if (!anyFlagSet(CoreT, self, which)) return;
 
-    threading.parallelCopy(self.team, self.bak.u.data, self.u.data);
-    threading.parallelCopy(self.team, self.bak.p.data, self.p.data);
+    threading.parallelCopy(self.team, bak.u.data, self.u.data);
+    threading.parallelCopy(self.team, bak.p.data, self.p.data);
 
     // the averaging loop is parallel-safe as-is: flags are frozen
     // during the pass, reads touch only non-flagged neighbours of
     // the (frozen) p, writes only the flagged cells' _bak slots
-    try threading.parallelRangeErr(SimT, self, self.team, 0, self.nyi(), rowsFn(SimT, which));
+    var ctx = Ctx(CoreT){ .core = self, .bak = bak };
+    try threading.parallelRangeErr(Ctx(CoreT), &ctx, self.team, 0, self.nyi(), rowsFn(CoreT, which));
 
-    threading.parallelCopy(self.team, self.u.data, self.bak.u.data);
-    threading.parallelCopy(self.team, self.p.data, self.bak.p.data);
+    threading.parallelCopy(self.team, self.u.data, bak.u.data);
+    threading.parallelCopy(self.team, self.p.data, bak.p.data);
 }
 
-fn rowsFn(comptime SimT: type, comptime which: Flag) fn (*SimT, i64, i64) Error!void {
+/// The pass's view: the Core plus its own backups.
+fn Ctx(comptime CoreT: type) type {
+    return struct { core: *CoreT, bak: *Backups(CoreT.nv) };
+}
+
+fn rowsFn(comptime CoreT: type, comptime which: Flag) fn (*Ctx(CoreT), i64, i64) Error!void {
     return struct {
-        fn w(s: *SimT, iy0: i64, iy1: i64) Error!void {
-            return fixupRows(SimT, s, which, iy0, iy1);
+        fn w(c: *Ctx(CoreT), iy0: i64, iy1: i64) Error!void {
+            return fixupRows(CoreT, c, which, iy0, iy1);
         }
     }.w;
 }
 
-fn fixupRows(comptime SimT: type, self: *SimT, comptime which: Flag, iy0: i64, iy1: i64) Error!void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const NV = SimT.nv;
+fn fixupRows(comptime CoreT: type, c: *Ctx(CoreT), comptime which: Flag, iy0: i64, iy1: i64) Error!void {
+    const self = c.core;
+    const bak = c.bak;
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
+    const NV = CoreT.nv;
     const b1_bound: usize = comptime if (L.hasVar(.b1)) L.index(.b1) else L.count;
     const nx = self.nxi();
     const ny = self.nyi();
@@ -160,9 +168,9 @@ fn fixupRows(comptime SimT: type, self: *SimT, comptime which: Flag, iy0: i64, i
                     }
                 }
                 const geom = self.cache.fillGeometry(ix, iy, iz);
-                const uu = try p2u_mod.p2u(cfg, pp, &geom, self.opt.gam);
-                self.bak.u.store(ix, iy, iz, &uu);
-                self.bak.p.store(ix, iy, iz, &pp);
+                const uu = try p2u_mod.p2u(cfg, pp, &geom, self.phys.gam);
+                bak.u.store(ix, iy, iz, &uu);
+                bak.p.store(ix, iy, iz, &pp);
             }
         }
     }

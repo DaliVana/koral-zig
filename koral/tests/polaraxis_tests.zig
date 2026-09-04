@@ -47,14 +47,9 @@ fn testGrid() Grid {
 
 fn testOptions() SimT.Options {
     return .{
-        .coords = .mks2,
-        .gam = gam,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = radforce.Params.puffy(),
-        .implicit = implicit.ImplicitParams.puffy,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .bc_y = .copy,
+        .phys = .{ .coords = .mks2, .gam = gam, .rad = invert_rad.RadParams.puffy, .opac = radforce.Params.puffy(), .implicit = implicit.ImplicitParams.puffy },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{ .y = .copy },
     };
 }
 
@@ -97,7 +92,7 @@ test "correct_polaraxis: rows copied from nc, θ-velocities scaled, B untouched"
 
     try s.doCorrect();
 
-    const g = &s.grid;
+    const g = &s.core.grid;
     const ny = s.nyi();
     var ix: i64 = 0;
     while (ix < s.nxi()) : (ix += 1) {
@@ -114,7 +109,7 @@ test "correct_polaraxis: rows copied from nc, θ-velocities scaled, B untouched"
             const fac = @abs((g.yc(iy) - thaxis) / (g.yc(iysrc) - thaxis));
 
             var pp: [NV]f64 = undefined;
-            s.p.load(ix, iy, 0, &pp);
+            s.core.p.load(ix, iy, 0, &pp);
             const pps = ppAt(ix, iysrc);
             const pp0 = ppAt(ix, iy); // pre-correction target values
 
@@ -132,14 +127,14 @@ test "correct_polaraxis: rows copied from nc, θ-velocities scaled, B untouched"
 
             // conserveds rewritten via p2u at the target geometry
             var uu: [NV]f64 = undefined;
-            s.u.load(ix, iy, 0, &uu);
-            const geom = s.cache.fillGeometry(ix, iy, 0);
+            s.core.u.load(ix, iy, 0, &uu);
+            const geom = s.core.cache.fillGeometry(ix, iy, 0);
             const uu_expect = try p2u_mod.p2u(cfg, pp, &geom, gam);
             for (0..NV) |iv| try std.testing.expectEqual(uu_expect[iv], uu[iv]);
         }
         // source row itself untouched
         var pp2: [NV]f64 = undefined;
-        s.p.load(ix, 2, 0, &pp2);
+        s.core.p.load(ix, 2, 0, &pp2);
         const exp2 = ppAt(ix, 2);
         for (0..NV) |iv| try std.testing.expectEqual(exp2[iv], pp2[iv]);
     }
@@ -156,9 +151,9 @@ test "calc_u2p on polar rows: B-only inversion, prims and floors untouched" {
     const ix: i64 = 1;
     for ([_]i64{ 0, 3 }) |iy| {
         var uu: [NV]f64 = undefined;
-        s.u.load(ix, iy, 0, &uu);
+        s.core.u.load(ix, iy, 0, &uu);
         for (0..NV) |iv| uu[iv] *= 1.5;
-        s.u.store(ix, iy, 0, &uu);
+        s.core.u.store(ix, iy, 0, &uu);
     }
 
     try s.calcU2p(0.0);
@@ -166,11 +161,11 @@ test "calc_u2p on polar rows: B-only inversion, prims and floors untouched" {
     // polar row: prims still the initialized values, but B rows follow uu
     {
         var pp: [NV]f64 = undefined;
-        s.p.load(ix, 0, 0, &pp);
+        s.core.p.load(ix, 0, 0, &pp);
         const exp = ppAt(ix, 0);
-        const geom = s.cache.fillGeometry(ix, 0, 0);
+        const geom = s.core.cache.fillGeometry(ix, 0, 0);
         var uu: [NV]f64 = undefined;
-        s.u.load(ix, 0, 0, &uu);
+        s.core.u.load(ix, 0, 0, &uu);
         for (0..NV) |iv| {
             const is_b = iv >= L.index(.b1) and iv <= L.index(.b3);
             if (is_b) {
@@ -186,7 +181,7 @@ test "calc_u2p on polar rows: B-only inversion, prims and floors untouched" {
     // interior row: actually inverted (rho changed from the initialized value)
     {
         var pp: [NV]f64 = undefined;
-        s.p.load(ix, 3, 0, &pp);
+        s.core.p.load(ix, 3, 0, &pp);
         const exp = ppAt(ix, 3);
         try std.testing.expect(@abs(pp[L.index(.rho)] - exp[L.index(.rho)]) >
             0.1 * exp[L.index(.rho)]);
@@ -199,12 +194,12 @@ test "op_implicit skips polar rows; cell_fixup never targets them" {
     defer s.deinit();
     try initSmooth(&s);
 
-    const u_before = try a.alloc(f64, s.u.data.len);
+    const u_before = try a.alloc(f64, s.core.u.data.len);
     defer a.free(u_before);
-    @memcpy(u_before, s.u.data);
-    const p_before = try a.alloc(f64, s.p.data.len);
+    @memcpy(u_before, s.core.u.data);
+    const p_before = try a.alloc(f64, s.core.p.data.len);
     defer a.free(p_before);
-    @memcpy(p_before, s.p.data);
+    @memcpy(p_before, s.core.p.data);
 
     try s.opImplicit(1.0e3);
 
@@ -216,9 +211,9 @@ test "op_implicit skips polar rows; cell_fixup never targets them" {
         while (ix < s.nxi()) : (ix += 1) {
             var pp: [NV]f64 = undefined;
             var uu: [NV]f64 = undefined;
-            s.p.load(ix, iy, 0, &pp);
-            s.u.load(ix, iy, 0, &uu);
-            const off = s.p.cellOffset(ix, iy, 0);
+            s.core.p.load(ix, iy, 0, &pp);
+            s.core.u.load(ix, iy, 0, &uu);
+            const off = s.core.p.cellOffset(ix, iy, 0);
             var same = true;
             for (0..NV) |iv| {
                 if (pp[iv] != p_before[off + iv] or uu[iv] != u_before[off + iv]) same = false;
@@ -234,13 +229,13 @@ test "op_implicit skips polar rows; cell_fixup never targets them" {
     try std.testing.expect(changed_interior);
 
     // a stale nonzero flag on a polar cell must not attract fixups
-    s.opt.do_radimp_fixups = true;
+    s.core.num.fixups.radimp = true;
     var pp_polar: [NV]f64 = undefined;
-    s.p.load(1, 0, 0, &pp_polar);
-    s.setFlag(.radimp_fixup, 1, 0, 0, -1);
+    s.core.p.load(1, 0, 0, &pp_polar);
+    s.core.setFlag(.radimp_fixup, 1, 0, 0, -1);
     try s.cellFixup(.radimp_fixup);
     var pp_after: [NV]f64 = undefined;
-    s.p.load(1, 0, 0, &pp_after);
+    s.core.p.load(1, 0, 0, &pp_after);
     for (0..NV) |iv| try std.testing.expectEqual(pp_polar[iv], pp_after[iv]);
 }
 
@@ -257,14 +252,14 @@ test "polaraxis.Band: the claimed rows are exactly the overwritten rows" {
     defer s.deinit();
     try initSmooth(&s);
 
-    const b = polaraxis.band(SimT, &s) orelse return error.TestUnexpectedResult;
+    const b = polaraxis.band(SimT.CoreT, &s.core) orelse return error.TestUnexpectedResult;
 
     var before = std.ArrayList([NV]f64).empty;
     defer before.deinit(a);
     var iy: i64 = 0;
     while (iy < s.nyi()) : (iy += 1) {
         var pp: [NV]f64 = undefined;
-        s.p.load(1, iy, 0, &pp);
+        s.core.p.load(1, iy, 0, &pp);
         try before.append(a, pp);
     }
 
@@ -273,7 +268,7 @@ test "polaraxis.Band: the claimed rows are exactly the overwritten rows" {
     iy = 0;
     while (iy < s.nyi()) : (iy += 1) {
         var pp: [NV]f64 = undefined;
-        s.p.load(1, iy, 0, &pp);
+        s.core.p.load(1, iy, 0, &pp);
         const untouched = std.mem.eql(f64, &before.items[@intCast(iy)], &pp);
         // initSmooth varies with iy, so every claimed row genuinely moves
         try std.testing.expectEqual(b.owns(iy), !untouched);

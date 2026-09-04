@@ -35,18 +35,10 @@ const dyn_dt: f64 = 10.0;
 
 fn dynamoOptions() SimP.Options {
     return .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.gam,
-        .floors = invert.FloorParams.puffy,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = radforce.Params.puffy(),
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .dynamo = true,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        .specific_bc = &puffy.Bc(SimP).calc,
+        .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.gam, .floors = invert.FloorParams.puffy, .rad = invert_rad.RadParams.puffy, .opac = radforce.Params.puffy() },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{ .x = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } }, .y = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } } },
+        .dynamo = .{},
     };
 }
 
@@ -73,12 +65,12 @@ test "M12 dynamo: apply_dynamo B vs C (PUFFY t=0 + injected B³, 384×360)" {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
                 var pp: [SimP.nv]f64 = undefined;
-                s.p.load(ix, iy, 0, &pp);
+                s.core.p.load(ix, iy, 0, &pp);
                 pp[b3] = inject_factor * pp[b2];
-                const geom = s.cache.fillGeometry(ix, iy, 0);
-                const uu = try p2u_mod.p2u(config.puffy, pp, &geom, s.opt.gam);
-                s.p.store(ix, iy, 0, &pp);
-                s.u.store(ix, iy, 0, &uu);
+                const geom = s.core.cache.fillGeometry(ix, iy, 0);
+                const uu = try p2u_mod.p2u(config.puffy, pp, &geom, s.core.phys.gam);
+                s.core.p.store(ix, iy, 0, &pp);
+                s.core.u.store(ix, iy, 0, &uu);
             }
         }
     }
@@ -97,7 +89,7 @@ test "M12 dynamo: apply_dynamo B vs C (PUFFY t=0 + injected B³, 384×360)" {
             const iy = k.cellY(jy);
             const base = k.base(jx, jy, 0);
             var pp: [SimP.nv]f64 = undefined;
-            s.p.load(ix, iy, 0, &pp);
+            s.core.p.load(ix, iy, 0, &pp);
             for (0..3) |c| dev[c].add(k.data[base + c], pp[slots[c]]);
         }
     }

@@ -42,18 +42,10 @@ const Dev = golden.FieldDev;
 
 fn viscOptions() SimP.Options {
     return .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.gam,
-        .floors = invert.FloorParams.puffy,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = puffy_opac,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .radviscosity = true,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        .specific_bc = &puffy.Bc(SimP).calc,
+        .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.gam, .floors = invert.FloorParams.puffy, .rad = invert_rad.RadParams.puffy, .opac = puffy_opac },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{ .x = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } }, .y = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } } },
+        .radvisc = .{},
     };
 }
 const puffy_opac = @import("../../physics/radforce.zig").Params.puffy();
@@ -75,7 +67,7 @@ test "M12 radviscosity: shear + nu + R^i_j vs C (PUFFY t=0, 384×360)" {
     // full init leaves the "stale ghost" state the first-step
     // calc_Rij_visc_total sees (no set_bc after postinit) — matches harness
     _ = try puffy.initAll(SimP, &s);
-    try rijvisc.calcRijViscTotal(SimP, &s, global_dt_golden);
+    try s.calcRijViscTotal(global_dt_golden);
 
     const nx = s.nxi();
     const ny = s.nyi();
@@ -95,9 +87,9 @@ test "M12 radviscosity: shear + nu + R^i_j vs C (PUFFY t=0, 384×360)" {
                 if (outsideGc(nx, ny, ix, iy)) continue;
                 const base = kshear.base(jx, jy, 0);
                 var pp: [SimP.nv]f64 = undefined;
-                s.p.load(ix, iy, 0, &pp);
-                const geom = s.cache.fillGeometry(ix, iy, 0);
-                const rv = try rijvisc.calcRadShearViscosity(SimP, &s, ix, iy, 0, &pp, &geom, global_dt_golden);
+                s.core.p.load(ix, iy, 0, &pp);
+                const geom = s.core.cache.fillGeometry(ix, iy, 0);
+                const rv = try rijvisc.calcRadShearViscosity(SimP.CoreT, &s.core, &s.visc.?, ix, iy, 0, &pp, &geom, global_dt_golden);
                 for (0..4) |i| {
                     for (0..4) |j| dev_shear.add(kshear.data[base + i * 4 + j], rv.shear[i][j]);
                 }

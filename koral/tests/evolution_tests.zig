@@ -60,7 +60,10 @@ test "M5: uniform MINK state static over 100 steps (at rest and boosted)" {
     const cases = [_][3]f64{ .{ 1.0, 0.1, 0.0 }, .{ 2.5, 0.4, 0.3 } };
     for (cases) |c| {
         const g = Grid.init(.{ .nx = 24, .ng = 3, .minx = 0, .maxx = 1 });
-        var s = try SimPpm.init(std.testing.allocator, g, .{ .coords = .mink, .gam = gam, .bc_x = .copy });
+        var s = try SimPpm.init(std.testing.allocator, g, .{
+            .phys = .{ .coords = .mink, .gam = gam },
+            .bc = .{ .x = .copy },
+        });
         defer s.deinit();
 
         var ix: i64 = 0;
@@ -73,14 +76,14 @@ test "M5: uniform MINK state static over 100 steps (at rest and boosted)" {
         try s.finishInit();
 
         var pp0: [NVH]f64 = undefined;
-        s.p.load(10, 0, 0, &pp0);
+        s.core.p.load(10, 0, 0, &pp0);
 
         for (0..100) |_| try s.step(null);
 
         ix = 0;
         while (ix < s.nxi()) : (ix += 1) {
             var pp: [NVH]f64 = undefined;
-            s.p.load(ix, 0, 0, &pp);
+            s.core.p.load(ix, 0, 0, &pp);
             for (0..NVH) |iv| {
                 const scale = @max(@abs(pp0[iv]), 1e-30);
                 const dev = @abs(pp[iv] - pp0[iv]) / scale;
@@ -99,7 +102,10 @@ test "M5: uniform MINK state static over 100 steps (at rest and boosted)" {
 
 test "M5: total conserveds exactly conserved (periodic, smooth flow)" {
     const g = Grid.init(.{ .nx = 48, .ng = 3, .minx = 0, .maxx = 1 });
-    var s = try SimPpm.init(std.testing.allocator, g, .{ .coords = .mink, .gam = gam, .bc_x = .periodic });
+    var s = try SimPpm.init(std.testing.allocator, g, .{
+        .phys = .{ .coords = .mink, .gam = gam },
+        .bc = .{ .x = .periodic },
+    });
     defer s.deinit();
 
     var ix: i64 = 0;
@@ -115,7 +121,7 @@ test "M5: total conserveds exactly conserved (periodic, smooth flow)" {
     var tot0: [NVH]f64 = @splat(0);
     ix = 0;
     while (ix < s.nxi()) : (ix += 1) {
-        for (0..NVH) |iv| tot0[iv] += s.u.get(iv, ix, 0, 0);
+        for (0..NVH) |iv| tot0[iv] += s.core.u.get(iv, ix, 0, 0);
     }
 
     // strict gate: a single op_explicit application telescopes exactly —
@@ -126,7 +132,7 @@ test "M5: total conserveds exactly conserved (periodic, smooth flow)" {
         var tot: [NVH]f64 = @splat(0);
         ix = 0;
         while (ix < s.nxi()) : (ix += 1) {
-            for (0..NVH) |iv| tot[iv] += s.u.get(iv, ix, 0, 0);
+            for (0..NVH) |iv| tot[iv] += s.core.u.get(iv, ix, 0, 0);
         }
         for (0..NVH) |iv| {
             const scale = @max(@abs(tot0[iv]), 1e-3 * @abs(tot0[Lp.index(.rho)]));
@@ -146,7 +152,7 @@ test "M5: total conserveds exactly conserved (periodic, smooth flow)" {
     var tot: [NVH]f64 = @splat(0);
     ix = 0;
     while (ix < s.nxi()) : (ix += 1) {
-        for (0..NVH) |iv| tot[iv] += s.u.get(iv, ix, 0, 0);
+        for (0..NVH) |iv| tot[iv] += s.core.u.get(iv, ix, 0, 0);
     }
     for (0..NVH) |iv| {
         // ENTR is not a conserved quantity (advected entropy re-synced each
@@ -168,7 +174,10 @@ test "M5: total conserveds exactly conserved (periodic, smooth flow)" {
 fn runMirror(comptime SimT: type, a: std.mem.Allocator, nsteps: usize) !*SimT {
     const g = Grid.init(.{ .nx = 64, .ng = @intCast(SimT.Cfg.ghostCells()), .minx = 0, .maxx = 1 });
     const s = try a.create(SimT);
-    s.* = try SimT.init(a, g, .{ .coords = .mink, .gam = gam, .bc_x = .copy });
+    s.* = try SimT.init(a, g, .{
+        .phys = .{ .coords = .mink, .gam = gam },
+        .bc = .{ .x = .copy },
+    });
 
     var ix: i64 = 0;
     while (ix < s.nxi()) : (ix += 1) {
@@ -203,8 +212,8 @@ test "M5: symmetric tube stays mirror-symmetric (linear: bitwise; PPM: 1e-12)" {
         while (ix < s.nxi()) : (ix += 1) {
             const jx = s.nxi() - 1 - ix;
             for (0..SimLin.nv) |iv| {
-                const va = s.p.get(iv, ix, 0, 0);
-                var vb = s.p.get(iv, jx, 0, 0);
+                const va = s.core.p.get(iv, ix, 0, 0);
+                var vb = s.core.p.get(iv, jx, 0, 0);
                 if (iv == L.index(.vx)) vb = -vb;
                 const d = @abs(va - vb) / @max(@abs(va), 1e-10);
                 if (d > worst) {
@@ -232,8 +241,8 @@ test "M5: symmetric tube stays mirror-symmetric (linear: bitwise; PPM: 1e-12)" {
         while (ix < s.nxi()) : (ix += 1) {
             const jx = s.nxi() - 1 - ix;
             for (0..NVH) |iv| {
-                const va = s.p.get(iv, ix, 0, 0);
-                var vb = s.p.get(iv, jx, 0, 0);
+                const va = s.core.p.get(iv, ix, 0, 0);
+                var vb = s.core.p.get(iv, jx, 0, 0);
                 if (iv == Lp.index(.vx)) vb = -vb;
                 const scale = @max(@abs(va), 1e-10);
                 worst = @max(worst, @abs(va - vb) / scale);
@@ -397,7 +406,10 @@ test "exact SR Riemann solver is self-consistent" {
 
 fn runSod(a: std.mem.Allocator, nx: usize, tend: f64) !struct { l1: f64, shock_err_cells: f64 } {
     const g = Grid.init(.{ .nx = nx, .ng = 3, .minx = 0, .maxx = 1 });
-    var s = try SimPpm.init(a, g, .{ .coords = .mink, .gam = gam, .bc_x = .copy });
+    var s = try SimPpm.init(a, g, .{
+        .phys = .{ .coords = .mink, .gam = gam },
+        .bc = .{ .x = .copy },
+    });
     defer s.deinit();
 
     const left = RiemannState{ .rho = 1.0, .p = 1.0, .v = 0.0 };
@@ -412,7 +424,7 @@ fn runSod(a: std.mem.Allocator, nx: usize, tend: f64) !struct { l1: f64, shock_e
 
     while (s.t < tend) {
         var dt: ?f64 = null;
-        if (s.t + 1.0 / s.tstepdenmax > tend) dt = tend - s.t; // C: dt=t1−t clamp
+        if (s.t + 1.0 / s.core.tstepdenmax > tend) dt = tend - s.t; // C: dt=t1−t clamp
         try s.step(dt);
     }
 
@@ -425,7 +437,7 @@ fn runSod(a: std.mem.Allocator, nx: usize, tend: f64) !struct { l1: f64, shock_e
     while (ix < s.nxi()) : (ix += 1) {
         const xi = (g.xc(ix) - 0.5) / tend;
         const ex = sol.sample(xi);
-        l1 += @abs(s.p.get(Lp.index(.rho), ix, 0, 0) - ex.rho);
+        l1 += @abs(s.core.p.get(Lp.index(.rho), ix, 0, 0) - ex.rho);
     }
     l1 /= @floatFromInt(nx);
 
@@ -435,7 +447,7 @@ fn runSod(a: std.mem.Allocator, nx: usize, tend: f64) !struct { l1: f64, shock_e
     ix = 0;
     while (ix < s.nxi() - 1) : (ix += 1) {
         if (g.xc(ix) < 0.5 + sol.vstar * tend) continue;
-        const d = s.p.get(Lp.index(.rho), ix, 0, 0) - s.p.get(Lp.index(.rho), ix + 1, 0, 0);
+        const d = s.core.p.get(Lp.index(.rho), ix, 0, 0) - s.core.p.get(Lp.index(.rho), ix + 1, 0, 0);
         if (d > best_g) {
             best_g = d;
             xsh = 0.5 * (g.xc(ix) + g.xc(ix + 1));
@@ -473,7 +485,10 @@ fn runSoundWave(a: std.mem.Allocator, nx: usize) !WaveResult {
     const amp: f64 = 1.0e-5;
 
     const g = Grid.init(.{ .nx = nx, .ng = 3, .minx = 0, .maxx = 1 });
-    var s = try SimPpm.init(a, g, .{ .coords = .mink, .gam = gam, .bc_x = .periodic });
+    var s = try SimPpm.init(a, g, .{
+        .phys = .{ .coords = .mink, .gam = gam },
+        .bc = .{ .x = .periodic },
+    });
     defer s.deinit();
 
     // right-moving acoustic mode: δv = A·cs, δp = w cs δv, δρ = δp/(h cs²),
@@ -495,7 +510,7 @@ fn runSoundWave(a: std.mem.Allocator, nx: usize) !WaveResult {
     const tend = 1.0 / cs;
     while (s.t < tend) {
         var dt: ?f64 = null;
-        if (s.t + 1.0 / s.tstepdenmax > tend) dt = tend - s.t;
+        if (s.t + 1.0 / s.core.tstepdenmax > tend) dt = tend - s.t;
         try s.step(dt);
     }
 
@@ -508,8 +523,8 @@ fn runSoundWave(a: std.mem.Allocator, nx: usize) !WaveResult {
         const x = g.xc(ix);
         const ph = @sin(2.0 * std.math.pi * x);
         const rho_ex = rho0 + amp * cs * w0 * cs / (h0 * cs * cs) * ph;
-        const d = s.p.get(Lp.index(.rho), ix, 0, 0) - rho0;
-        l1 += @abs(s.p.get(Lp.index(.rho), ix, 0, 0) - rho_ex);
+        const d = s.core.p.get(Lp.index(.rho), ix, 0, 0) - rho0;
+        l1 += @abs(s.core.p.get(Lp.index(.rho), ix, 0, 0) - rho_ex);
         c_amp += d * @cos(2.0 * std.math.pi * x);
         s_amp += d * ph;
         dc += d;
@@ -634,7 +649,7 @@ const BondiCtx = struct {
     michel: Michel,
     rc: f64,
 
-    fn prims(self: *const BondiCtx, s: *const SimKs, r_ix: i64) [SimKs.nv]f64 {
+    fn prims(self: *const BondiCtx, s: *const SimKs.CoreT, r_ix: i64) [SimKs.nv]f64 {
         const L = SimKs.Layout;
         const r = s.grid.xc(r_ix);
         const m = self.michel.solve(r, self.rc);
@@ -656,7 +671,7 @@ const BondiCtx = struct {
         return pp;
     }
 
-    fn bc(ctx: ?*const anyopaque, s: *const SimKs, ix: i64, iy: i64, iz: i64, t: f64, ifinit: bool, face: sim_mod.BcFace) relele.Error![SimKs.nv]f64 {
+    fn bc(ctx: ?*const anyopaque, s: *const SimKs.CoreT, ix: i64, iy: i64, iz: i64, t: f64, ifinit: bool, face: sim_mod.BcFace) relele.Error![SimKs.nv]f64 {
         _ = iy;
         _ = iz;
         _ = t;
@@ -678,30 +693,27 @@ fn runBondi(a: std.mem.Allocator, nx: usize, tend: f64) !f64 {
     });
     const ctx = BondiCtx{ .rc = 8.0, .michel = Michel.init(8.0) };
     var s = try SimKs.init(a, g, .{
-        .coords = .ks,
-        .gam = michel_gam,
-        .bc_x = .specific,
-        .specific_bc = &BondiCtx.bc,
-        .bc_ctx = &ctx,
+        .phys = .{ .coords = .ks, .gam = michel_gam },
+        .bc = .{ .x = .{ .specific = .{ .f = &BondiCtx.bc, .ctx = &ctx } } },
     });
     defer s.deinit();
 
     var ix: i64 = 0;
     while (ix < s.nxi()) : (ix += 1) {
-        try s.initCell(ix, 0, 0, ctx.prims(&s, ix));
+        try s.initCell(ix, 0, 0, ctx.prims(&s.core, ix));
     }
     try s.finishInit();
 
     const L = SimKs.Layout;
-    const na = s.grid.nx;
+    const na = s.core.grid.nx;
     var rho0 = try a.alloc(f64, na);
     defer a.free(rho0);
     ix = 0;
-    while (ix < s.nxi()) : (ix += 1) rho0[@intCast(ix)] = s.p.get(L.index(.rho), ix, 0, 0);
+    while (ix < s.nxi()) : (ix += 1) rho0[@intCast(ix)] = s.core.p.get(L.index(.rho), ix, 0, 0);
 
     while (s.t < tend) {
         var dt: ?f64 = null;
-        if (s.t + 1.0 / s.tstepdenmax > tend) dt = tend - s.t;
+        if (s.t + 1.0 / s.core.tstepdenmax > tend) dt = tend - s.t;
         try s.step(dt);
     }
 
@@ -709,7 +721,7 @@ fn runBondi(a: std.mem.Allocator, nx: usize, tend: f64) !f64 {
     var norm: f64 = 0;
     ix = 0;
     while (ix < s.nxi()) : (ix += 1) {
-        l1 += @abs(s.p.get(L.index(.rho), ix, 0, 0) - rho0[@intCast(ix)]);
+        l1 += @abs(s.core.p.get(L.index(.rho), ix, 0, 0) - rho0[@intCast(ix)]);
         norm += @abs(rho0[@intCast(ix)]);
     }
     return l1 / norm;

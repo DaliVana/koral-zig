@@ -1,5 +1,5 @@
 //! The per-cell conserved→primitive inversion sweep (C: calc_u2p,
-//! finite.c:546), generic over SimT. `Sim.calcU2p` is the operator: it runs
+//! finite.c:546), generic over CoreT. `Sim.calcU2p` is the operator: it runs
 //! this pass on the team, then the fixups and a boundary refresh.
 //!
 //! Moved verbatim out of sim.zig (redesign step 2, 2026-09-04).
@@ -11,19 +11,19 @@ const invert_rad = @import("../solve/invert_rad.zig");
 const Error = relele.Error || error{OutOfMemory};
 
 /// The band worker `Sim.calcU2p` hands to parallelRangeErr.
-pub fn rowsFn(comptime SimT: type) fn (*SimT, i64, i64) Error!void {
+pub fn rowsFn(comptime CoreT: type) fn (*CoreT, i64, i64) Error!void {
     return struct {
-        fn w(s: *SimT, iy0: i64, iy1: i64) Error!void {
-            return u2pRows(SimT, s, iy0, iy1);
+        fn w(s: *CoreT, iy0: i64, iy1: i64) Error!void {
+            return u2pRows(CoreT, s, iy0, iy1);
         }
     }.w;
 }
 
 /// The per-cell inversion body for iy ∈ [iy0, iy1) (all iz, all ix).
-fn u2pRows(comptime SimT: type, self: *SimT, iy0: i64, iy1: i64) Error!void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const NV = SimT.nv;
+fn u2pRows(comptime CoreT: type, self: *CoreT, iy0: i64, iy1: i64) Error!void {
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
+    const NV = CoreT.nv;
     var iz: i64 = 0;
     while (iz < self.nzi()) : (iz += 1) {
         var iy: i64 = iy0;
@@ -61,20 +61,20 @@ fn u2pRows(comptime SimT: type, self: *SimT, iy0: i64, iy1: i64) Error!void {
                     continue;
                 }
 
-                const res = invert.u2pMhd(cfg, uu, &pp, &geom, self.opt.gam, self.opt.floors);
+                const res = invert.u2pMhd(cfg, uu, &pp, &geom, self.phys.gam, self.phys.floors);
                 if (res.entropy_used) self.setFlag(.entropy, ix, iy, iz, 1);
 
                 // radiative closed-form inversion (u2p.c:386); runs
                 // regardless of the MHD outcome, on the same uu
                 var rad_fixup = false;
                 if (comptime L.hasVar(.ee)) {
-                    const rr = invert_rad.u2pRad(cfg, uu, &pp, &geom, self.opt.rad);
+                    const rr = invert_rad.u2pRad(cfg, uu, &pp, &geom, self.phys.rad);
                     rad_fixup = rr.corrected;
                 }
 
-                _ = try invert.checkFloorsMhd(cfg, &pp, &geom, self.opt.gam, self.opt.floors);
+                _ = try invert.checkFloorsMhd(cfg, &pp, &geom, self.phys.gam, self.phys.floors);
                 if (comptime L.hasVar(.ee)) {
-                    _ = try invert_rad.checkFloorsRad(cfg, &pp, &geom, self.opt.rad);
+                    _ = try invert_rad.checkFloorsRad(cfg, &pp, &geom, self.phys.rad);
                 }
 
                 self.p.store(ix, iy, iz, &pp);

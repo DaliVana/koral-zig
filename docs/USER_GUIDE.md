@@ -687,11 +687,14 @@ generator and the checker; edit them there and regenerate, never one side alone.
 ## 7. Recipe: creating a new problem
 
 A **problem** is: a comptime `Config`, a runtime `Params` file, an
-initial-condition + boundary-condition module, and a small driver executable.
-PUFFY keeps its C `define.h` knobs in a value type (`puffy.Physics`) so a
-preset is `fromParams`, not process-wide mutation; a simple tube can skip that
-and build `Sim.Options` directly. The library (`koral`) provides everything
-else. This section walks through a complete minimal example, a **relativistic
+initial-condition + boundary-condition module, and a one-line driver executable
+that hands an `App` contract to `koral.driver.run`. PUFFY keeps its C `define.h`
+knobs in a value type (`puffy.Physics`) so a preset is `fromParams`, not
+process-wide mutation; a simple tube can skip that and build `Sim.Options`
+directly (`Options.applyParams` maps the generic TOML keys). The library
+(`koral`) provides everything else, including the pieces torus problems share
+in `koral/problems/common/` (limotorus solver, floor atmospheres, β
+normalization, the stock `bc.c` fragments). This section walks through a complete minimal example, a **relativistic
 MHD shock tube in flat (Minkowski) space**, and then notes the extra pieces
 PUFFY needs.
 
@@ -701,7 +704,7 @@ in one directory, like `koral/problems/puffy/`):
 ```
 koral/config.zig                       # (optional) add a comptime Config const
 koral/problems/mytube/mytube.zig       # init conditions + boundary conditions
-koral/problems/mytube/main.zig         # the driver executable (auto-discovered)
+koral/problems/mytube/main.zig         # the App contract + koral.driver.run (auto-discovered)
 koral/problems/mytube/mytube.toml      # runtime params
 koral/koral.zig                        # register mytube under `problems` + tests
 ```
@@ -743,18 +746,23 @@ hydro/MHD/radiation tube you need none of this; the tags already exist.
 Two responsibilities: build each domain cell's primitive vector, and supply the
 `SpecificBc` callback for any axis using `.specific` boundaries.
 
-**Boundary-condition callback signature** (from `Sim(cfg).SpecificBc`,
-`koral/sim.zig`):
+**Boundary-condition callback signature** (`Sim(cfg).SpecificBc`, defined in
+`koral/sim/options.zig`):
 
 ```zig
 pub const SpecificBc = *const fn (
-    sim: *const Self,
+    ctx: ?*const anyopaque,      // the opaque context you register with the face
+    core: *const Sim.CoreT,      // grid, metric cache, p, physics options — not the whole Sim
     ix: i64, iy: i64, iz: i64,   // ghost-cell indices (signed; ghosts are <0 or ≥n)
     t: f64,
     ifinit: bool,                // true during initial set_bc
     face: BcFace,                // .xlo/.xhi/.ylo/.yhi/.zlo/.zhi
 ) relele.Error![NV]f64;          // ghost-cell primitives, or a conversion error
 ```
+
+A face is registered as `.bc = .{ .x = .{ .specific = .{ .f = &calc, .ctx = ... } } }`;
+the callback travels with the face, so a `.specific` axis without a callback cannot
+be expressed.
 
 The callback is fallible. Any frame or velocity conversion it performs
 (`frames.transPmhdCoco`, `relele.convert`, …) returns `relele.Error`, so use
@@ -816,9 +824,9 @@ const right = Side{ .rho = 0.125, .pgas = 0.1, .vx = 0.0, .bx = 0.5, .by = -1.0 
 pub fn initAll(comptime SimT: type, sim: *SimT) !void {
     var ix: i64 = 0;
     while (ix < sim.nxi()) : (ix += 1) {
-        const x = sim.grid.xc(ix);           // cell-center internal coord
+        const x = sim.core.grid.xc(ix);      // cell-center internal coord
         const s = if (x < 0.0) left else right;
-        try sim.initCell(ix, 0, 0, primsFor(s, sim.opt.gam)); // pp → p2u → store p,u
+        try sim.initCell(ix, 0, 0, primsFor(s, sim.core.phys.gam)); // pp → p2u → store p,u
     }
     try sim.finishInit();                    // halo + set_bc(t) + initial dt guess
 }
@@ -827,19 +835,20 @@ pub fn initAll(comptime SimT: type, sim: *SimT) !void {
 pub fn Bc(comptime SimT: type) type {
     return struct {
         pub fn calc(
-            sim: *const SimT, ix: i64, iy: i64, iz: i64,
+            ctx: ?*const anyopaque,
+            core: *const SimT.CoreT, ix: i64, iy: i64, iz: i64,
             t: f64, ifinit: bool, face: sim_mod.BcFace,
         ) relele.Error![SimT.nv]f64 {   // fallible: `try` any frame conversion
-            _ = t; _ = ifinit;
+            _ = ctx; _ = t; _ = ifinit;
             // Copy the nearest domain cell (simple outflow). For a static tube
             // you could instead return the fixed left/right asymptotic state.
             const src: i64 = switch (face) {
                 .xlo => 0,
-                .xhi => sim.nxi() - 1,
+                .xhi => core.nxi() - 1,
                 else => unreachable,          // ny=nz=1: no y/z faces
             };
             var pp: [SimT.nv]f64 = undefined;
-            sim.p.load(src, iy, iz, &pp);
+            core.p.load(src, iy, iz, &pp);
             return pp;   // no conversion here, so a plain return is fine
         }
     };
@@ -857,86 +866,92 @@ Key API points, all real:
   the checkpoint clock therefore fills ghosts at the resumed time.
 - `sim.cflDt()` returns the CFL timestep `1/tstepdenmax` from the last wavespeeds,
   the one place the driver and `step()` share the dt expression.
-- `sim.grid.xc(ix)` is the cell-center internal coordinate (the two-face average,
+- `sim.core.grid.xc(ix)` is the cell-center internal coordinate (the two-face average,
   `0.5*(xl(i)+xl(i+1))`, an intentional ulp-level match to C; do not "simplify").
+  Everything a pass may read lives on `sim.core` (grid, cache, `p`, `u`, flags,
+  `phys`, `num`); the Sim itself holds the scratch and the operators.
 - `sim.nxi()/nyi()/nzi()` are the interior cell counts.
 - `hydro.sFromU(rho, u, gam)` fills the entropy slot; the layout is indexed by
   `L.index(.rho)` etc., which `@compileError`s if the variable is absent for the
   active module set.
 
 If your tube needs the vector-potential path (seed **B** from A rather than
-directly), store A_φ in the B slots and call `ct.calcBfromA(SimT, sim, true)` then
+directly), store A_φ in the B slots and call `sim.calcBfromA(true)` then
 `setBc` before `finishInit`, exactly as PUFFY's `initAll` / `initAllWith` does
-(which also runs β-normalization in `postinit`). See `koral/sim/ct.zig`.
+(which also runs β-normalization through `problems/common/magnetize.zig`).
 
 ### (d) Write `koral/problems/<name>/main.zig`, the driver
 
-The driver is auto-discovered by `build.zig`. Use `koral/problems/puffy/main.zig` as the
-template; a minimal version:
+The driver is auto-discovered by `build.zig`, and it is one line: the generic
+`koral.driver.run(App, init)` (`koral/driver.zig`) does the CLI, the params file,
+the MPI world and φ-ring, the decomposition, `Sim.init`, restart or init, the
+RK2IMEX loop with its dt guard, the heartbeat and every output. What you write
+is the `App` contract. Use `koral/problems/puffy/main.zig` as the template; a
+minimal version:
 
 ```zig
 const std = @import("std");
 const koral = @import("koral");
 
-const cfg  = koral.config.mytube;
 const mytube = koral.problems.mytube;      // after registering it (step e)
-const SimT = koral.Sim(cfg);
 
-fn options(p: *const koral.Params) SimT.Options {
-    return .{
-        .coords = .mink,
-        .gam = p.gam,
-        .tsteplim = p.tsteplim,
-        .floors = koral.solve.invert.FloorParams.cdefault,
-        // opac = null  ⇒ no radiation source (SKIPRADSOURCE); fine for MHD-only.
-        .bc_x = .specific,
-        .specific_bc = &mytube.Bc(SimT).calc,
-        .nthreads = p.nthreads,
-    };
-}
+const App = struct {
+    pub const name = "mytube";                       // log prefix, Silo file stem
+    pub const cfg = koral.config.mytube;             // the comptime Config
+    pub const default_params = "koral/problems/mytube/mytube.toml";
+    pub const scalar_radii: koral.driver.ScalarRadii = .{ .lum = 1.0, .scale = 1.0 };
+    pub const Physics = mytube.Physics;              // any value type; can be `struct {}`
+
+    /// grid + Options (+ whatever the problem loads) from a params file.
+    pub fn setup(comptime SimT: type, a: std.mem.Allocator, io: std.Io, p: *const koral.Params) !mytube.Setup(SimT) {
+        var opt: SimT.Options = .{
+            .phys = .{
+                .coords = .mink,
+                .floors = koral.solve.invert.FloorParams.cdefault,
+                // opac = null  ⇒ no radiation source (SKIPRADSOURCE); fine for MHD-only.
+            },
+            .bc = .{ .x = .{ .specific = .{ .f = &mytube.Bc(SimT).calc } } },
+        };
+        opt.applyParams(p);   // gam, tsteplim, floors, implicit, threads … from the TOML
+        _ = a; _ = io;
+        return .{ .physics = .{}, .grid_global = mytube.makeGrid(p.nx), .options = opt };
+    }
+
+    /// Fill the domain; returns the β-normalization factor (1 for a tube).
+    pub fn initAll(comptime SimT: type, s: *SimT, phys: *const Physics) !f64 {
+        _ = phys;
+        try mytube.initAll(SimT, s);
+        return 1.0;
+    }
+};
 
 pub fn main(init: std.process.Init) !void {
-    const a = init.gpa;
-    const io = init.io;
-
-    var args = std.process.Args.Iterator.init(init.minimal.args);
-    defer args.deinit();
-    _ = args.next();
-    const params_path = args.next() orelse "koral/problems/mytube/mytube.toml";
-
-    var p = try koral.Params.load(a, io, params_path);
-    defer p.deinit(a);              // frees every heap-owned string field
-
-    // SimT.init validates its preconditions and returns error.InvalidConfig on
-    // a mismatch (ghost depth < reconstruction stencil, a `.specific` axis with
-    // no `specific_bc`, opt.coords ≠ cfg.coords, radviscosity with a null opac,
-    // or correct_polaraxis with ny ≤ 2·nccorrectpolar), so `try` it.
-    var s = try SimT.init(a, mytube.makeGrid(p.nx), options(&p));
-    defer s.deinit();
-
-    try mytube.initAll(SimT, &s);
-
-    while (s.t < p.tmax and s.nstep < p.nstep_max) {
-        var dt = s.cflDt();                    // = 1/s.tstepdenmax, previous step
-        if (s.t + dt > p.tmax) dt = p.tmax - s.t;
-        // Guard before stepping: a global blow-up leaves tstepdenmax at its −1
-        // reset sentinel (NaN fails the `>` update) → dt = −1 and time marches
-        // backwards; a diverging denominator stalls at dt = 0. Abort loudly.
-        if (!(dt > 0) or !std.math.isFinite(dt)) return error.InvalidTimestep;
-        try s.step(dt);
-    }
-    std.debug.print("mytube: done (t={d}, {d} steps)\n", .{ s.t, s.nstep });
+    return koral.driver.run(App, init);
 }
 ```
 
-The core loop is `dt = s.cflDt()` (= `1/s.tstepdenmax`) then `s.step(dt)`. `Sim.step` runs one full
-RK2IMEX step, alternating the implicit radiative-source operator with the explicit
-operator across the stages. The explicit operator (`opExplicit`) itself is:
-wavespeeds → reconstruction sweep → face fluxes → flux-CT for MHD → conserved
-update (the flux divergence **and** the metric source term `ms[iv]*dt` are added
-together here) → `calcU2p` inversion. Polar-axis correction (`doCorrect`) and the
-final entropy update (`updateEntropy`) happen at the stage boundaries in `step`
-(`koral/sim.zig`). `step` asserts `cfg.timestepping == .rk2imex`.
+`Setup(SimT)` is a struct with `.physics`, `.grid_global`, `.options` and a
+`deinit(allocator)` (PUFFY's carries an optional MESA table; a tube's can be
+empty). Optional `App` members: `banner(SimT, phys, p, grid_global)` for startup
+notes, `afterInit(SimT, sim, phys, is_root)` for a post-init report, and
+`reportSetupError(err, p)` for friendlier setup failures. The TOML may carry
+`problem = "mytube"`; the driver refuses a file tagged for another problem.
+
+`SimT.init` validates its preconditions through `Options.validate` and returns
+`error.InvalidConfig` on a mismatch (ghost depth < reconstruction stencil,
+`phys.coords ≠ cfg.coords`, `radvisc` with a null `opac`, `polaraxis` with
+`ny ≤ 2·ncells` or on flat coords, an inconsistent decomposition).
+
+Inside the driver's loop the core is `dt = s.cflDt()` (= `1/s.core.tstepdenmax`)
+then `s.step(dt)`. `Sim.step` runs one full RK2IMEX step (`koral/sim/rk2imex.zig`),
+alternating the implicit radiative-source operator with the explicit operator
+across the stages. The explicit operator (`opExplicit`) itself is: wavespeeds →
+reconstruction sweep → face fluxes → flux-CT for MHD → conserved update (the flux
+divergence **and** the metric source term `ms[iv]*dt` are added together here) →
+`calcU2p` inversion. Polar-axis correction (`doCorrect`) and the final entropy
+update (`updateEntropy`) happen at the stage boundaries in `step`. `cfg.timestepping`
+selects the integrator at comptime; only `.rk2imex` is implemented, the other
+schemes fail to compile.
 
 ### (e) Register in `koral/koral.zig`
 
@@ -1104,13 +1119,15 @@ constants, exact `M_PI` in synchrotron's `bsqcgs`), but the port uses one exact
 
 ### Add or modify a boundary-condition type
 
-Per-axis handling is `bc_x/bc_y/bc_z: BcKind` on `Sim.Options`, where
-`BcKind = { periodic, copy, specific }` (defined in `koral/sim/bc.zig`,
-re-exported by `sim.zig`). `.copy` clamps to the domain edge; `.periodic` wraps
-(with the `NY<NG ⇒ pin to 0` C quirk); `.specific` calls your `specific_bc`
-callback (§7c). To add a brand-new *built-in* kind, extend the `BcKind` enum and
-handle it in `setBcCell` (and, if it needs corners, `fillCorners2d`/
-`fillCorners3d`). Arbitrary/boundary-varying conditions should go through the
+Per-axis handling is `bc.x/bc.y/bc.z: BcKind` on `Sim.Options`, where
+`BcKind = union(enum) { periodic, copy, specific: { f, ctx } }` (defined in
+`koral/sim/options.zig`, re-exported as `Sim.BcKind`). `.copy` clamps to the
+domain edge; `.periodic` wraps (with the `NY<NG ⇒ pin to 0` C quirk);
+`.specific` carries your callback and its opaque context (§7c). The stock
+fragments a callback can compose are in `koral/problems/common/bcs.zig`
+(outflow with r-rescaling, inner copy, polar reflection). To add a brand-new
+*built-in* kind, extend the `BcKind` union and handle it in `setBcCell`
+(`koral/sim/bc.zig`; and, if it needs corners, `fillCorners2d`/`fillCorners3d`). Arbitrary/boundary-varying conditions should go through the
 `.specific` callback rather than a new enum value.
 
 Note: both 2D x-y (`fillCorners2d`) and 3D (`fillCorners3d`) ghost-corner

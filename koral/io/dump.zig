@@ -43,13 +43,13 @@ pub const ReadError = error{ BadMagic, BadVersion, DimMismatch, Truncated };
 
 /// Bytes a KDMP snapshot of the domain primitives occupies.
 pub fn primDumpSize(comptime SimT: type, sim: *const SimT) usize {
-    const ncell = sim.grid.nx * sim.grid.ny * sim.grid.nz;
+    const ncell = sim.core.grid.nx * sim.core.grid.ny * sim.core.grid.nz;
     return header_size + ncell * SimT.nv * 8;
 }
 
 /// Bytes of one rank's body slab (the local interior, no header).
 pub fn primBodySize(comptime SimT: type, sim: *const SimT) usize {
-    return sim.grid.nx * sim.grid.ny * sim.grid.nz * SimT.nv * 8;
+    return sim.core.grid.nx * sim.core.grid.ny * sim.core.grid.nz * SimT.nv * 8;
 }
 
 /// Byte offset of global z-plane `tok` in a KDMP file. The body is
@@ -102,9 +102,9 @@ pub fn parseDumpHeader(bytes: []const u8) ReadError!DumpHeader {
 /// the same cell order the golden readers expect. Returns bytes written.
 pub fn serializePrimDump(comptime SimT: type, sim: *const SimT, out_idx: u32, out: []u8) usize {
     var w = writeDumpHeader(out, .{
-        .nx = @intCast(sim.grid.nx),
-        .ny = @intCast(sim.grid.ny),
-        .nz = @intCast(sim.grid.nz),
+        .nx = @intCast(sim.core.grid.nx),
+        .ny = @intCast(sim.core.grid.ny),
+        .nz = @intCast(sim.core.grid.nz),
         .nv = @intCast(SimT.nv),
         .t = sim.t,
         .nstep = sim.nstep,
@@ -128,7 +128,7 @@ pub fn serializePrimBody(comptime SimT: type, sim: *const SimT, out: []u8) usize
             var ix: i64 = 0;
             while (ix < sim.nxi()) : (ix += 1) {
                 var pp: [SimT.nv]f64 = undefined;
-                sim.p.load(ix, iy, iz, &pp);
+                sim.core.p.load(ix, iy, iz, &pp);
                 for (0..SimT.nv) |iv| w += putF64(out[w..], pp[iv]);
             }
         }
@@ -144,7 +144,7 @@ pub fn serializePrimBody(comptime SimT: type, sim: *const SimT, out: []u8) usize
 /// Errors if the grid or nv disagree with the file; no silent reshaping.
 pub fn loadPrimDump(comptime SimT: type, sim: *SimT, bytes: []const u8) !DumpHeader {
     const h = try parseDumpHeader(bytes);
-    if (h.nx != sim.grid.nx or h.ny != sim.grid.ny or h.nz != sim.grid.nz or h.nv != SimT.nv)
+    if (h.nx != sim.core.grid.nx or h.ny != sim.core.grid.ny or h.nz != sim.core.grid.nz or h.nv != SimT.nv)
         return error.DimMismatch;
 
     const ncell = @as(usize, h.nx) * h.ny * h.nz;
@@ -218,7 +218,7 @@ pub fn writePrim(
     path: []const u8,
     idx: u32,
 ) !void {
-    if (sim.decomp.ntz <= 1) {
+    if (sim.core.decomp.ntz <= 1) {
         const bytes = try allocator.alloc(u8, primDumpSize(SimT, sim));
         defer allocator.free(bytes);
         const n = serializePrimDump(SimT, sim, idx, bytes);
@@ -236,7 +236,7 @@ fn writePrimMpi(
     path: []const u8,
     idx: u32,
 ) !void {
-    const g = sim.decomp.global;
+    const g = sim.core.decomp.global;
     const body64 = try allocator.alloc(f64, primBodySize(SimT, sim) / 8);
     defer allocator.free(body64);
     const body = std.mem.sliceAsBytes(body64);
@@ -246,7 +246,7 @@ fn writePrimMpi(
     const pathz = try std.fmt.bufPrintZ(&buf, "{s}", .{path});
     const total = bodyOffset(g.nx, g.ny, SimT.nv, g.nz);
     var f = try comm.fileCreate(pathz, total);
-    comm.fileWriteAtAll(&f, bodyOffset(g.nx, g.ny, SimT.nv, @intCast(sim.decomp.tok)), body);
+    comm.fileWriteAtAll(&f, bodyOffset(g.nx, g.ny, SimT.nv, @intCast(sim.core.decomp.tok)), body);
     comm.fileSync(&f);
     if (comm.rank() == 0) {
         var hdr: [header_size]u8 = undefined;
@@ -276,13 +276,13 @@ pub fn loadPrim(
     io: std.Io,
     path: []const u8,
 ) !DumpHeader {
-    const h = if (sim.decomp.ntz <= 1) blk: {
+    const h = if (sim.core.decomp.ntz <= 1) blk: {
         const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 << 30));
         defer allocator.free(bytes);
         break :blk try loadPrimDump(SimT, sim, bytes);
     } else try loadPrimMpi(SimT, sim, comm, allocator, path);
 
-    if (sim.decomp.ntz > 1) {
+    if (sim.core.decomp.ntz > 1) {
         const hv = [3]f64{ h.t, @floatFromInt(h.nstep), @floatFromInt(h.out_idx) };
         var hi = hv;
         var lo = hv;
@@ -315,12 +315,12 @@ fn loadPrimMpi(
     var hdr: [header_size]u8 = undefined;
     comm.fileReadAtAll(&f, 0, hdr[0..]);
     const h = try parseDumpHeader(hdr[0..]);
-    const g = sim.decomp.global;
+    const g = sim.core.decomp.global;
     if (h.nx != g.nx or h.ny != g.ny or h.nz != g.nz or h.nv != SimT.nv)
         return error.DimMismatch;
     if (fsize < bodyOffset(g.nx, g.ny, SimT.nv, g.nz)) return error.Truncated;
 
-    comm.fileReadAtAll(&f, bodyOffset(g.nx, g.ny, SimT.nv, @intCast(sim.decomp.tok)), body);
+    comm.fileReadAtAll(&f, bodyOffset(g.nx, g.ny, SimT.nv, @intCast(sim.core.decomp.tok)), body);
     try loadPrimBody(SimT, sim, body);
     return h;
 }
@@ -364,7 +364,7 @@ pub fn collectDiag(comptime SimT: type, s: *const SimT) Diag {
             var ix: i64 = 0;
             while (ix < s.nxi()) : (ix += 1) {
                 var pp: [SimT.nv]f64 = undefined;
-                s.p.load(ix, iy, iz, &pp);
+                s.core.p.load(ix, iy, iz, &pp);
                 for (pp) |v| {
                     if (!std.math.isFinite(v)) {
                         d.n_nan += 1;
@@ -381,7 +381,7 @@ pub fn collectDiag(comptime SimT: type, s: *const SimT) Diag {
 /// Globally-folded scalar row. Every rank must call this; it is collective.
 /// `r_lum` / `r_scale` are the problem's diagnostic radii (PUFFY: 5000, 15).
 pub fn scalarRow(comptime SimT: type, s: *SimT, dt: f64, r_lum: f64, r_scale: f64) !ScalarRow {
-    const r_horizon = @import("../metric/metric.zig").rHorizonBL(s.opt.mp.a);
+    const r_horizon = @import("../metric/metric.zig").rHorizonBL(s.core.phys.mp.a);
     const ix_h = scalars.radialShellIndex(SimT, s, r_horizon);
     const ix_l = scalars.radialShellIndex(SimT, s, r_lum);
     const diag = collectDiag(SimT, s);
@@ -438,9 +438,9 @@ pub const scalar_header =
 pub fn appendScalarLine(list: *std.ArrayList(u8), allocator: std.mem.Allocator, row: ScalarRow) !void {
     var buf: [512]u8 = undefined;
     const line = try std.fmt.bufPrint(&buf, "{e:.10} {e:.6} {d} {e:.10} {e:.10} {e:.10} {e:.10} {e:.6} {e:.6} {d} {d} {d} {d}\n", .{
-        row.t,           row.dt,            row.nstep,   row.mass,
-        row.mdot,          row.radlum,        row.totallum, row.scaleheight,
-        row.max_pmag_ptot, row.n_hd_fixup,    row.n_radimp_fail, row.n_nan,
+        row.t,             row.dt,         row.nstep,         row.mass,
+        row.mdot,          row.radlum,     row.totallum,      row.scaleheight,
+        row.max_pmag_ptot, row.n_hd_fixup, row.n_radimp_fail, row.n_nan,
         row.n_floorguard,
     });
     try list.appendSlice(allocator, line);

@@ -44,6 +44,8 @@
 # RMAX / MKSR0 / MKSH0 remain fixed PUFFY constants.
 # ============================================================================
 
+problem = "puffy"   # the executable this file is for (checked by the driver)
+
 [physical]
 mass = 4.297e6     # Sagittarius A* (GRAVITY / EHT 2022), see puffy3d_sgra.toml
 bhspin = 0.9375    # dimensionless Kerr spin a (prograde torus). RMIN auto-tracks

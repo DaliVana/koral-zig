@@ -25,8 +25,6 @@ const storage = @import("storage.zig");
 const stage = @import("stage.zig");
 const timestep = @import("timestep.zig");
 const entropy_pass = @import("entropy.zig");
-const rijvisc_mod = @import("rijvisc.zig");
-const dynamo_mod = @import("dynamo.zig");
 
 const Error = relele.Error || error{OutOfMemory};
 
@@ -73,28 +71,28 @@ pub fn Integrator(comptime NV: usize) type {
 // ---- stage arithmetic (exact C expression shapes; sim/stage.zig) ----------
 
 fn copyFull(comptime SimT: type, self: *SimT, dst: *SimT.FieldT, src: *const SimT.FieldT) void {
-    self.timers.begin(.stage);
-    defer self.timers.end();
-    stage.copyFull(SimT, self, dst, src);
+    self.core.timers.begin(.stage);
+    defer self.core.timers.end();
+    stage.copyFull(SimT.CoreT, &self.core, dst, src);
 }
 
 /// dst = (1/Δ)·a + (−1/Δ)·b over the domain (problem.c:181/230/…).
 fn stageDeriv(comptime SimT: type, self: *SimT, dst: *SimT.FieldT, a_f: *const SimT.FieldT, b_f: *const SimT.FieldT, delta: f64) void {
-    self.timers.begin(.stage);
-    defer self.timers.end();
-    stage.deriv(SimT, self, dst, a_f, b_f, delta);
+    self.core.timers.begin(.stage);
+    defer self.core.timers.end();
+    stage.deriv(SimT.CoreT, &self.core, dst, a_f, b_f, delta);
 }
 
 /// dst = a + f1·b + f2·c over the domain (problem.c:243/357).
 fn stageCombine(comptime SimT: type, self: *SimT, dst: *SimT.FieldT, a_f: *const SimT.FieldT, f1: f64, b_f: *const SimT.FieldT, f2: f64, c_f: *const SimT.FieldT) void {
-    self.timers.begin(.stage);
-    defer self.timers.end();
-    stage.combine(SimT, self, dst, a_f, f1, b_f, f2, c_f);
+    self.core.timers.begin(.stage);
+    defer self.core.timers.end();
+    stage.combine(SimT.CoreT, &self.core, dst, a_f, f1, b_f, f2, c_f);
 }
 
 pub fn step(comptime SimT: type, self: *SimT, forced_dt: ?f64) Error!void {
-    self.timers.begin(.step);
-    defer self.timers.end();
+    self.core.timers.begin(.step);
+    defer self.core.timers.end();
 
     const t = self.t;
 
@@ -102,7 +100,7 @@ pub fn step(comptime SimT: type, self: *SimT, forced_dt: ?f64) Error!void {
     // of C's solve preamble) or be forced — otherwise tstepdenmax is 0
     // and own_dt is +inf → NaNs on the first step, diagnosed only far
     // downstream. Turn that ordering bug into an immediate failure.
-    std.debug.assert(forced_dt != null or self.tstepdenmax > 0);
+    std.debug.assert(forced_dt != null or self.core.tstepdenmax > 0);
     self.own_dt = self.cflDt();
     const dt = forced_dt orelse self.own_dt;
     self.dt = dt;
@@ -111,75 +109,63 @@ pub fn step(comptime SimT: type, self: *SimT, forced_dt: ?f64) Error!void {
     const radimp_fail_at_step_start = self.n_radimp_failures;
 
     // reset wavespeed accumulators for this step
-    self.tstepdenmax = -1;
-    self.tstepdenmin = storage.big;
+    self.core.tstepdenmax = -1;
+    self.core.tstepdenmin = storage.big;
 
     // C: calc_Rij_visc_total (problem.c:127) — once per step, with
     // global_dt = this step's dt, feeding the RADVISCNUDAMP cap.
-    if (self.opt.radviscosity and comptime SimT.Layout.hasVar(.ee)) {
-        self.timers.begin(.radvisc);
-        defer self.timers.end();
-        try rijvisc_mod.calcRijViscTotal(SimT, self, dt);
-    }
+    try self.calcRijViscTotal(dt);
 
     const gam_imex = 1.0 - 1.0 / @sqrt(2.0);
 
     // my_finger: PR_FINGER not defined for any target problem
-    timestep.saveTimesteps(SimT, self);
+    timestep.saveTimesteps(SimT.CoreT, &self.core);
     // set_gammagas: CONSISTENTGAMMA off
 
     // ---- 1st implicit ----
-    copyFull(SimT, self, &self.integ.ut0, &self.u);
+    copyFull(SimT, self, &self.integ.ut0, &self.core.u);
     // (C copies p→ptm1 and, post-implicit, p→ppostimplicit here; both
     //  are write-only on this path — no Zig consumer — so dropped.)
     try self.opImplicit(dt * gam_imex); // U(1)
-    stageDeriv(SimT, self, &self.integ.drt1, &self.u, &self.integ.ut0, dt * gam_imex);
+    stageDeriv(SimT, self, &self.integ.drt1, &self.core.u, &self.integ.ut0, dt * gam_imex);
 
     // ---- 1st explicit ----
-    copyFull(SimT, self, &self.integ.ut1, &self.u);
+    copyFull(SimT, self, &self.integ.ut1, &self.core.u);
     try self.calcU2p(t);
     try self.doCorrect();
     self.exchangeHalos(); // C: mpi_exchangedata BEFORE set_bc (problem.c:198-204)
     try self.setBc(t, false);
     try self.opExplicit(t, dt); // F(U(1))
-    if (self.opt.dynamo and comptime SimT.Layout.hasVar(.b1)) {
-        self.timers.begin(.dynamo);
-        defer self.timers.end();
-        try dynamo_mod.applyDynamo(SimT, self, t, dt);
-    }
+    try self.applyDynamo(t, dt);
     // op_intermediate (electrons) — no-op
-    entropy_pass.copyEntropyCount(SimT, self);
-    stageDeriv(SimT, self, &self.integ.dut1, &self.u, &self.integ.ut1, dt);
+    entropy_pass.copyEntropyCount(SimT.CoreT, &self.core);
+    stageDeriv(SimT, self, &self.integ.dut1, &self.core.u, &self.integ.ut1, dt);
 
     // ---- 1st together: u = ut0 + dt·dut1 + dt(1−2γ)·drt1 ----
-    stageCombine(SimT, self, &self.u, &self.integ.ut0, dt, &self.integ.dut1, dt * (1.0 - 2.0 * gam_imex), &self.integ.drt1);
+    stageCombine(SimT, self, &self.core.u, &self.integ.ut0, dt, &self.integ.dut1, dt * (1.0 - 2.0 * gam_imex), &self.integ.drt1);
 
     // ---- 2nd implicit ----
-    copyFull(SimT, self, &self.integ.uforget, &self.u);
+    copyFull(SimT, self, &self.integ.uforget, &self.core.u);
     try self.calcU2p(t);
     // (C copies p→ptm1 / p→ppostimplicit here; write-only, dropped.)
     try self.doCorrect();
     try self.opImplicit(gam_imex * dt); // U(2)
-    stageDeriv(SimT, self, &self.integ.drt2, &self.u, &self.integ.uforget, dt * gam_imex);
+    stageDeriv(SimT, self, &self.integ.drt2, &self.core.u, &self.integ.uforget, dt * gam_imex);
 
     // ---- 2nd explicit ----
-    copyFull(SimT, self, &self.integ.ut2, &self.u);
+    copyFull(SimT, self, &self.integ.ut2, &self.core.u);
     try self.calcU2p(t);
     try self.doCorrect();
     self.exchangeHalos(); // C: problem.c:314-320
     try self.setBc(t, false);
     try self.opExplicit(t, dt); // F(U(2))
-    if (self.opt.dynamo and comptime SimT.Layout.hasVar(.b1)) {
-        self.timers.begin(.dynamo);
-        defer self.timers.end();
-        try dynamo_mod.applyDynamo(SimT, self, t, dt);
-    }
-    stageDeriv(SimT, self, &self.integ.dut2, &self.u, &self.integ.ut2, dt);
+    try self.applyDynamo(t, dt);
+    stageDeriv(SimT, self, &self.integ.dut2, &self.core.u, &self.integ.ut2, dt);
 
     // ---- explicit together: u = ut0 + dt/2·(dut1 + dut2) ----
-    stageCombine(SimT, self, &self.u, &self.integ.ut0, dt / 2.0, &self.integ.dut1, dt / 2.0, &self.integ.dut2);
+    stageCombine(SimT, self, &self.core.u, &self.integ.ut0, dt / 2.0, &self.integ.dut1, dt / 2.0, &self.integ.dut2);
     // ---- implicit together: u += dt/2·(drt1 + drt2) ----
-    stageCombine(SimT, self, &self.u, &self.u, dt / 2.0, &self.integ.drt1, dt / 2.0, &self.integ.drt2);
+    stageCombine(SimT, self, &self.core.u, &self.core.u, dt / 2.0, &self.integ.drt1, dt / 2.0, &self.integ.drt2);
 
     // ---- final inversion & bookkeeping ----
     try self.calcU2p(t);

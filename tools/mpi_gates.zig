@@ -69,15 +69,8 @@ fn minkGrid() Grid {
 
 fn minkOpts(comm: ?*Comm, decomp: ?koral.comm.Decomp) SimM.Options {
     return .{
-        .coords = .mink,
-        .gam = 5.0 / 3.0,
-        .floors = invert.FloorParams.puffy,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = radforce.Params.puffy(),
-        .implicit = implicit.ImplicitParams.puffy,
-        .bc_x = .copy,
-        .bc_y = .copy,
-        .bc_z = .periodic,
+        .phys = .{ .coords = .mink, .gam = 5.0 / 3.0, .floors = invert.FloorParams.puffy, .rad = invert_rad.RadParams.puffy, .opac = radforce.Params.puffy(), .implicit = implicit.ImplicitParams.puffy },
+        .bc = .{ .x = .copy, .y = .copy, .z = .periodic },
         .comm = comm,
         .decomp = decomp,
     };
@@ -93,9 +86,9 @@ fn initMinkBox(s: *SimM) !void {
         while (iy < s.nyi()) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < s.nxi()) : (ix += 1) {
-                const fx = s.grid.xc(ix);
-                const fy = s.grid.yc(iy);
-                const fz = s.grid.zc(iz);
+                const fx = s.core.grid.xc(ix);
+                const fy = s.core.grid.yc(iy);
+                const fz = s.core.grid.zc(iz);
                 const bump = 1.0 + 0.3 * @sin(tau * fx) * @cos(tau * fy) * @cos(tau * fz);
                 var pp: [SimM.nv]f64 = @splat(0);
                 pp[LM.index(.rho)] = 1.0 * bump;
@@ -161,18 +154,18 @@ fn gate2(allocator: std.mem.Allocator, comm: *Comm) !bool {
     }
     g.expect(ref.t == s.t, "t {e} vs {e}", .{ ref.t, s.t });
     g.expect(ref.dt == s.dt, "dt {e} vs {e}", .{ ref.dt, s.dt });
-    g.expect(ref.tstepdenmax == s.tstepdenmax, "tstepdenmax", .{});
-    g.expect(ref.tstepdenmin == s.tstepdenmin, "tstepdenmin", .{});
+    g.expect(ref.core.tstepdenmax == s.core.tstepdenmax, "tstepdenmax", .{});
+    g.expect(ref.core.tstepdenmin == s.core.tstepdenmin, "tstepdenmin", .{});
     g.expect(ref.n_radimp_failures == s.n_radimp_failures, "radimp failures", .{});
-    for (ref.p.data, s.p.data, 0..) |a, b, i| {
+    for (ref.core.p.data, s.core.p.data, 0..) |a, b, i| {
         if (!(a == b or (std.math.isNan(a) and std.math.isNan(b))))
             g.expect(false, "p[{d}] {e} vs {e}", .{ i, a, b });
     }
-    for (ref.u.data, s.u.data, 0..) |a, b, i| {
+    for (ref.core.u.data, s.core.u.data, 0..) |a, b, i| {
         if (!(a == b or (std.math.isNan(a) and std.math.isNan(b))))
             g.expect(false, "u[{d}] {e} vs {e}", .{ i, a, b });
     }
-    for (ref.flags, s.flags, 0..) |a, b, i| {
+    for (ref.core.flags, s.core.flags, 0..) |a, b, i| {
         if (a != b) g.expect(false, "flag[{d}] {d} vs {d}", .{ i, a, b });
     }
     return g.finish();
@@ -265,8 +258,8 @@ fn compareCentralBitwise(
             var ix: i64 = margin;
             while (ix < s.nxi() - margin) : (ix += 1) {
                 for (0..SimT.nv) |iv| {
-                    const a = ref.p.get(iv, ix, iy, gz);
-                    const b = s.p.get(iv, ix, iy, iz);
+                    const a = ref.core.p.get(iv, ix, iy, gz);
+                    const b = s.core.p.get(iv, ix, iy, iz);
                     if (a != b)
                         g.expect(false, "central p iv={d} ({d},{d},{d}|gz{d}): {e} vs {e}", .{ iv, ix, iy, iz, gz, a, b });
                 }
@@ -311,7 +304,7 @@ fn compareDomainTolerance(
             var ix: i64 = 0;
             while (ix < ref.nxi()) : (ix += 1) {
                 for (0..SimT.nv) |iv| {
-                    const v = @abs(ref.p.get(iv, ix, iy, gz));
+                    const v = @abs(ref.core.p.get(iv, ix, iy, gz));
                     if (v > scale[iv]) scale[iv] = v;
                 }
             }
@@ -330,8 +323,8 @@ fn compareDomainTolerance(
                 const central = ix >= margin and ix < s.nxi() - margin and
                     iy >= margin and iy < s.nyi() - margin;
                 for (0..SimT.nv) |iv| {
-                    const a = ref.p.get(iv, ix, iy, tok + iz);
-                    const b = s.p.get(iv, ix, iy, iz);
+                    const a = ref.core.p.get(iv, ix, iy, tok + iz);
+                    const b = s.core.p.get(iv, ix, iy, iz);
                     // NaN where the reference is finite is always a failure.
                     if (std.math.isFinite(a) and !std.math.isFinite(b)) {
                         g.expect(false, "non-finite p iv={d} ({d},{d},{d}): {e} vs {e}", .{ iv, ix, iy, iz, a, b });
@@ -448,8 +441,8 @@ fn gate3Mink(allocator: std.mem.Allocator, comm: *Comm, dc: koral.comm.Decomp) !
     // so a slab's "first dz" is a different global cell whose spacing can
     // differ by an ulp on a non-dyadic grid. All RANKS agree exactly (the
     // MIN fold); only serial-vs-slab may differ in the last bits.
-    const tsd_rel = @abs(ref.tstepdenmax - s.tstepdenmax) / ref.tstepdenmax;
-    g.expect(tsd_rel <= 1e-12, "init tstepdenmax {e} vs {e}", .{ ref.tstepdenmax, s.tstepdenmax });
+    const tsd_rel = @abs(ref.core.tstepdenmax - s.core.tstepdenmax) / ref.core.tstepdenmax;
+    g.expect(tsd_rel <= 1e-12, "init tstepdenmax {e} vs {e}", .{ ref.core.tstepdenmax, s.core.tstepdenmax });
 
     // Two forced-dt steps (serial's own choices, replayed on the slab).
     for (0..2) |_| {
@@ -474,11 +467,11 @@ fn gate3Mink(allocator: std.mem.Allocator, comm: *Comm, dc: koral.comm.Decomp) !
     // varies strongly in φ (cos 2πz), so a rank's slab-local wavespeed
     // extremum is genuinely different from the global one — which makes
     // both a missing fold and an identity fold detectable here.
-    const cfl = [2]f64{ s.tstepdenmax, s.tstepdenmin };
+    const cfl = [2]f64{ s.core.tstepdenmax, s.core.tstepdenmin };
     try expectRanksAgree(&g, comm, allocator, "tstepden", cfl[0..]);
-    expectMatchesSerial(&g, "tstepden", &.{ ref.tstepdenmax, ref.tstepdenmin }, cfl[0..], 1e-6);
+    expectMatchesSerial(&g, "tstepden", &.{ ref.core.tstepdenmax, ref.core.tstepdenmin }, cfl[0..], 1e-6);
     // The init MIN fold (sim.zig min_dx/min_dy/min_dz -> initTimestepGuess).
-    const mins = [3]f64{ s.min_dx, s.min_dy, s.min_dz };
+    const mins = [3]f64{ s.core.min_dx, s.core.min_dy, s.core.min_dz };
     try expectRanksAgree(&g, comm, allocator, "min_d", mins[0..]);
     return g.finish();
 }
@@ -492,9 +485,9 @@ fn gate4(allocator: std.mem.Allocator, comm: *Comm, dc: koral.comm.Decomp) !bool
     try initMinkBox(&a);
     for (0..4) |_| try a.step(null);
     // snapshot, then rerun from scratch
-    const pa = try allocator.dupe(f64, a.p.data);
+    const pa = try allocator.dupe(f64, a.core.p.data);
     defer allocator.free(pa);
-    const ua = try allocator.dupe(f64, a.u.data);
+    const ua = try allocator.dupe(f64, a.core.u.data);
     defer allocator.free(ua);
     const ta = a.t;
     a.deinit(); // frees the exchange binding so run 2 can bind
@@ -505,11 +498,11 @@ fn gate4(allocator: std.mem.Allocator, comm: *Comm, dc: koral.comm.Decomp) !bool
     for (0..4) |_| try b.step(null);
 
     g.expect(ta == b.t, "t {e} vs {e}", .{ ta, b.t });
-    for (pa, b.p.data, 0..) |x, y, i| {
+    for (pa, b.core.p.data, 0..) |x, y, i| {
         if (!(x == y or (std.math.isNan(x) and std.math.isNan(y))))
             g.expect(false, "p[{d}] {e} vs {e}", .{ i, x, y });
     }
-    for (ua, b.u.data, 0..) |x, y, i| {
+    for (ua, b.core.u.data, 0..) |x, y, i| {
         if (!(x == y or (std.math.isNan(x) and std.math.isNan(y))))
             g.expect(false, "u[{d}] {e} vs {e}", .{ i, x, y });
     }
@@ -520,21 +513,11 @@ fn gate4(allocator: std.mem.Allocator, comm: *Comm, dc: koral.comm.Decomp) !bool
 
 fn puffyOpts(comm: ?*Comm, decomp: ?koral.comm.Decomp) SimP.Options {
     return .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.gam,
-        .floors = invert.FloorParams.puffy,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = radforce.Params.puffy(),
-        .implicit = implicit.ImplicitParams.puffy,
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .radviscosity = true,
-        .dynamo = true,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        .bc_z = .periodic,
-        .specific_bc = &puffy.Bc(SimP).calc,
+        .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.gam, .floors = invert.FloorParams.puffy, .rad = invert_rad.RadParams.puffy, .opac = radforce.Params.puffy(), .implicit = implicit.ImplicitParams.puffy },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{ .x = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } }, .y = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } }, .z = .periodic },
+        .radvisc = .{},
+        .dynamo = .{},
         .comm = comm,
         .decomp = decomp,
     };
@@ -568,7 +551,7 @@ fn gate5(allocator: std.mem.Allocator, comm: *Comm) !bool {
     // the tiny guess-dt startup step, then a CFL-sized step, both forced
     // from the serial reference's choices.
     for (0..2) |_| {
-        const dt = 1.0 / ref.tstepdenmax;
+        const dt = 1.0 / ref.core.tstepdenmax;
         try ref.step(dt);
         try s.step(dt);
     }
@@ -593,13 +576,13 @@ fn gate5(allocator: std.mem.Allocator, comm: *Comm) !bool {
     // wrong answer if an operand is dropped, so ranks-agree is blind and
     // the serial comparison is what actually catches it.
     try expectRanksAgree(&g, comm, allocator, "scaleth", s.dynamo.?.scaleth);
-    expectMatchesSerial(&g, "scaleth", ref.scaleth, s.dynamo.?.scaleth, 1e-6);
+    expectMatchesSerial(&g, "scaleth", ref.dynamo.?.scaleth, s.dynamo.?.scaleth, 1e-6);
     // BETANORM's global max (puffy.zig postinit): a missing fold makes each
     // rank normalize B by its own slab maximum.
     try expectRanksAgree(&g, comm, allocator, "betanorm_fac", &.{fac_s});
     expectMatchesSerial(&g, "betanorm_fac", &.{fac_ref}, &.{fac_s}, 1e-6);
     // And the per-step fold again, here under the full production physics.
-    try expectRanksAgree(&g, comm, allocator, "tstepden", &.{ s.tstepdenmax, s.tstepdenmin });
+    try expectRanksAgree(&g, comm, allocator, "tstepden", &.{ s.core.tstepdenmax, s.core.tstepdenmin });
 
     // ---- P4b: the folded scalar diagnostics (io/scalars.zig globalScalars,
     // the scalars.dat row) vs the serial values — plan gate 6's "scalars
@@ -725,9 +708,9 @@ fn gate6(allocator: std.mem.Allocator, io: std.Io, comm: *Comm, dc: koral.comm.D
                 while (ix < s2.nxi()) : (ix += 1) {
                     for (0..SimM.nv) |iv| {
                         const gz = dc.tok + iz;
-                        if (s2.p.get(iv, ix, iy, iz) != ref.p.get(iv, ix, iy, gz))
+                        if (s2.core.p.get(iv, ix, iy, iz) != ref.core.p.get(iv, ix, iy, gz))
                             g.expect(false, "restart p iv={d} ({d},{d},{d})", .{ iv, ix, iy, iz });
-                        if (s2.u.get(iv, ix, iy, iz) != ref.u.get(iv, ix, iy, gz))
+                        if (s2.core.u.get(iv, ix, iy, iz) != ref.core.u.get(iv, ix, iy, gz))
                             g.expect(false, "restart u iv={d} ({d},{d},{d})", .{ iv, ix, iy, iz });
                     }
                 }

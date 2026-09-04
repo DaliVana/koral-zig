@@ -1,5 +1,5 @@
 //! The implicit radiative source operator's per-cell pass (C: op_implicit,
-//! finite.c:1400), generic over SimT: solve_implicit_lab per cell,
+//! finite.c:1400), generic over CoreT: solve_implicit_lab per cell,
 //! RADIMPFIXUPFLAG, and the iteration/solve/failure tallies through
 //! ChunkResult. `Sim.opImplicit` is the operator: the SKIPRADSOURCE gate,
 //! the timer, the team dispatch, the counter merge and the radimp fixup.
@@ -10,21 +10,21 @@ const implicit = @import("../solve/implicit.zig");
 const threading = @import("../threading.zig");
 
 /// Worker context: the sub-step dt.
-pub fn Ctx(comptime SimT: type) type {
-    return struct { sim: *SimT, dt: f64 };
+pub fn Ctx(comptime CoreT: type) type {
+    return struct { core: *CoreT, dt: f64 };
 }
 
 /// The band worker `Sim.opImplicit` hands to parallelRange. Errors here
 /// would be relele failures inside the solver, but solve_implicit_lab
 /// returns a status (never throws), so this worker cannot error — it
 /// only tallies counters into `res`.
-pub fn rowsWorker(comptime SimT: type) fn (*Ctx(SimT), i64, i64, *threading.ChunkResult) void {
+pub fn rowsWorker(comptime CoreT: type) fn (*Ctx(CoreT), i64, i64, *threading.ChunkResult) void {
     return struct {
-        fn w(ctx: *Ctx(SimT), iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            const cfg = SimT.Cfg;
-            const NV = SimT.nv;
-            const self = ctx.sim;
-            const opac = &(self.opt.opac.?);
+        fn w(ctx: *Ctx(CoreT), iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            const cfg = CoreT.Cfg;
+            const NV = CoreT.nv;
+            const self = ctx.core;
+            const opac = &(self.phys.opac.?);
             const ImplT = implicit.Solver(cfg);
 
             var iz: i64 = 0;
@@ -43,7 +43,7 @@ pub fn rowsWorker(comptime SimT: type) fn (*Ctx(SimT), i64, i64, *threading.Chun
                         self.p.load(ix, iy, iz, &pp);
 
                         const geom = self.cache.fillGeometry(ix, iy, iz);
-                        const rr = ImplT.solveImplicitLab(&uu, &pp, &geom, ctx.dt, self.opt.gam, self.opt.rad, opac, &self.opt.implicit);
+                        const rr = ImplT.solveImplicitLab(&uu, &pp, &geom, ctx.dt, self.phys.gam, self.phys.rad, opac, &self.phys.implicit);
 
                         if (rr.ok) {
                             self.u.store(ix, iy, iz, &uu);

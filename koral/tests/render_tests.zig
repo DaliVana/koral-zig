@@ -1166,7 +1166,7 @@ test "fits: header cards, geometry keywords, big-endian data, row flip, block pa
         "NAXIS2  =                    2",
         "BUNIT   = 'JY/PIXEL'",
         "CTYPE1  = 'RA---SIN'",
-"CDELT1  =  -1.250000000000E-10",
+        "CDELT1  =  -1.250000000000E-10",
         "CDELT2  =   1.250000000000E-10",
         "OBSRA   =     2.664168371000E2",
         "OBSDEC  =    -2.900781060000E1",

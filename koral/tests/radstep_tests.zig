@@ -39,12 +39,8 @@ const gam: f64 = 5.0 / 3.0;
 
 fn simOptions(opac: ?radforce.Params) SimT.Options {
     return .{
-        .coords = .mink,
-        .gam = gam,
-        .rad = invert_rad.RadParams.cdefault,
-        .opac = opac,
-        .implicit = implicit.ImplicitParams.puffy,
-        .bc_x = .periodic,
+        .phys = .{ .coords = .mink, .gam = gam, .rad = invert_rad.RadParams.cdefault, .opac = opac, .implicit = implicit.ImplicitParams.puffy },
+        .bc = .{ .x = .periodic },
     };
 }
 
@@ -90,7 +86,7 @@ test "kappa=0: RK2IMEX with implicit active ≡ SKIPRADSOURCE run" {
     ix = 0;
     while (ix < g.nx) : (ix += 1) {
         var pa: [NV]f64 = undefined;
-        s_null.p.load(ix, 0, 0, &pa);
+        s_null.core.p.load(ix, 0, 0, &pa);
         for (0..NV) |iv| scale[iv] = @max(scale[iv], @abs(pa[iv]));
     }
     var worst: f64 = 0;
@@ -98,8 +94,8 @@ test "kappa=0: RK2IMEX with implicit active ≡ SKIPRADSOURCE run" {
     while (ix < g.nx) : (ix += 1) {
         var pa: [NV]f64 = undefined;
         var pb: [NV]f64 = undefined;
-        s_null.p.load(ix, 0, 0, &pa);
-        s_zero.p.load(ix, 0, 0, &pb);
+        s_null.core.p.load(ix, 0, 0, &pa);
+        s_zero.core.p.load(ix, 0, 0, &pb);
         for (0..NV) |iv| {
             worst = @max(worst, @abs(pa[iv] - pb[iv]) / scale[iv]);
         }
@@ -134,7 +130,7 @@ fn relaxSim(a: std.mem.Allocator, kabs: f64, mass: f64) !SimT {
 
 fn cellEeUu(s: *const SimT) struct { ee: f64, uu: f64 } {
     var pp: [NV]f64 = undefined;
-    s.p.load(0, 0, 0, &pp);
+    s.core.p.load(0, 0, 0, &pp);
     return .{ .ee = pp[L.index(.ee)], .uu = pp[L.index(.uu)] };
 }
 
@@ -227,8 +223,8 @@ fn pulseMoments(s: *const SimT, ee_bg: f64) struct { xc: f64, var_: f64 } {
     var m1: f64 = 0;
     var ix: i64 = 0;
     while (ix < s.nxi()) : (ix += 1) {
-        const e = @abs(s.u.get(L.index(.ee), ix, 0, 0)) - ee_bg;
-        const x = s.grid.xc(ix);
+        const e = @abs(s.core.u.get(L.index(.ee), ix, 0, 0)) - ee_bg;
+        const x = s.core.grid.xc(ix);
         m0 += e;
         m1 += e * x;
     }
@@ -236,8 +232,8 @@ fn pulseMoments(s: *const SimT, ee_bg: f64) struct { xc: f64, var_: f64 } {
     var m2: f64 = 0;
     ix = 0;
     while (ix < s.nxi()) : (ix += 1) {
-        const e = @abs(s.u.get(L.index(.ee), ix, 0, 0)) - ee_bg;
-        const x = s.grid.xc(ix) - xc;
+        const e = @abs(s.core.u.get(L.index(.ee), ix, 0, 0)) - ee_bg;
+        const x = s.core.grid.xc(ix) - xc;
         m2 += e * x * x;
     }
     return .{ .xc = xc, .var_ = m2 / m0 };
@@ -247,7 +243,7 @@ test "optically thin pulse streams at the M1 streaming speed (5%)" {
     const a = std.testing.allocator;
     const g = Grid.init(.{ .nx = 128, .ng = 3, .minx = -50, .maxx = 50 });
     var opt = simOptions(null); // κ = 0: SKIPRADSOURCE
-    opt.bc_x = .copy;
+    opt.bc.x = .copy;
     var s = try SimT.init(a, g, opt);
     defer s.deinit();
 
@@ -286,7 +282,7 @@ test "optically thick scattering pulse diffuses at D = 1/(3χ)" {
     const kes: f64 = 10.0; // χ = κ_es·ρ = 10, τ_cell ≈ 7.8
     const g = Grid.init(.{ .nx = 256, .ng = 3, .minx = -50, .maxx = 50 });
     var opt = simOptions(radforce.Params.grey(units_mod.Units.init(mass), tubes.comp, 0.0, kes));
-    opt.bc_x = .copy;
+    opt.bc.x = .copy;
     var s = try SimT.init(a, g, opt);
     defer s.deinit();
 

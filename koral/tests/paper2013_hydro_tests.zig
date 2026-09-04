@@ -152,10 +152,9 @@ fn run(theta: f64) !Result {
     const t_end: f64 = 50.0;
     const grid = Grid.init(.{ .nx = nx, .ng = 2, .minx = -50.0, .maxx = 50.0 });
     var sim = try SimT.init(std.testing.allocator, grid, .{
-        .coords = .mink,
-        .gam = gam,
-        .minmod_theta = theta,
-        .bc_x = .copy,
+        .phys = .{ .coords = .mink, .gam = gam },
+        .num = .{ .minmod_theta = theta },
+        .bc = .{ .x = .copy },
     });
     defer sim.deinit();
 
@@ -169,7 +168,7 @@ fn run(theta: f64) !Result {
 
     while (sim.t < t_end) {
         var dt: ?f64 = null;
-        const cfl_dt = 1.0 / sim.tstepdenmax;
+        const cfl_dt = 1.0 / sim.core.tstepdenmax;
         if (sim.t + cfl_dt > t_end) dt = t_end - sim.t;
         try sim.step(dt);
     }
@@ -182,16 +181,16 @@ fn run(theta: f64) !Result {
     ix = 0;
     while (ix < sim.nxi()) : (ix += 1) {
         const ex = exact.sample(grid.xc(ix) / t_end);
-        const ux = sim.p.get(L.index(.vx), ix, 0, 0);
+        const ux = sim.core.p.get(L.index(.vx), ix, 0, 0);
         const lorentz = @sqrt(1.0 + ux * ux);
-        const density = sim.p.get(L.index(.rho), ix, 0, 0) * lorentz;
+        const density = sim.core.p.get(L.index(.rho), ix, 0, 0) * lorentz;
         const exact_lorentz = 1.0 / @sqrt(1.0 - ex.v * ex.v);
         density_l1 += @abs(density - ex.rho * exact_lorentz);
         velocity_l1 += @abs(ux / lorentz - ex.v);
 
         if (ix + 1 < sim.nxi() and grid.xc(ix) > exact.vstar * t_end) {
-            const ux_next = sim.p.get(L.index(.vx), ix + 1, 0, 0);
-            const d_next = sim.p.get(L.index(.rho), ix + 1, 0, 0) * @sqrt(1.0 + ux_next * ux_next);
+            const ux_next = sim.core.p.get(L.index(.vx), ix + 1, 0, 0);
+            const d_next = sim.core.p.get(L.index(.rho), ix + 1, 0, 0) * @sqrt(1.0 + ux_next * ux_next);
             const gradient = density - d_next;
             if (gradient > steepest) {
                 steepest = gradient;

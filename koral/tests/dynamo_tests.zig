@@ -39,19 +39,11 @@ const inject_factor: f64 = 10.0;
 
 fn dynamoOptions(nthreads: usize) SimP.Options {
     return .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.gam,
-        .floors = invert.FloorParams.puffy,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = radforce.Params.puffy(),
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .dynamo = true,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        .specific_bc = &puffy.Bc(SimP).calc,
-        .nthreads = nthreads,
+        .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.gam, .floors = invert.FloorParams.puffy, .rad = invert_rad.RadParams.puffy, .opac = radforce.Params.puffy() },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{ .x = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } }, .y = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } } },
+        .dynamo = .{},
+        .parallel = .{ .nthreads = nthreads },
     };
 }
 
@@ -66,19 +58,19 @@ fn injectB3(s: *SimP) !void {
         var ix: i64 = 0;
         while (ix < s.nxi()) : (ix += 1) {
             var pp: [SimP.nv]f64 = undefined;
-            s.p.load(ix, iy, 0, &pp);
+            s.core.p.load(ix, iy, 0, &pp);
             pp[b3] = inject_factor * pp[b2];
-            const geom = s.cache.fillGeometry(ix, iy, 0);
-            const uu = try p2u_mod.p2u(config.puffy, pp, &geom, s.opt.gam);
-            s.p.store(ix, iy, 0, &pp);
-            s.u.store(ix, iy, 0, &uu);
+            const geom = s.core.cache.fillGeometry(ix, iy, 0);
+            const uu = try p2u_mod.p2u(config.puffy, pp, &geom, s.core.phys.gam);
+            s.core.p.store(ix, iy, 0, &pp);
+            s.core.u.store(ix, iy, 0, &uu);
         }
     }
 }
 
 fn thetaBL(s: *const SimP, ix: i64, iy: i64) f64 {
-    const geom = s.cache.fillGeometry(ix, iy, 0);
-    return coco.cocoN(geom.xxvec, .mks2, .bl, s.opt.mp)[2];
+    const geom = s.core.cache.fillGeometry(ix, iy, 0);
+    return coco.cocoN(geom.xxvec, .mks2, .bl, s.core.phys.mp)[2];
 }
 
 test "M12 dynamo: DAMPBETA saturation + monotonicity + no-overshoot (formula)" {
@@ -145,8 +137,8 @@ test "M12 dynamo: BL geom / Jacobian / gdet caches are bit-identical to recomput
     defer s.deinit();
     _ = try puffy.initAll(SimP, &s);
 
-    const g = &s.grid;
-    const mp = s.opt.mp;
+    const g = &s.core.grid;
+    const mp = s.core.phys.mp;
     const ngx: i64 = @intCast(g.ngx);
     const ngy: i64 = @intCast(g.ngy);
     const ngz: i64 = @intCast(g.ngz);
@@ -160,16 +152,16 @@ test "M12 dynamo: BL geom / Jacobian / gdet caches are bit-identical to recomput
             while (ix < s.nxi() + ngx) : (ix += 1) {
                 // (1) cached BL geometry == fresh geometryBLat, all fields
                 const fresh = precompute.geometryBLat(g, .mks2, mp, ix, iy, iz);
-                try expectGeomBits(s.cache.blGeom(ix, iy, iz), &fresh);
+                try expectGeomBits(s.core.cache.blGeom(ix, iy, iz), &fresh);
 
                 // (2) cached MKS2→BL Jacobian == coco.dxdx at the cell center
                 const xx = [4]f64{ 0, g.xc(ix), g.yc(iy), g.zc(iz) };
                 const jf = coco.dxdx(xx, .mks2, .bl, mp);
-                const jc = s.cache.jacMy2Bl(ix, iy, iz);
+                const jc = s.core.cache.jacMy2Bl(ix, iy, iz);
                 for (0..4) |i| for (0..4) |k| try expectBits(jf[i][k], jc[i][k]);
 
                 // (3) gdet accessor == fillGeometry().gdet
-                try expectBits(s.cache.fillGeometry(ix, iy, iz).gdet, s.cache.gdet(ix, iy, iz));
+                try expectBits(s.core.cache.fillGeometry(ix, iy, iz).gdet, s.core.cache.gdet(ix, iy, iz));
                 nchecked += 1;
             }
         }
@@ -197,7 +189,7 @@ test "M12 dynamo: ΔA_φ equatorial sign flip + |B³| non-increasing + divB" {
         while (iy < ny) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
-                b3_before[@intCast(iy * nx + ix)] = s.p.get(b3, ix, iy, 0);
+                b3_before[@intCast(iy * nx + ix)] = s.core.p.get(b3, ix, iy, 0);
             }
         }
     }
@@ -208,14 +200,14 @@ test "M12 dynamo: ΔA_φ equatorial sign flip + |B³| non-increasing + divB" {
         var iy: i64 = 1;
         while (iy < ny) : (iy += 1) {
             var ix: i64 = 1;
-            while (ix < nx) : (ix += 1) divb_before = @max(divb_before, @abs(ct.calcDivB(SimP, &s, ix, iy, 0)));
+            while (ix < nx) : (ix += 1) divb_before = @max(divb_before, @abs(s.calcDivB(ix, iy, 0)));
         }
     }
 
     // run the dynamo core directly (no final calc_u2p round-trip on B³)
-    dynamo.calcScaleHeight(SimP, &s);
+    s.calcScaleHeight();
     try s.setBc(0.0, false);
-    try dynamo.mimicDynamo(SimP, &s, 10.0);
+    try s.mimicDynamo(10.0);
 
     // -- DAMPBETA property: |B³| never grows, sign never flips --
     {
@@ -224,7 +216,7 @@ test "M12 dynamo: ΔA_φ equatorial sign flip + |B³| non-increasing + divB" {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
                 const before = b3_before[@intCast(iy * nx + ix)];
-                const after = s.p.get(b3, ix, iy, 0);
+                const after = s.core.p.get(b3, ix, iy, 0);
                 try std.testing.expect(@abs(after) <= @abs(before) + 1e-30);
                 try std.testing.expect(after * before >= 0.0);
             }
@@ -256,7 +248,7 @@ test "M12 dynamo: ΔA_φ equatorial sign flip + |B³| non-increasing + divB" {
         var iy: i64 = 1;
         while (iy < ny) : (iy += 1) {
             var ix: i64 = 1;
-            while (ix < nx) : (ix += 1) divb_after = @max(divb_after, @abs(ct.calcDivB(SimP, &s, ix, iy, 0)));
+            while (ix < nx) : (ix += 1) divb_after = @max(divb_after, @abs(s.calcDivB(ix, iy, 0)));
         }
     }
     std.debug.print("dynamo: sign-flip checked {d} cells, divB before {e:.3} after {e:.3}\n", .{ checked, divb_before, divb_after });
@@ -269,7 +261,7 @@ test "M12 dynamo: calcScaleHeight = density-weighted RMS |π/2−θ|" {
     defer s.deinit();
     _ = try puffy.initAll(SimP, &s);
 
-    dynamo.calcScaleHeight(SimP, &s);
+    s.calcScaleHeight();
 
     const nx = s.nxi();
     const ny = s.nyi();
@@ -278,9 +270,9 @@ test "M12 dynamo: calcScaleHeight = density-weighted RMS |π/2−θ|" {
     var den: f64 = 0;
     var iy: i64 = 0;
     while (iy < ny) : (iy += 1) {
-        const geom = s.cache.fillGeometry(ix, iy, 0);
-        const xxbl = coco.cocoN(geom.xxvec, .mks2, .bl, s.opt.mp);
-        const rho = s.p.get(LP.index(.rho), ix, iy, 0);
+        const geom = s.core.cache.fillGeometry(ix, iy, 0);
+        const xxbl = coco.cocoN(geom.xxvec, .mks2, .bl, s.core.phys.mp);
+        const rho = s.core.p.get(LP.index(.rho), ix, iy, 0);
         const dth = pi / 2.0 - xxbl[2];
         num += rho * geom.gdet * dth * dth;
         den += rho * geom.gdet;
@@ -315,8 +307,8 @@ test "P1 dynamo threading: applyDynamo nthreads=4 is bit-identical to nthreads=1
 
     // full arrays (domain + ghosts: the ΔA_φ ring damps ghost B³ too),
     // the scale-height reduction, and the ΔA_φ scratch — all to the bit
-    for (s1.p.data, s4.p.data) |v1, v4| try std.testing.expectEqual(v1, v4);
-    for (s1.u.data, s4.u.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.core.p.data, s4.core.p.data) |v1, v4| try std.testing.expectEqual(v1, v4);
+    for (s1.core.u.data, s4.core.u.data) |v1, v4| try std.testing.expectEqual(v1, v4);
     for (s1.dynamo.?.dyn_a.data, s4.dynamo.?.dyn_a.data) |v1, v4| try std.testing.expectEqual(v1, v4);
     for (s1.dynamo.?.scaleth, s4.dynamo.?.scaleth) |v1, v4| try std.testing.expectEqual(v1, v4);
 }

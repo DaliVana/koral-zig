@@ -340,6 +340,32 @@ driver and the replay tools (`kdmp2silo`, `kdmp2png`, `kdmp2lc`, `qmri`).
 `main.zig` is the thin driver the architecture described. Goldens and the
 validated `defaults` are unchanged.
 
+**sim.zig redesign and the problem boundary, 2026-09-04.** Six bit-identical
+steps, each gated by the full battery, self-golden identity, and a byte-level
+`cmp` of 20-step 2D (1 and 8 threads) and 10-step 3D KDMP dumps against the
+pre-refactor binary; the 2-rank 3D dump is byte-identical before vs after as
+well, and `mpi-gates` is green at 1–4 ranks. (1) The generic run driver left
+`problems/puffy/main.zig` for `koral/driver.zig` (`driver.run(App, init)` over a
+small comptime contract; PUFFY's `main.zig` is the `App` + one line). (2) The six
+pass groups that ran inline in `sim.zig` moved to `sim/{timestep,u2p,fixup,
+explicit,implicit_op,entropy,stage}.zig`. (3) Each pass owns its scratch
+(`sim.faces`, `sim.bak`, `sim.ct`, `sim.visc`, `sim.dynamo`); `Sim.init` composes
+them with an `errdefer` per allocation, and scratch a disabled pass never touches
+is not allocated. (4) The RK2IMEX integrator and its stage buffers moved to
+`sim/rk2imex.zig`; `Sim.step` selects it from `cfg.timestepping` at comptime.
+(5) The generic pieces of `puffy.zig` moved to `problems/common/` (limotorus
+solver with a `Params` value, floor atmospheres + LTE split, β normalization,
+the seed-MRI diagnostic, the `bc.c` fragments, the init perturbation) and
+`rtbis` to `math/misc.zig`; `puffy.zig` re-exports every moved name (674 lines,
+from 1,194). (6) The one API break: `Core(cfg)` (`sim/core.zig`) is the state
+every pass sees and every pass takes `*CoreT` plus its own scratch, so ownership
+is compiler-enforced; `Options` (`sim/options.zig`) is grouped by owner
+(`phys`, `num`, `bc`, `radvisc: ?`, `dynamo: ?`, `parallel`) with
+`applyParams` and `validate`; `BcKind` is a union carrying the callback, so
+"specific without a callback" is unrepresentable; the callback receives
+`*const CoreT`; `Params` gained an optional `problem` key the driver checks.
+`sim.zig` is about 500 lines. Goldens unchanged.
+
 **Test hardening and golden reorganization, 2026-07-15.** New invariant gates cover the
 M12 physics, `dynamo_tests.zig` (the per-cell dynamo law `dynamoDeltaA` extracted as a pure
 function) and `radvisc_tests.zig` (`shearFromGradients` extracted from `calcShearLab`;

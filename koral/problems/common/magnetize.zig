@@ -1,7 +1,7 @@
 //! Global β normalization of the seed field (C: postinit.c, BETANORMFULL):
 //! fac = √(MAXBETA / max_cells(p_mag/p_tot)), then B *= fac on the domain
 //! with a p2u refresh. Ghost cells keep their unscaled B (C does not
-//! refresh BCs after postinit). Generic over SimT; every torus problem's
+//! refresh BCs after postinit). Generic over CoreT; every torus problem's
 //! postinit is this call with its own MAXBETA.
 //!
 //! The max is band-parallel over iy through ChunkResult's max-merged slot,
@@ -24,11 +24,11 @@ const p2u_mod = @import("../../p2u.zig");
 const threading = @import("../../threading.zig");
 
 /// Returns fac (postinit.c:78). No-op (fac = 1) without a magnetic field.
-pub fn normalizeBeta(comptime SimT: type, sim: *SimT, maxbeta: f64) !f64 {
-    const L = SimT.Layout;
+pub fn normalizeBeta(comptime CoreT: type, core: *CoreT, maxbeta: f64) !f64 {
+    const L = CoreT.Layout;
     if (comptime !L.hasVar(.b1)) return 1.0;
 
-    const ny: i64 = @intCast(sim.grid.ny);
+    const ny: i64 = @intCast(core.grid.ny);
 
     // Pass 1 — the BETANORMFULL max, band-parallel over iy. `tsd_max` is
     // ChunkResult's max-merged slot, so combining bands is order-insensitive
@@ -36,13 +36,13 @@ pub fn normalizeBeta(comptime SimT: type, sim: *SimT, maxbeta: f64) !f64 {
     // reproduces the serial `maxb = 0.0` starting value exactly (the slot's
     // neutral element is -inf).
     const MaxW = struct {
-        fn rows(s: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            betaMaxRows(SimT, s, iy0, iy1, res) catch |e| {
+        fn rows(s: *CoreT, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
+            betaMaxRows(CoreT, s, iy0, iy1, res) catch |e| {
                 res.err = e;
             };
         }
     };
-    const mres = threading.parallelRange(SimT, sim, sim.team, 0, ny, MaxW.rows);
+    const mres = threading.parallelRange(CoreT, core, core.team, 0, ny, MaxW.rows);
     if (mres.err) |e| return e;
     var maxb: f64 = @max(0.0, mres.tsd_max);
 
@@ -50,20 +50,20 @@ pub fn normalizeBeta(comptime SimT: type, sim: *SimT, maxbeta: f64) !f64 {
     // rank normalizes B differently and the field is discontinuous from
     // step 0. Identity serially; max is exact, so the folded value is
     // bit-identical to a serial run's.
-    maxb = sim.globalMax(maxb);
+    maxb = core.globalMax(maxb);
     const fac = @sqrt(maxbeta / maxb);
 
     // Pass 2 — apply the factor. Per-cell writes only; band-parallel.
-    const ScaleCtx = struct { sim: *SimT, fac: f64 };
-    var sctx = ScaleCtx{ .sim = sim, .fac = fac };
+    const ScaleCtx = struct { core: *CoreT, fac: f64 };
+    var sctx = ScaleCtx{ .core = core, .fac = fac };
     const ScaleW = struct {
         fn rows(c: *ScaleCtx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            betaScaleRows(SimT, c.sim, c.fac, iy0, iy1) catch |e| {
+            betaScaleRows(CoreT, c.core, c.fac, iy0, iy1) catch |e| {
                 res.err = e;
             };
         }
     };
-    const sres = threading.parallelRange(ScaleCtx, &sctx, sim.team, 0, ny, ScaleW.rows);
+    const sres = threading.parallelRange(ScaleCtx, &sctx, core.team, 0, ny, ScaleW.rows);
     if (sres.err) |e| return e;
 
     return fac;
@@ -71,11 +71,11 @@ pub fn normalizeBeta(comptime SimT: type, sim: *SimT, maxbeta: f64) !f64 {
 
 /// postinit pass 1 body for iy ∈ [iy0, iy1): the per-cell β = p_mag/p_tot,
 /// accumulated into the chunk's max-merged slot.
-fn betaMaxRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64, res: *threading.ChunkResult) !void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const nx: i64 = @intCast(sim.grid.nx);
-    const nz: i64 = @intCast(sim.grid.nz);
+fn betaMaxRows(comptime CoreT: type, core: *CoreT, iy0: i64, iy1: i64, res: *threading.ChunkResult) !void {
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
+    const nx: i64 = @intCast(core.grid.nx);
+    const nz: i64 = @intCast(core.grid.nz);
 
     var iz: i64 = 0;
     while (iz < nz) : (iz += 1) {
@@ -83,9 +83,9 @@ fn betaMaxRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64, res: *thread
         while (iy < iy1) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
-                var pp: [SimT.nv]f64 = undefined;
-                sim.p.load(ix, iy, iz, &pp);
-                const geom = sim.cache.fillGeometry(ix, iy, iz);
+                var pp: [CoreT.nv]f64 = undefined;
+                core.p.load(ix, iy, iz, &pp);
+                const geom = core.cache.fillGeometry(ix, iy, iz);
 
                 const ug = try relele.uconUcovFromPrims(
                     .{ pp[L.index(.vx)], pp[L.index(.vy)], pp[L.index(.vz)] },
@@ -99,7 +99,7 @@ fn betaMaxRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64, res: *thread
                 );
                 const pmag = bb.bsq / 2.0;
 
-                const pgas = (sim.opt.gam - 1.0) * pp[L.index(.uu)];
+                const pgas = (core.phys.gam - 1.0) * pp[L.index(.uu)];
                 var ptot = pgas;
                 if (comptime cfg.has(.radiation)) {
                     const rt = try radiation.calcFfRtt(cfg, pp, &geom);
@@ -116,11 +116,11 @@ fn betaMaxRows(comptime SimT: type, sim: *SimT, iy0: i64, iy1: i64, res: *thread
 
 /// postinit pass 2 body for iy ∈ [iy0, iy1): scale B by `fac` and refresh
 /// the conserveds.
-fn betaScaleRows(comptime SimT: type, sim: *SimT, fac: f64, iy0: i64, iy1: i64) !void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const nx: i64 = @intCast(sim.grid.nx);
-    const nz: i64 = @intCast(sim.grid.nz);
+fn betaScaleRows(comptime CoreT: type, core: *CoreT, fac: f64, iy0: i64, iy1: i64) !void {
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
+    const nx: i64 = @intCast(core.grid.nx);
+    const nz: i64 = @intCast(core.grid.nz);
 
     var iz: i64 = 0;
     while (iz < nz) : (iz += 1) {
@@ -128,15 +128,15 @@ fn betaScaleRows(comptime SimT: type, sim: *SimT, fac: f64, iy0: i64, iy1: i64) 
         while (iy < iy1) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
-                var pp: [SimT.nv]f64 = undefined;
-                sim.p.load(ix, iy, iz, &pp);
+                var pp: [CoreT.nv]f64 = undefined;
+                core.p.load(ix, iy, iz, &pp);
                 pp[L.index(.b1)] *= fac;
                 pp[L.index(.b2)] *= fac;
                 pp[L.index(.b3)] *= fac;
-                const geom = sim.cache.fillGeometry(ix, iy, iz);
-                const uu = try p2u_mod.p2u(cfg, pp, &geom, sim.opt.gam);
-                sim.p.store(ix, iy, iz, &pp);
-                sim.u.store(ix, iy, iz, &uu);
+                const geom = core.cache.fillGeometry(ix, iy, iz);
+                const uu = try p2u_mod.p2u(cfg, pp, &geom, core.phys.gam);
+                core.p.store(ix, iy, iz, &pp);
+                core.u.store(ix, iy, iz, &uu);
             }
         }
     }

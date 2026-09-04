@@ -1,19 +1,20 @@
 //! The explicit operator's transport passes (C: op_explicit, finite.c:633),
-//! generic over SimT:
+//! generic over CoreT and driven through `Ctx` (the Core, the operator's
+//! own face stores, the optional viscosity state, and the sub-step dt):
 //!
 //!   sweep(dim):      finite.c:708-1181 — reconstruct cell → face states,
 //!                    floor them, one-sided fluxes into pb/fl face arrays.
 //!   fluxesAtFaces:   finite.c:1461 f_calc_fluxes_at_faces (LAXF / HLL).
-//!   update(dt):      the conserved update from the flux divergence plus
+//!   update:          the conserved update from the flux divergence plus
 //!                    the metric source (physics.c:789
 //!                    f_metric_source_term_arb, GDETIN == 1 branch).
 //!
 //! `Sim.opExplicit` composes them in C's order (wavespeeds → sweeps →
-//! fluxes → flux-CT → update → calcU2p). All bodies moved verbatim out of
-//! sim.zig (redesign step 2, 2026-09-04): the x-innermost band loop orders,
-//! the `inline` face kernels and every expression shape are unchanged, so
-//! the result stays bit-identical.
+//! fluxes → flux-CT → update → calcU2p). The x-innermost band loop orders,
+//! the `inline` face kernels and every expression shape are unchanged from
+//! the original sim.zig bodies, so the result stays bit-identical.
 
+const std = @import("std");
 const relele = @import("../relele.zig");
 const hydro = @import("../physics/hydro.zig");
 const flux_mod = @import("../physics/flux.zig");
@@ -25,13 +26,12 @@ const p2u_mod = @import("../p2u.zig");
 const rijvisc_mod = @import("rijvisc.zig");
 const threading = @import("../threading.zig");
 const storage = @import("storage.zig");
-const std = @import("std");
 const Grid = @import("../grid.zig").Grid;
 
 const Error = relele.Error || error{OutOfMemory};
 
-/// The face stores the explicit operator owns (redesign step 3: pass-owned
-/// scratch): face-interpolated primitives and one-sided fluxes per side
+/// The face stores the explicit operator owns (pass-owned scratch):
+/// face-interpolated primitives and one-sided fluxes per side
 /// (C: pbLx.., flLx..) and the combined fluxes (flbx/flby/flbz). Lives at
 /// `sim.faces`; flux-CT (sim/ct.zig) rewrites the B rows of `flb` in place.
 pub fn Faces(comptime NV: usize) type {
@@ -78,15 +78,26 @@ pub fn Faces(comptime NV: usize) type {
     };
 }
 
+/// What one explicit operator sees: the Core, its own face stores, the
+/// viscosity state when radiative viscosity is on, and the sub-step dt.
+pub fn Ctx(comptime CoreT: type) type {
+    return struct {
+        core: *CoreT,
+        faces: *Faces(CoreT.nv),
+        visc: ?*const rijvisc_mod.State,
+        dt: f64 = 0,
+    };
+}
+
 // ---- source terms -----------------------------------------------------
 
 /// C: f_metric_source_term_arb (physics.c:789), GDETIN == 1: only the
 /// Christoffel contraction rows survive; f_general_source_term is
 /// zero for every M5/M6 problem (no artificial heating/cooling).
-fn metricSource(comptime SimT: type, self: *SimT, ix: i64, iy: i64, iz: i64) Error![SimT.nv]f64 {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const NV = SimT.nv;
+fn metricSource(comptime CoreT: type, self: *CoreT, ix: i64, iy: i64, iz: i64) Error![CoreT.nv]f64 {
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
+    const NV = CoreT.nv;
     const geom = self.cache.fillGeometry(ix, iy, iz);
     var pp: [NV]f64 = undefined;
     self.p.load(ix, iy, iz, &pp);
@@ -94,7 +105,7 @@ fn metricSource(comptime SimT: type, self: *SimT, ix: i64, iy: i64, iz: i64) Err
     const gdetu = geom.gdet;
     var ss: [NV]f64 = @splat(0);
 
-    const tij = try hydro.calcTij(cfg, pp, &geom, self.opt.gam);
+    const tij = try hydro.calcTij(cfg, pp, &geom, self.phys.gam);
     const t = relele.lowerSecond(tij, &geom);
 
     const kr_blk = self.cache.krBlock(ix, iy, iz);
@@ -127,14 +138,14 @@ fn metricSource(comptime SimT: type, self: *SimT, ix: i64, iy: i64, iz: i64) Err
 
 /// Sweep bounds for the cross directions of a sweep/face loop:
 /// narrow = domain; wide (MHD) = ±1 where that dimension is active.
-fn crossLo(comptime SimT: type, self: *const SimT, dim: usize) i64 {
-    if (comptime SimT.wide) {
+fn crossLo(comptime CoreT: type, self: *const CoreT, dim: usize) i64 {
+    if (comptime CoreT.wide) {
         return if (self.nDim(dim) > 1) -1 else 0;
     }
     return 0;
 }
-fn crossHi(comptime SimT: type, self: *const SimT, dim: usize) i64 {
-    if (comptime SimT.wide) {
+fn crossHi(comptime CoreT: type, self: *const CoreT, dim: usize) i64 {
+    if (comptime CoreT.wide) {
         return if (self.nDim(dim) > 1) self.nDim(dim) + 1 else self.nDim(dim);
     }
     return self.nDim(dim);
@@ -158,17 +169,18 @@ fn crossDims(comptime dim: usize) [2]usize {
 /// (finite.c:708-1181): reconstruct cell → face states, floor them,
 /// compute one-sided fluxes, stash into pb/fl face arrays. Skips a
 /// collapsed dimension. The caller owns the timer.
-pub fn sweep(comptime SimT: type, self: *SimT, comptime dim: usize) Error!void {
+pub fn sweep(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize) Error!void {
+    const self = c.core;
     const n = self.nDim(dim);
     if (n <= 1) return;
     const cross = comptime crossDims(dim);
-    try threading.parallelRangeErr(SimT, self, self.team, crossLo(SimT, self, cross[0]), crossHi(SimT, self, cross[0]), sweepBandFn(SimT, dim));
+    try threading.parallelRangeErr(Ctx(CoreT), c, self.team, crossLo(CoreT, self, cross[0]), crossHi(CoreT, self, cross[0]), sweepBandFn(CoreT, dim));
 }
 
-fn sweepBandFn(comptime SimT: type, comptime dim: usize) fn (*SimT, i64, i64) Error!void {
+fn sweepBandFn(comptime CoreT: type, comptime dim: usize) fn (*Ctx(CoreT), i64, i64) Error!void {
     return struct {
-        fn w(s: *SimT, c0_lo: i64, c0_hi: i64) Error!void {
-            return sweepBand(SimT, s, dim, c0_lo, c0_hi);
+        fn w(c: *Ctx(CoreT), c0_lo: i64, c0_hi: i64) Error!void {
+            return sweepBand(CoreT, c, dim, c0_lo, c0_hi);
         }
     }.w;
 }
@@ -183,11 +195,12 @@ fn sweepBandFn(comptime SimT: type, comptime dim: usize) fn (*SimT, i64, i64) Er
 /// instead of iy/iz strides (out of L2 on the 2D grid, a DRAM/TLB cliff
 /// in 3D). Each (i,c0,c1) writes only its own face slots, so reordering
 /// the iterations is bit-identical (P2 #5).
-fn sweepBand(comptime SimT: type, self: *SimT, comptime dim: usize, c0_lo: i64, c0_hi: i64) Error!void {
+fn sweepBand(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize, c0_lo: i64, c0_hi: i64) Error!void {
+    const self = c.core;
     const n = self.nDim(dim);
     const cross = comptime crossDims(dim);
-    const c1_lo = crossLo(SimT, self, cross[1]);
-    const c1_hi = crossHi(SimT, self, cross[1]);
+    const c1_lo = crossLo(CoreT, self, cross[1]);
+    const c1_hi = crossHi(CoreT, self, cross[1]);
 
     if (comptime dim == 0) {
         var c0 = c0_lo;
@@ -196,7 +209,7 @@ fn sweepBand(comptime SimT: type, self: *SimT, comptime dim: usize, c0_lo: i64, 
             while (c1 < c1_hi) : (c1 += 1) {
                 var i: i64 = -1;
                 while (i < n + 1) : (i += 1) {
-                    try sweepFace(SimT, self, dim, i, c0, c1, dx5At(SimT, self, dim, i));
+                    try sweepFace(CoreT, c, dim, i, c0, c1, dx5At(CoreT, self, dim, i));
                 }
             }
         }
@@ -205,10 +218,10 @@ fn sweepBand(comptime SimT: type, self: *SimT, comptime dim: usize, c0_lo: i64, 
         while (c1 < c1_hi) : (c1 += 1) {
             var i: i64 = -1;
             while (i < n + 1) : (i += 1) {
-                const dx5 = dx5At(SimT, self, dim, i); // invariant over the inner (x) loop — hoisted (#6)
+                const dx5 = dx5At(CoreT, self, dim, i); // invariant over the inner (x) loop — hoisted (#6)
                 var c0 = c0_lo;
                 while (c0 < c0_hi) : (c0 += 1) {
-                    try sweepFace(SimT, self, dim, i, c0, c1, dx5);
+                    try sweepFace(CoreT, c, dim, i, c0, c1, dx5);
                 }
             }
         }
@@ -217,7 +230,7 @@ fn sweepBand(comptime SimT: type, self: *SimT, comptime dim: usize, c0_lo: i64, 
 
 /// The ±2 sweep-direction cell sizes at slot i (C: get_size_x). Function
 /// of (i,dim) only, so it lifts out of the cross loops.
-inline fn dx5At(comptime SimT: type, self: *const SimT, comptime dim: usize, i: i64) [5]f64 {
+inline fn dx5At(comptime CoreT: type, self: *const CoreT, comptime dim: usize, i: i64) [5]f64 {
     return .{
         self.grid.cellSize(i - 2, dim),
         self.grid.cellSize(i - 1, dim),
@@ -231,11 +244,12 @@ inline fn dx5At(comptime SimT: type, self: *const SimT, comptime dim: usize, i: 
 /// at (i along dim, c0=cross[0], c1=cross[1]); dx5 is the sweep-direction
 /// stencil spacing. `inline` so the body stays fused into sweepBand's
 /// loops (Debug too). All writes land in this cell's own face slots.
-inline fn sweepFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i64, c0: i64, c1: i64, dx5: [5]f64) Error!void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const NV = SimT.nv;
-    const base_order = SimT.base_order;
+inline fn sweepFace(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize, i: i64, c0: i64, c1: i64, dx5: [5]f64) Error!void {
+    const self = c.core;
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
+    const NV = CoreT.nv;
+    const base_order = CoreT.base_order;
     const n = self.nDim(dim);
     const cross = comptime crossDims(dim);
     var cell = [3]i64{ 0, 0, 0 };
@@ -251,20 +265,20 @@ inline fn sweepFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i6
     var p0: [NV]f64 = undefined;
     var pp1: [NV]f64 = undefined;
     var pp2: [NV]f64 = @splat(0);
-    var c = cell;
-    c[dim] = i - 1;
-    self.p.load(c[0], c[1], c[2], &pm1);
-    c[dim] = i;
-    self.p.load(c[0], c[1], c[2], &p0);
-    c[dim] = i + 1;
-    self.p.load(c[0], c[1], c[2], &pp1);
+    var cc = cell;
+    cc[dim] = i - 1;
+    self.p.load(cc[0], cc[1], cc[2], &pm1);
+    cc[dim] = i;
+    self.p.load(cc[0], cc[1], cc[2], &p0);
+    cc[dim] = i + 1;
+    self.p.load(cc[0], cc[1], cc[2], &pp1);
     // C guards the ±2 stencil with INT_ORDER>1 — with
     // linear reconstruction there are only 2 ghost cells.
     if (comptime base_order > 1) {
-        c[dim] = i - 2;
-        self.p.load(c[0], c[1], c[2], &pm2);
-        c[dim] = i + 2;
-        self.p.load(c[0], c[1], c[2], &pp2);
+        cc[dim] = i - 2;
+        self.p.load(cc[0], cc[1], cc[2], &pm2);
+        cc[dim] = i + 2;
+        self.p.load(cc[0], cc[1], cc[2], &pp2);
     }
 
     // C: REDUCEORDERWHENNEEDED + REDUCEORDERATBH — drop the order by one
@@ -277,7 +291,7 @@ inline fn sweepFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i6
     // the calcU2p/opImplicit that ran right before this opExplicit
     // (C's RK2IMEX stage order is identical). Ghost cells read 0
     // (flags are ghost-allocated, memset, never set there).
-    if (self.opt.reduceorderafterfixup and reduce == 0 and
+    if (self.num.reduceorderafterfixup and reduce == 0 and
         (self.getFlag(.hd_fixup, cell[0], cell[1], cell[2]) != 0 or
             self.getFlag(.rad_fixup, cell[0], cell[1], cell[2]) != 0 or
             self.getFlag(.radimp_fixup, cell[0], cell[1], cell[2]) != 0))
@@ -286,7 +300,7 @@ inline fn sweepFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i6
     }
     const scheme: recon.Scheme = switch (base_order -| reduce) {
         0 => .donor,
-        1 => .{ .linear = .{ .theta = self.opt.minmod_theta } },
+        1 => .{ .linear = .{ .theta = self.num.minmod_theta } },
         else => .ppm,
     };
     const f = recon.reconstructN(NV, scheme, .{ pm2, pm1, p0, pp1, pp2 }, dx5);
@@ -297,34 +311,34 @@ inline fn sweepFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i6
     var ffr: [NV]f64 = undefined;
     if (dol) {
         const geom = self.cache.fillGeometryFace(cell[0], cell[1], cell[2], dim);
-        _ = try invert.checkFloorsMhd(cfg, &pl, &geom, self.opt.gam, self.opt.floors);
-        ffl = try flux_mod.fFluxPrime(cfg, pl, dim, &geom, self.opt.gam);
+        _ = try invert.checkFloorsMhd(cfg, &pl, &geom, self.phys.gam, self.phys.floors);
+        ffl = try flux_mod.fFluxPrime(cfg, pl, dim, &geom, self.phys.gam);
         // radiative viscosity: face i is between cells i−1 and i
-        if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
-            const rv = rijvisc_mod.faceAvg(SimT, self, dim, cell[0], cell[1], cell[2]);
-            try rijvisc_mod.addRadViscFlux(SimT, self, &ffl, &pl, &geom, dim, &rv);
+        if (c.visc != null and comptime L.hasVar(.ee)) {
+            const rv = rijvisc_mod.faceAvg(c.visc.?, dim, cell[0], cell[1], cell[2]);
+            try rijvisc_mod.addRadViscFlux(CoreT, self, c.visc.?, &ffl, &pl, &geom, dim, &rv);
         }
     }
     if (dor) {
         var cp = cell;
         cp[dim] = i + 1;
         const geom = self.cache.fillGeometryFace(cp[0], cp[1], cp[2], dim);
-        _ = try invert.checkFloorsMhd(cfg, &pr, &geom, self.opt.gam, self.opt.floors);
-        ffr = try flux_mod.fFluxPrime(cfg, pr, dim, &geom, self.opt.gam);
+        _ = try invert.checkFloorsMhd(cfg, &pr, &geom, self.phys.gam, self.phys.floors);
+        ffr = try flux_mod.fFluxPrime(cfg, pr, dim, &geom, self.phys.gam);
         // radiative viscosity: face i+1 is between cells i and i+1
-        if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
-            const rv = rijvisc_mod.faceAvg(SimT, self, dim, cp[0], cp[1], cp[2]);
-            try rijvisc_mod.addRadViscFlux(SimT, self, &ffr, &pr, &geom, dim, &rv);
+        if (c.visc != null and comptime L.hasVar(.ee)) {
+            const rv = rijvisc_mod.faceAvg(c.visc.?, dim, cp[0], cp[1], cp[2]);
+            try rijvisc_mod.addRadViscFlux(CoreT, self, c.visc.?, &ffr, &pr, &geom, dim, &rv);
         }
     }
 
     // pbR[dim] at face i ← pl; pbL[dim] at face i+1 ← pr
     var cp = cell;
-    self.faces.pb_r[dim].store(cp[0], cp[1], cp[2], &pl);
-    if (dol) self.faces.fl_r[dim].store(cp[0], cp[1], cp[2], &ffl);
+    c.faces.pb_r[dim].store(cp[0], cp[1], cp[2], &pl);
+    if (dol) c.faces.fl_r[dim].store(cp[0], cp[1], cp[2], &ffl);
     cp[dim] = i + 1;
-    self.faces.pb_l[dim].store(cp[0], cp[1], cp[2], &pr);
-    if (dor) self.faces.fl_l[dim].store(cp[0], cp[1], cp[2], &ffr);
+    c.faces.pb_l[dim].store(cp[0], cp[1], cp[2], &pr);
+    if (dor) c.faces.fl_l[dim].store(cp[0], cp[1], cp[2], &ffr);
 }
 
 // ---- flux combination ---------------------------------------------------
@@ -334,21 +348,22 @@ inline fn sweepFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i6
 /// cell wavespeeds. Hydro and radiation rows use separate speeds.
 /// Band-parallel over cross[0] per dimension, like the sweep. The caller
 /// owns the timer.
-pub fn fluxesAtFaces(comptime SimT: type, self: *SimT) Error!void {
-    for (0..3) |d| threading.parallelZero(self.team, self.faces.flb[d].data);
+pub fn fluxesAtFaces(comptime CoreT: type, c: *Ctx(CoreT)) Error!void {
+    const self = c.core;
+    for (0..3) |d| threading.parallelZero(self.team, c.faces.flb[d].data);
 
     inline for (0..3) |dim| {
         if (self.nDim(dim) > 1) {
             const cross = comptime crossDims(dim);
-            try threading.parallelRangeErr(SimT, self, self.team, crossLo(SimT, self, cross[0]), crossHi(SimT, self, cross[0]), fluxesBandFn(SimT, dim));
+            try threading.parallelRangeErr(Ctx(CoreT), c, self.team, crossLo(CoreT, self, cross[0]), crossHi(CoreT, self, cross[0]), fluxesBandFn(CoreT, dim));
         }
     }
 }
 
-fn fluxesBandFn(comptime SimT: type, comptime dim: usize) fn (*SimT, i64, i64) Error!void {
+fn fluxesBandFn(comptime CoreT: type, comptime dim: usize) fn (*Ctx(CoreT), i64, i64) Error!void {
     return struct {
-        fn w(s: *SimT, c0_lo: i64, c0_hi: i64) Error!void {
-            return fluxesBand(SimT, s, dim, c0_lo, c0_hi);
+        fn w(c: *Ctx(CoreT), c0_lo: i64, c0_hi: i64) Error!void {
+            return fluxesBand(CoreT, c, dim, c0_lo, c0_hi);
         }
     }.w;
 }
@@ -359,11 +374,12 @@ fn fluxesBandFn(comptime SimT: type, comptime dim: usize) fn (*SimT, i64, i64) E
 /// innermost with the face index in the middle, so the per-face reads and
 /// the flb store stream x. Each face writes only its own flb[dim] slot →
 /// order-independent, bit-identical.
-fn fluxesBand(comptime SimT: type, self: *SimT, comptime dim: usize, c0_lo: i64, c0_hi: i64) Error!void {
+fn fluxesBand(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize, c0_lo: i64, c0_hi: i64) Error!void {
+    const self = c.core;
     const n = self.nDim(dim);
     const cross = comptime crossDims(dim);
-    const c1_lo = crossLo(SimT, self, cross[1]);
-    const c1_hi = crossHi(SimT, self, cross[1]);
+    const c1_lo = crossLo(CoreT, self, cross[1]);
+    const c1_hi = crossHi(CoreT, self, cross[1]);
 
     if (comptime dim == 0) {
         var c0 = c0_lo;
@@ -371,7 +387,7 @@ fn fluxesBand(comptime SimT: type, self: *SimT, comptime dim: usize, c0_lo: i64,
             var c1 = c1_lo;
             while (c1 < c1_hi) : (c1 += 1) {
                 var i: i64 = 0;
-                while (i <= n) : (i += 1) try fluxFace(SimT, self, dim, i, c0, c1);
+                while (i <= n) : (i += 1) try fluxFace(CoreT, c, dim, i, c0, c1);
             }
         }
     } else {
@@ -380,7 +396,7 @@ fn fluxesBand(comptime SimT: type, self: *SimT, comptime dim: usize, c0_lo: i64,
             var i: i64 = 0;
             while (i <= n) : (i += 1) {
                 var c0 = c0_lo;
-                while (c0 < c0_hi) : (c0 += 1) try fluxFace(SimT, self, dim, i, c0, c1);
+                while (c0 < c0_hi) : (c0 += 1) try fluxFace(CoreT, c, dim, i, c0, c1);
             }
         }
     }
@@ -389,10 +405,11 @@ fn fluxesBand(comptime SimT: type, self: *SimT, comptime dim: usize, c0_lo: i64,
 /// Combine the one-sided fluxes at the single face (i along dim,
 /// c0=cross[0], c1=cross[1]) into flb[dim] via LAXF/HLL. `inline` to stay
 /// fused into fluxesBand's loops; writes only this face's own flb slot.
-inline fn fluxFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i64, c0: i64, c1: i64) Error!void {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
-    const NV = SimT.nv;
+inline fn fluxFace(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize, i: i64, c0: i64, c1: i64) Error!void {
+    const self = c.core;
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
+    const NV = CoreT.nv;
     const cross = comptime crossDims(dim);
     var cf = [3]i64{ 0, 0, 0 };
     cf[dim] = i;
@@ -410,12 +427,12 @@ inline fn fluxFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i64
 
     var pLl: [NV]f64 = undefined;
     var pRl: [NV]f64 = undefined;
-    self.faces.pb_l[dim].load(cf[0], cf[1], cf[2], &pLl);
-    self.faces.pb_r[dim].load(cf[0], cf[1], cf[2], &pRl);
+    c.faces.pb_l[dim].load(cf[0], cf[1], cf[2], &pLl);
+    c.faces.pb_r[dim].load(cf[0], cf[1], cf[2], &pRl);
 
     const geom = self.cache.fillGeometryFace(cf[0], cf[1], cf[2], dim);
-    const uLl = try p2u_mod.p2u(cfg, pLl, &geom, self.opt.gam);
-    const uRl = try p2u_mod.p2u(cfg, pRl, &geom, self.opt.gam);
+    const uLl = try p2u_mod.p2u(cfg, pLl, &geom, self.phys.gam);
+    const uRl = try p2u_mod.p2u(cfg, pRl, &geom, self.phys.gam);
 
     // hydro and radiation are two separate systems,
     // each combined with its own speeds (finite.c:1549)
@@ -443,8 +460,8 @@ inline fn fluxFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i64
     // (P2 #4). uLl/uRl are already whole-cell arrays.
     var fll: [NV]f64 = undefined;
     var flr: [NV]f64 = undefined;
-    self.faces.fl_l[dim].load(cf[0], cf[1], cf[2], &fll);
-    self.faces.fl_r[dim].load(cf[0], cf[1], cf[2], &flr);
+    c.faces.fl_l[dim].load(cf[0], cf[1], cf[2], &fll);
+    c.faces.fl_r[dim].load(cf[0], cf[1], cf[2], &flr);
     var fstar: [NV]f64 = undefined;
     for (0..NV) |iv| {
         // C: i < NVMHD → hydro block, else radiation
@@ -457,42 +474,40 @@ inline fn fluxFace(comptime SimT: type, self: *SimT, comptime dim: usize, i: i64
             .hll => laxf_mod.hll(fll[iv], flr[iv], uLl[iv], uRl[iv], al_sel, ar_sel),
         };
     }
-    self.faces.flb[dim].store(cf[0], cf[1], cf[2], &fstar);
+    c.faces.flb[dim].store(cf[0], cf[1], cf[2], &fstar);
 }
 
 // ---- the conserved update -----------------------------------------------
 
-/// Worker context for the passes parameterized by the sub-step dt.
-fn Ctx(comptime SimT: type) type {
-    return struct { sim: *SimT, dt: f64 };
-}
-
 /// The conserved update over the domain: du from the flux divergence plus
-/// the metric source, band-parallel over iy. The caller owns the timer.
-pub fn update(comptime SimT: type, self: *SimT, dtin: f64) Error!void {
-    var ctx = Ctx(SimT){ .sim = self, .dt = dtin };
-    try threading.parallelRangeErr(Ctx(SimT), &ctx, self.team, 0, self.nyi(), updateRowsBand(SimT));
+/// the metric source, band-parallel over iy, with `c.dt` the sub-step dt.
+/// The caller owns the timer.
+pub fn update(comptime CoreT: type, c: *Ctx(CoreT)) Error!void {
+    const self = c.core;
+    try threading.parallelRangeErr(Ctx(CoreT), c, self.team, 0, self.nyi(), updateRowsBand(CoreT));
 }
 
-fn updateRowsBand(comptime SimT: type) fn (*Ctx(SimT), i64, i64) Error!void {
+fn updateRowsBand(comptime CoreT: type) fn (*Ctx(CoreT), i64, i64) Error!void {
     return struct {
-        fn w(ctx: *Ctx(SimT), iy0: i64, iy1: i64) Error!void {
-            return updateRows(SimT, ctx.sim, ctx.dt, iy0, iy1);
+        fn w(c: *Ctx(CoreT), iy0: i64, iy1: i64) Error!void {
+            return updateRows(CoreT, c, iy0, iy1);
         }
     }.w;
 }
 
 /// The conserved update (flux divergence + metric source) for
 /// iy ∈ [iy0, iy1); writes only its own cells' u.
-fn updateRows(comptime SimT: type, self: *SimT, dtin: f64, iy0: i64, iy1: i64) Error!void {
-    const NV = SimT.nv;
+fn updateRows(comptime CoreT: type, c: *Ctx(CoreT), iy0: i64, iy1: i64) Error!void {
+    const self = c.core;
+    const NV = CoreT.nv;
+    const dtin = c.dt;
     var iz: i64 = 0;
     while (iz < self.nzi()) : (iz += 1) {
         var iy: i64 = iy0;
         while (iy < iy1) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < self.nxi()) : (ix += 1) {
-                const ms = try metricSource(SimT, self, ix, iy, iz);
+                const ms = try metricSource(CoreT, self, ix, iy, iz);
                 const dx = self.grid.cellSize(ix, 0);
                 const dy = self.grid.cellSize(iy, 1);
                 const dz = self.grid.cellSize(iz, 2);
@@ -508,12 +523,12 @@ fn updateRows(comptime SimT: type, self: *SimT, dtin: f64, iy0: i64, iy1: i64) E
                 var flyr: [NV]f64 = undefined;
                 var flzl: [NV]f64 = undefined;
                 var flzr: [NV]f64 = undefined;
-                self.faces.flb[0].load(ix, iy, iz, &flxl);
-                self.faces.flb[0].load(ix + 1, iy, iz, &flxr);
-                self.faces.flb[1].load(ix, iy, iz, &flyl);
-                self.faces.flb[1].load(ix, iy + 1, iz, &flyr);
-                self.faces.flb[2].load(ix, iy, iz, &flzl);
-                self.faces.flb[2].load(ix, iy, iz + 1, &flzr);
+                c.faces.flb[0].load(ix, iy, iz, &flxl);
+                c.faces.flb[0].load(ix + 1, iy, iz, &flxr);
+                c.faces.flb[1].load(ix, iy, iz, &flyl);
+                c.faces.flb[1].load(ix, iy + 1, iz, &flyr);
+                c.faces.flb[2].load(ix, iy, iz, &flzl);
+                c.faces.flb[2].load(ix, iy, iz + 1, &flzr);
                 var uu: [NV]f64 = undefined;
                 self.u.load(ix, iy, iz, &uu);
 

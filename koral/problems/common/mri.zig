@@ -31,9 +31,9 @@ pub const Mask = struct {
     gam: f64,
 };
 
-pub fn seedQuality(comptime SimT: type, s: *SimT, m: Mask) !SeedQ {
-    const cfg = SimT.Cfg;
-    const L = SimT.Layout;
+pub fn seedQuality(comptime CoreT: type, s: *CoreT, m: Mask) !SeedQ {
+    const cfg = CoreT.Cfg;
+    const L = CoreT.Layout;
     if (comptime !L.hasVar(.b1)) return .{};
     var out = SeedQ{};
     var iz: i64 = 0;
@@ -42,7 +42,7 @@ pub fn seedQuality(comptime SimT: type, s: *SimT, m: Mask) !SeedQ {
         while (iy < s.nyi()) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < s.nxi()) : (ix += 1) {
-                var pp: [SimT.nv]f64 = undefined;
+                var pp: [CoreT.nv]f64 = undefined;
                 s.p.load(ix, iy, iz, &pp);
                 const rho = pp[L.index(.rho)];
                 if (!(rho > 0)) continue;

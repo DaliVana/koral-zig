@@ -53,6 +53,7 @@ const coco = @import("../../metric/coco.zig");
 const precompute = @import("../../metric/precompute.zig");
 const ct = @import("../../sim/ct.zig");
 const sim_mod = @import("../../sim.zig");
+const options = @import("../../sim/options.zig");
 const params_mod = @import("../../params.zig");
 const magnetize = @import("../common/magnetize.zig");
 const mri = @import("../common/mri.zig");
@@ -142,33 +143,15 @@ pub const Physics = struct {
         if (p.kleinnishina) |b| s.channels.kleinnishina = b;
         if (p.synchrotron_bridge) |b| s.channels.synchrotron_bridge = b;
         if (p.scattering) |v| s.scattering = v;
-        if (p.zamo_floor_frame) |z| s.floor_params.b2rhofloorframe = if (z) .zamoframe else .driftframe;
-        if (p.isentropic_b2rhofloors) |b| s.floor_params.isentropic_b2rhofloors = b;
-        if (p.b2uufloor) |b| s.floor_params.b2uufloor = b;
         if (p.fluid_floor_inside_horizon) |b| s.fluid_floor_inside_horizon = b;
-        if (p.opdamp_maxlevels) |n| s.impl_params.opdamp_maxlevels = n;
-        if (p.opdamp_factor) |v| s.impl_params.opdamp_factor = v;
-        if (p.radimp_lag_opac) |b| s.impl_params.lag_opac = b;
-        if (p.scale_jacobian) |b| s.impl_params.scale_jacobian = b;
-        if (p.radimp_max_en_change_down) |v| s.impl_params.max_en_change_down = v;
-        if (p.radimp_max_en_change_up) |v| s.impl_params.max_en_change_up = v;
-        if (p.radimp_max_damping) |v| s.impl_params.max_damping = v;
         if (p.alpharadvisc) |v| s.alpharadvisc = v;
         if (p.maxradviscvel) |v| s.maxradviscvel = v;
         if (p.expectedhr) |v| s.expectedhr = v;
-        if (p.rhofloor) |v| s.floor_params.rhofloor = v;
-        if (p.uurhoratiomin) |v| s.floor_params.uurhoratiomin = v;
-        if (p.uurhoratiomax) |v| s.floor_params.uurhoratiomax = v;
-        if (p.b2rhoratiomax) |v| s.floor_params.b2rhoratiomax = v;
-        if (p.b2uuratiomax) |v| s.floor_params.b2uuratiomax = v;
-        if (p.gammamaxhd) |v| s.floor_params.gammamaxhd = v;
-        if (p.gammamaxrad) |v| s.rad_params.gammamaxrad = v;
-        if (p.eerhoratiomin) |v| s.rad_params.eerhoratiomin = v;
-        if (p.eerhoratiomax) |v| s.rad_params.eerhoratiomax = v;
-        if (p.eeuuratiomin) |v| s.rad_params.eeuuratiomin = v;
-        if (p.eeuuratiomax) |v| s.rad_params.eeuuratiomax = v;
-        if (p.radimpeps) |v| s.impl_params.eps = v;
-        if (p.radimpmaxiter) |v| s.impl_params.maxiter = v;
+        // The generic floor / radiative-floor / implicit-solver overrides are
+        // the library's mapping (sim/options.zig), shared with every problem.
+        options.applyFloors(&s.floor_params, p);
+        options.applyRad(&s.rad_params, p);
+        options.applyImplicit(&s.impl_params, p);
         s.tsteplim = p.tsteplim;
         s.nthreads = p.nthreads;
         s.pin_threads = p.pin_threads;
@@ -213,7 +196,7 @@ pub const Physics = struct {
     }
 
     /// Sim.Options for this physics. `comm` / `decomp` stay the caller's to fill.
-    /// `Bc.calc` reads `sim.opt.mp`, so no `bc_ctx` is required.
+    /// `Bc.calc` reads `sim.core.phys.mp`, so no `bc_ctx` is required.
     pub fn toOptions(self: *const Physics, comptime SimT: type) SimT.Options {
         var opac = radforce.Params.puffyMassChan(self.mass, self.composition, self.channels);
         if (!self.scattering) opac.kappaes = .none;
@@ -221,30 +204,31 @@ pub const Physics = struct {
         if (self.fluid_floor_inside_horizon)
             floors.horizon_x1 = @log(metric.rHorizonBL(self.mp.a) - self.mp.mksr0);
         return .{
-            .coords = .mks2,
-            .mp = self.mp,
-            .gam = self.gam,
-            .tsteplim = self.tsteplim,
-            .floors = floors,
-            .rad = self.rad_params,
-            .opac = opac,
-            .implicit = self.impl_params,
-            .correct_polaraxis = true,
-            .nccorrectpolar = 2,
-            .radviscosity = true,
+            .phys = .{
+                .coords = .mks2,
+                .mp = self.mp,
+                .gam = self.gam,
+                .floors = floors,
+                .rad = self.rad_params,
+                .opac = opac,
+                .implicit = self.impl_params,
+            },
+            .num = .{
+                .tsteplim = self.tsteplim,
+                .fixups = .{ .radimp = self.do_radimp_fixups },
+                .reduceorderatbh = self.reduceorderatbh,
+                .reduceorderafterfixup = self.reduceorderafterfixup,
+                .dampradwavespeednearaxis = self.dampradwavespeednearaxis,
+                .polaraxis = .{ .ncells = 2 },
+            },
+            .bc = .{
+                .x = .{ .specific = .{ .f = &Bc(SimT).calc } },
+                .y = .{ .specific = .{ .f = &Bc(SimT).calc } },
+                .z = .periodic,
+            },
             .radvisc = .{ .alpha = self.alpharadvisc, .maxvel = self.maxradviscvel },
-            .dynamo = true,
-            .dynamo_params = .{ .expectedhr = self.expectedhr },
-            .do_radimp_fixups = self.do_radimp_fixups,
-            .reduceorderatbh = self.reduceorderatbh,
-            .reduceorderafterfixup = self.reduceorderafterfixup,
-            .dampradwavespeednearaxis = self.dampradwavespeednearaxis,
-            .bc_x = .specific,
-            .bc_y = .specific,
-            .bc_z = .periodic,
-            .specific_bc = &Bc(SimT).calc,
-            .nthreads = self.nthreads,
-            .pin_threads = self.pin_threads,
+            .dynamo = .{ .expectedhr = self.expectedhr },
+            .parallel = .{ .nthreads = self.nthreads, .pin_threads = self.pin_threads },
         };
     }
 };
@@ -561,7 +545,7 @@ pub fn prepInitDomainWith(comptime SimT: type, sim: *SimT, phys: *const Physics)
             };
         }
     };
-    const res = threading.parallelRange(Ctx, &ctx, sim.team, 0, @intCast(sim.grid.ny), W.rows);
+    const res = threading.parallelRange(Ctx, &ctx, sim.core.team, 0, @intCast(sim.core.grid.ny), W.rows);
     if (res.err) |e| return e;
 }
 
@@ -573,8 +557,8 @@ fn prepInitRows(comptime SimT: type, sim: *SimT, phys: *const Physics, iy0: i64,
     const atm = phys.atmConsts(&con);
     const tc = torusConsts(phys.mp.a);
 
-    const nx: i64 = @intCast(sim.grid.nx);
-    const nz: i64 = @intCast(sim.grid.nz);
+    const nx: i64 = @intCast(sim.core.grid.nx);
+    const nz: i64 = @intCast(sim.core.grid.nz);
 
     var iz: i64 = 0;
     while (iz < nz) : (iz += 1) {
@@ -582,10 +566,10 @@ fn prepInitRows(comptime SimT: type, sim: *SimT, phys: *const Physics, iy0: i64,
         while (iy < iy1) : (iy += 1) {
             var ix: i64 = 0;
             while (ix < nx) : (ix += 1) {
-                const geom = sim.cache.fillGeometry(ix, iy, iz);
-                const geomBL = precompute.geometryBLat(&sim.grid, cfg.coords, phys.mp, ix, iy, iz);
+                const geom = sim.core.cache.fillGeometry(ix, iy, iz);
+                const geomBL = precompute.geometryBLat(&sim.core.grid, cfg.coords, phys.mp, ix, iy, iz);
                 var pp = try prepInitCellWith(cfg, &geom, &geomBL, &tc, &con, &atm, phys);
-                pp[L.index(.entr)] = hydro.sFromU(pp[L.index(.rho)], pp[L.index(.uu)], sim.opt.gam);
+                pp[L.index(.entr)] = hydro.sFromU(pp[L.index(.rho)], pp[L.index(.uu)], sim.core.phys.gam);
                 try sim.initCell(ix, iy, iz, pp);
             }
         }
@@ -606,7 +590,7 @@ pub fn initAllWith(comptime SimT: type, sim: *SimT, phys: *const Physics) !f64 {
     // still the Field.init zeros). No-ops serially.
     sim.exchangeHalos();
     try sim.setBc(0.0, true);
-    try ct.calcBfromA(SimT, sim, true);
+    try sim.calcBfromA(true);
     sim.exchangeHalos(); // domain B changed — refresh ghosts before the re-fill
     try sim.setBc(0.0, true);
     return try postinitWith(SimT, sim, phys);
@@ -620,7 +604,7 @@ pub fn postinit(comptime SimT: type, sim: *SimT) !f64 {
 }
 
 pub fn postinitWith(comptime SimT: type, sim: *SimT, phys: *const Physics) !f64 {
-    return magnetize.normalizeBeta(SimT, sim, phys.maxbeta);
+    return magnetize.normalizeBeta(SimT.CoreT, &sim.core, phys.maxbeta);
 }
 
 // ---------------------------------------------------------------------------
@@ -636,7 +620,7 @@ pub fn seedQuality(comptime SimT: type, s: *SimT) !SeedQ {
 }
 
 pub fn seedQualityWith(comptime SimT: type, s: *SimT, phys: *const Physics) !SeedQ {
-    return mri.seedQuality(SimT, s, .{ .mksr0 = phys.mp.mksr0, .rhoatmmin = phys.rhoatmmin, .gam = phys.gam });
+    return mri.seedQuality(SimT.CoreT, &s.core, .{ .mksr0 = phys.mp.mksr0, .rhoatmmin = phys.rhoatmmin, .gam = phys.gam });
 }
 
 // ---------------------------------------------------------------------------
@@ -652,7 +636,7 @@ pub fn Bc(comptime SimT: type) type {
 
         pub fn calc(
             ctx: ?*const anyopaque,
-            sim: *const SimT,
+            core: *const SimT.CoreT,
             ix: i64,
             iy: i64,
             iz: i64,
@@ -660,13 +644,13 @@ pub fn Bc(comptime SimT: type) type {
             ifinit: bool,
             face: sim_mod.BcFace,
         ) relele.Error![NV]f64 {
-            _ = ctx; // Sim.opt.mp carries the problem metric; no extra context
+            _ = ctx; // core.phys.mp carries the problem metric; no extra context
             _ = t;
             _ = ifinit;
             return switch (face) {
-                .xhi => try bcs.outflowRescaleXhi(SimT, sim, ix, iy, iz),
-                .xlo => bcs.copyXlo(SimT, sim, iy, iz),
-                .ylo, .yhi => bcs.polarReflect(SimT, sim, ix, iy, iz, face),
+                .xhi => try bcs.outflowRescaleXhi(SimT.CoreT, core, ix, iy, iz),
+                .xlo => bcs.copyXlo(SimT.CoreT, core, iy, iz),
+                .ylo, .yhi => bcs.polarReflect(SimT.CoreT, core, ix, iy, iz, face),
                 .zlo, .zhi => unreachable,
             };
         }

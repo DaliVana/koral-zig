@@ -38,7 +38,10 @@ fn makeBox(a: std.mem.Allocator, nx: usize, ny: usize, nz: usize) !SimT {
         .minz = 0,
         .maxz = 4.0,
     });
-    return SimT.init(a, g, .{ .coords = .mink, .gam = 5.0 / 3.0, .bc_x = .copy, .bc_y = .copy });
+    return SimT.init(a, g, .{
+        .phys = .{ .coords = .mink, .gam = 5.0 / 3.0 },
+        .bc = .{ .x = .copy, .y = .copy },
+    });
 }
 
 /// Fill every domain cell with a distinct, physical (p2u-valid) primitive
@@ -109,10 +112,10 @@ test "KDMP restart round-trips p and u bit-for-bit and restores clock/step/frame
                 var pd: [NV]f64 = undefined;
                 var us: [NV]f64 = undefined;
                 var ud: [NV]f64 = undefined;
-                src.p.load(ix, iy, iz, &ps);
-                dst.p.load(ix, iy, iz, &pd);
-                src.u.load(ix, iy, iz, &us);
-                dst.u.load(ix, iy, iz, &ud);
+                src.core.p.load(ix, iy, iz, &ps);
+                dst.core.p.load(ix, iy, iz, &pd);
+                src.core.u.load(ix, iy, iz, &us);
+                dst.core.u.load(ix, iy, iz, &ud);
                 for (0..NV) |iv| {
                     try std.testing.expectEqual(ps[iv], pd[iv]);
                     try std.testing.expectEqual(us[iv], ud[iv]);

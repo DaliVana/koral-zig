@@ -75,7 +75,7 @@ fn writeFrame(
     var pbuf: [1024]u8 = undefined;
     const path = try std.fmt.bufPrint(&pbuf, "{s}/prims{d:0>5}.kdmp", .{ out_dir, idx });
     try dump.writePrim(SimT, s, comm, allocator, io, path, idx);
-    if (s.decomp.ntz <= 1) writeSiloDump(SimT, name, io, out_dir, allocator, s, idx);
+    if (s.core.decomp.ntz <= 1) writeSiloDump(SimT, name, io, out_dir, allocator, s, idx);
 }
 
 const Heartbeat = struct {
@@ -107,7 +107,7 @@ fn countFixupFlags(comptime SimT: type, s: *const SimT) struct { hd: u64, rad: u
 }
 
 fn printHeartbeat(comptime SimT: type, s: *const SimT, dt: f64, step_wall_ns: u64, hb: *Heartbeat) void {
-    const g = s.decomp.global;
+    const g = s.core.decomp.global;
     const ncells: f64 = @floatFromInt(g.nx * g.ny * g.nz);
     const wall_s = @as(f64, @floatFromInt(@max(step_wall_ns, 1))) / 1.0e9;
     const znps = ncells / wall_s;
@@ -122,11 +122,11 @@ fn printHeartbeat(comptime SimT: type, s: *const SimT, dt: f64, step_wall_ns: u6
         0;
     const fx = countFixupFlags(SimT, s);
 
-    if (s.decomp.ntz > 1) {
+    if (s.core.decomp.ntz > 1) {
         var total_ns: u64 = 0;
-        for (s.timers.ns) |v| total_ns += v;
-        const comm_ns = s.timers.ns[@intFromEnum(sim_mod.Pass.halo)] +
-            s.timers.ns[@intFromEnum(sim_mod.Pass.collect)];
+        for (s.core.timers.ns) |v| total_ns += v;
+        const comm_ns = s.core.timers.ns[@intFromEnum(sim_mod.Pass.halo)] +
+            s.core.timers.ns[@intFromEnum(sim_mod.Pass.collect)];
         const mpi_pct: f64 = if (total_ns > 0)
             100.0 * @as(f64, @floatFromInt(comm_ns)) / @as(f64, @floatFromInt(total_ns))
         else
@@ -195,6 +195,10 @@ pub fn run(comptime P: type, init: std.process.Init) !void {
         return err;
     };
     defer p.deinit(allocator);
+    if (p.problem.len > 0 and !std.mem.eql(u8, p.problem, name)) {
+        std.debug.print(name ++ ": params file is for problem '{s}', not '" ++ name ++ "'\n", .{p.problem});
+        return error.ProblemMismatch;
+    }
 
     var st = P.setup(SimT, allocator, io, &p) catch |err| {
         if (comptime @hasDecl(P, "reportSetupError")) P.reportSetupError(err, &p);
@@ -227,7 +231,7 @@ pub fn run(comptime P: type, init: std.process.Init) !void {
     defer s.deinit();
 
     if (p.pin_threads) {
-        if (s.team) |tm| {
+        if (s.core.team) |tm| {
             if (tm.pinnedWidth()) |w| {
                 std.debug.print(name ++ ": rank {d}: {d} threads pinned over {d} allowed cpus\n", .{ comm.rank(), p.nthreads, w });
             } else {
@@ -316,7 +320,7 @@ pub fn run(comptime P: type, init: std.process.Init) !void {
         if (!restarted) try writeFrame(SimT, name, io, allocator, &s, &comm, p.out_dir, out_idx);
     }
 
-    s.timers.reset();
+    s.core.timers.reset();
     var hb = Heartbeat{ .last_ns = sim_mod.nowNs() };
     while (s.t < p.tmax and s.nstep < p.nstep_max) {
         var dt = s.cflDt();
@@ -325,7 +329,7 @@ pub fn run(comptime P: type, init: std.process.Init) !void {
         if (!(dt > 0) or !std.math.isFinite(dt)) {
             std.debug.print(
                 name ++ ": invalid timestep dt={e} at step {d} t={d} (tstepdenmax={e}) — aborting\n",
-                .{ dt, s.nstep, s.t, s.tstepdenmax },
+                .{ dt, s.nstep, s.t, s.core.tstepdenmax },
             );
             return error.InvalidTimestep;
         }
@@ -358,9 +362,9 @@ pub fn run(comptime P: type, init: std.process.Init) !void {
                     name ++ ": t={d:.2} nstep={d} dt={e:.3} | Ṁ={e:.3} L={e:.3} H/R={d:.3} β⁻¹={e:.3} | nan={d} hdfix={d} radimpfail={d}\n",
                     .{ s.t, s.nstep, dt, row.mdot, row.radlum, row.scaleheight, row.max_pmag_ptot, row.n_nan, row.n_hd_fixup, row.n_radimp_fail },
                 );
-                s.timers.printReport();
+                s.core.timers.printReport();
             }
-            s.timers.reset();
+            s.core.timers.reset();
             if (row.n_nan > 0) {
                 const local = dump.collectDiag(SimT, &s).n_nan;
                 if (local > 0)

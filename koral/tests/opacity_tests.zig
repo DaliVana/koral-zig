@@ -313,11 +313,8 @@ test "M8: uniform rad state with real opacities (chi > 0) stays static" {
 
     const g = Grid.init(.{ .nx = 16, .ng = 3, .minx = 0, .maxx = 20.0 });
     var s = try SimT.init(std.testing.allocator, g, .{
-        .coords = .mink,
-        .gam = gam,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = p,
-        .bc_x = .periodic,
+        .phys = .{ .coords = .mink, .gam = gam, .rad = invert_rad.RadParams.puffy, .opac = p },
+        .bc = .{ .x = .periodic },
     });
     defer s.deinit();
 
@@ -336,21 +333,21 @@ test "M8: uniform rad state with real opacities (chi > 0) stays static" {
     try s.finishInit();
 
     // sanity: the state really is optically thick over a cell
-    const geo = s.cache.fillGeometry(0, 0, 0);
+    const geo = s.core.cache.fillGeometry(0, 0, 0);
     const chi = try radforce.calcChi(cfg, pp, &geo, gam, &p);
-    if (!(chi * s.grid.cellSize(0, 0) > 1.0)) {
-        std.debug.print("not optically thick: chi {e} dx {e}\n", .{ chi, s.grid.cellSize(0, 0) });
+    if (!(chi * s.core.grid.cellSize(0, 0) > 1.0)) {
+        std.debug.print("not optically thick: chi {e} dx {e}\n", .{ chi, s.core.grid.cellSize(0, 0) });
         return error.TestUnexpectedResult;
     }
 
     var pp0: [NV]f64 = undefined;
-    s.p.load(8, 0, 0, &pp0);
+    s.core.p.load(8, 0, 0, &pp0);
     for (0..10) |_| try s.step(null);
 
     ix = 0;
     while (ix < s.nxi()) : (ix += 1) {
         var q: [NV]f64 = undefined;
-        s.p.load(ix, 0, 0, &q);
+        s.core.p.load(ix, 0, 0, &q);
         for (0..NV) |iv| {
             const scale = @max(@abs(pp0[iv]), 1e-30);
             const dev = @abs(q[iv] - pp0[iv]) / scale;

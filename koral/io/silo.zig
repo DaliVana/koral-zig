@@ -99,8 +99,8 @@ fn writeImpl(
     const cfg = SimT.Cfg;
     const L = SimT.Layout;
     const coords = cfg.coords;
-    const mp = sim.opt.mp;
-    const gam = sim.opt.gam;
+    const mp = sim.core.phys.mp;
+    const gam = sim.core.phys.gam;
     const spherical = coords != .mink;
     const has_b = comptime L.hasVar(.b1);
     const has_rad = comptime L.hasVar(.ee);
@@ -124,7 +124,7 @@ fn writeImpl(
     // → those fields stay 0.
     var consts_ptr: ?*const thermo.Consts = null;
     var par_ptr: ?*const radforce.Params = null;
-    if (sim.opt.opac) |*op| {
+    if (sim.core.phys.opac) |*op| {
         consts_ptr = &op.consts;
         par_ptr = op;
     }
@@ -149,9 +149,9 @@ fn writeImpl(
                     const iz: i64 = @intCast(imz);
                     // silo.c node coordinate: boundary in each evolved
                     // dimension, cell center in a collapsed one.
-                    const x1 = sim.grid.xl(ix);
-                    const x2 = if (ny == 1) sim.grid.yc(0) else sim.grid.yl(iy);
-                    const x3 = if (nz == 1) sim.grid.zc(0) else sim.grid.zl(iz);
+                    const x1 = sim.core.grid.xl(ix);
+                    const x2 = if (ny == 1) sim.core.grid.yc(0) else sim.core.grid.yl(iy);
+                    const x3 = if (nz == 1) sim.core.grid.zc(0) else sim.core.grid.zl(iz);
                     var cx: f64 = undefined;
                     var cy: f64 = undefined;
                     var cz: f64 = undefined;
@@ -238,9 +238,9 @@ fn writeImpl(
                 const zi: usize = @intCast(iz * (ny * nx) + iy * nx + ix);
 
                 var pp: [SimT.nv]f64 = undefined;
-                sim.p.load(ix, iy, iz, &pp);
-                const geom = sim.cache.fillGeometry(ix, iy, iz);
-                const geomBL = precompute.geometryBLat(&sim.grid, coords, mp, ix, iy, iz);
+                sim.core.p.load(ix, iy, iz, &pp);
+                const geom = sim.core.cache.fillGeometry(ix, iy, iz);
+                const geomBL = precompute.geometryBLat(&sim.core.grid, coords, mp, ix, iy, iz);
                 const r = if (spherical) geomBL.xxvec[1] else 0;
                 const th = if (spherical) geomBL.xxvec[2] else 0;
                 const ph = if (spherical) geomBL.xxvec[3] else 0;
@@ -296,7 +296,7 @@ fn writeImpl(
                     divb[zi] = if (ix == 0 or (ny > 1 and iy == 0) or (nz > 1 and iz == 0))
                         0
                     else
-                        ct.calcDivB(SimT, sim, ix, iy, iz);
+                        sim.calcDivB(ix, iy, iz);
 
                     if (spherical) {
                         const cb = sphToCart(th, ph, bb.bcon[1], bb.bcon[2] * r, bb.bcon[3] * r * @sin(th));

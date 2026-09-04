@@ -23,18 +23,10 @@ const LP = SimP.Layout;
 
 fn viscOptions() SimP.Options {
     return .{
-        .coords = .mks2,
-        .mp = puffy.mp,
-        .gam = puffy.gam,
-        .floors = invert.FloorParams.puffy,
-        .rad = invert_rad.RadParams.puffy,
-        .opac = radforce.Params.puffy(),
-        .correct_polaraxis = true,
-        .nccorrectpolar = 2,
-        .radviscosity = true,
-        .bc_x = .specific,
-        .bc_y = .specific,
-        .specific_bc = &puffy.Bc(SimP).calc,
+        .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.gam, .floors = invert.FloorParams.puffy, .rad = invert_rad.RadParams.puffy, .opac = radforce.Params.puffy() },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{ .x = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } }, .y = .{ .specific = .{ .f = &puffy.Bc(SimP).calc } } },
+        .radvisc = .{},
     };
 }
 
@@ -46,16 +38,16 @@ fn torusCell(s: *const SimP) ?[2]i64 {
     while (iy < ny) : (iy += 1) {
         var ix: i64 = @divTrunc(nx, 3);
         while (ix < nx) : (ix += 1) {
-            if (s.p.get(LP.index(.rho), ix, iy, 0) > 1e-20) return .{ ix, iy };
+            if (s.core.p.get(LP.index(.rho), ix, iy, 0) > 1e-20) return .{ ix, iy };
         }
     }
     return null;
 }
 
 fn mindxAt(s: *const SimP, ix: i64, iy: i64) f64 {
-    const geom = s.cache.fillGeometry(ix, iy, 0);
-    const dx0 = s.grid.cellSize(ix, 0) * @sqrt(geom.gg[1][1]);
-    const dx1 = s.grid.cellSize(iy, 1) * @sqrt(geom.gg[2][2]);
+    const geom = s.core.cache.fillGeometry(ix, iy, 0);
+    const dx0 = s.core.grid.cellSize(ix, 0) * @sqrt(geom.gg[1][1]);
+    const dx1 = s.core.grid.cellSize(iy, 1) * @sqrt(geom.gg[2][2]);
     return @min(dx0, dx1); // NZ==1
 }
 
@@ -69,14 +61,14 @@ test "M12 radviscosity: RADVISCNUDAMP caps ν at mindx²/(4 global_dt)" {
     const ix = cell[0];
     const iy = cell[1];
     var pp: [SimP.nv]f64 = undefined;
-    s.p.load(ix, iy, 0, &pp);
-    const geom = s.cache.fillGeometry(ix, iy, 0);
+    s.core.p.load(ix, iy, 0, &pp);
+    const geom = s.core.cache.fillGeometry(ix, iy, 0);
 
     // tiny dt → nulimit huge → ν = ALPHARADVISC·mfp (uncapped)
-    const nu_free = try rijvisc.calcRadViscCoeff(SimP, &s, ix, iy, 0, &pp, &geom, 1e-30);
+    const nu_free = try rijvisc.calcRadViscCoeff(SimP.CoreT, &s.core, &s.visc.?, ix, iy, 0, &pp, &geom, 1e-30);
     // huge dt → nulimit tiny → ν clamped to nulimit
     const big_dt: f64 = 1e10;
-    const nu_capped = try rijvisc.calcRadViscCoeff(SimP, &s, ix, iy, 0, &pp, &geom, big_dt);
+    const nu_capped = try rijvisc.calcRadViscCoeff(SimP.CoreT, &s.core, &s.visc.?, ix, iy, 0, &pp, &geom, big_dt);
 
     const mindx = mindxAt(&s, ix, iy);
     const nulimit = mindx * mindx / 2.0 / big_dt / 2.0;
@@ -96,9 +88,9 @@ test "M12 radviscosity: RADVISCMAXVELDAMP caps the viscous flux above MAXRADVISC
     const ix = cell[0];
     const iy = cell[1];
     var pp: [SimP.nv]f64 = undefined;
-    s.p.load(ix, iy, 0, &pp);
+    s.core.p.load(ix, iy, 0, &pp);
     const dim: usize = 0; // x-face
-    const geom = s.cache.fillGeometryFace(ix, iy, 0, dim);
+    const geom = s.core.cache.fillGeometryFace(ix, iy, 0, dim);
     const ee0 = LP.index(.ee);
 
     // a viscous tensor whose implied velocity clearly exceeds MAXRADVISCVEL,
@@ -107,14 +99,14 @@ test "M12 radviscosity: RADVISCMAXVELDAMP caps the viscous flux above MAXRADVISC
     for (1..4) |i| rv[dim + 1][i] = 1.0; // large relative to the rad conserveds
 
     var ff1: [SimP.nv]f64 = @splat(0);
-    try rijvisc.addRadViscFlux(SimP, &s, &ff1, &pp, &geom, dim, &rv);
+    try rijvisc.addRadViscFlux(SimP.CoreT, &s.core, &s.visc.?, &ff1, &pp, &geom, dim, &rv);
 
     // scale the tensor by 10 — already past the cap, so the *damped* flux must
     // be (nearly) unchanged (dampfac ∝ 1/|R|), not 10× larger
     var rv10: [4][4]f64 = @splat(@splat(0));
     for (1..4) |i| rv10[dim + 1][i] = 10.0;
     var ff10: [SimP.nv]f64 = @splat(0);
-    try rijvisc.addRadViscFlux(SimP, &s, &ff10, &pp, &geom, dim, &rv10);
+    try rijvisc.addRadViscFlux(SimP.CoreT, &s.core, &s.visc.?, &ff10, &pp, &geom, dim, &rv10);
 
     // the velocity-limited flux saturates: ff10 ≈ ff1 (not 10×)
     var any_nonzero = false;
@@ -149,11 +141,11 @@ test "M12 radviscosity: σ_μν is symmetric and u-orthogonal (kinematic shear i
     const ix = cell[0];
     const iy = cell[1];
     var pp: [SimP.nv]f64 = undefined;
-    s.p.load(ix, iy, 0, &pp);
-    const geom = s.cache.fillGeometry(ix, iy, 0);
+    s.core.p.load(ix, iy, 0, &pp);
+    const geom = s.core.cache.fillGeometry(ix, iy, 0);
 
     // σ_μν (both indices lowered) in the radiation frame (FX..FZ, VELR).
-    const sh = try rijvisc.calcShearLab(SimP, &s, ix, iy, 0, comptime LP.index(.fx), .velr);
+    const sh = try rijvisc.calcShearLab(SimP.CoreT, &s.core, ix, iy, 0, comptime LP.index(.fx), .velr);
     const sigma = sh.s;
 
     // the radiation-frame 4-velocity the shear is projected around.

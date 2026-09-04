@@ -82,16 +82,16 @@ fn moments(sim: *const SimT) Moments {
     var m1: f64 = 0.0;
     var ix: i64 = 0;
     while (ix < sim.nxi()) : (ix += 1) {
-        const excess = @max(sim.p.get(L.index(.ee), ix, 0, 0) - e_background_sim, 0.0);
+        const excess = @max(sim.core.p.get(L.index(.ee), ix, 0, 0) - e_background_sim, 0.0);
         m0 += excess;
-        m1 += excess * sim.grid.xc(ix);
+        m1 += excess * sim.core.grid.xc(ix);
     }
     const centroid = m1 / m0;
     var m2: f64 = 0.0;
     ix = 0;
     while (ix < sim.nxi()) : (ix += 1) {
-        const excess = @max(sim.p.get(L.index(.ee), ix, 0, 0) - e_background_sim, 0.0);
-        const dx = sim.grid.xc(ix) - centroid;
+        const excess = @max(sim.core.p.get(L.index(.ee), ix, 0, 0) - e_background_sim, 0.0);
+        const dx = sim.core.grid.xc(ix) - centroid;
         m2 += excess * dx * dx;
     }
     return .{ .centroid = centroid, .variance = m2 / m0 };
@@ -102,8 +102,8 @@ fn profileError(sim: *const SimT, t: f64) f64 {
     var denominator: f64 = 0.0;
     var ix: i64 = 0;
     while (ix < sim.nxi()) : (ix += 1) {
-        const exact = exactEnergy(sim.grid.xc(ix), t);
-        numerator += @abs(sim.p.get(L.index(.ee), ix, 0, 0) - exact);
+        const exact = exactEnergy(sim.core.grid.xc(ix), t);
+        numerator += @abs(sim.core.p.get(L.index(.ee), ix, 0, 0) - exact);
         denominator += exact - e_background_sim;
     }
     return numerator / denominator;
@@ -131,11 +131,8 @@ fn runPaperPulse(output_times: []const f64) !RunSummary {
 
     const grid = Grid.init(.{ .nx = 101, .ng = 3, .minx = -50.0, .maxx = 50.0 });
     var sim = try SimT.init(std.testing.allocator, grid, .{
-        .coords = .mink,
-        .gam = gam,
-        .rad = rad,
-        .opac = opac,
-        .bc_x = .copy,
+        .phys = .{ .coords = .mink, .gam = gam, .rad = rad, .opac = opac },
+        .bc = .{ .x = .copy },
     });
     defer sim.deinit();
 
@@ -159,7 +156,7 @@ fn runPaperPulse(output_times: []const f64) !RunSummary {
     for (output_times) |target| {
         while (sim.t < target) {
             var dt: ?f64 = null;
-            const cfl_dt = 1.0 / sim.tstepdenmax;
+            const cfl_dt = 1.0 / sim.core.tstepdenmax;
             if (sim.t + cfl_dt > target) dt = target - sim.t;
             try sim.step(dt);
         }
