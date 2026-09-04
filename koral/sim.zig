@@ -1,5 +1,6 @@
-//! The evolution driver; grid state, boundary conditions, the explicit
-//! operator and the RK2IMEX step, transcribed from KORAL's serial path:
+//! The evolution driver: `Sim(cfg)` owns all grid state and is the stable
+//! entry point for every pass; the RK2IMEX step is `step()`. Transcribed
+//! from KORAL's serial path:
 //!
 //!   problem.c:141-402   RK2IMEX stage arithmetic (γ = 1 − 1/√2)
 //!   finite.c:633        op_explicit (fused sweep: reconstruct → floors →
@@ -10,6 +11,21 @@
 //!   finite.c:2805       set_bc incl. the 2D corner filling (finite.c:3203)
 //!   physics.c:789       f_metric_source_term_arb (GDETIN == 1 branch)
 //!   u2p.c:2257          update_entropy
+//!
+//! Where the per-cell work lives (sim.zig redesign step 2, 2026-09-04):
+//! every pass body is a `sim/*.zig` module generic over SimT, and the
+//! methods here are thin operators that own the timers and hand the pass's
+//! banded worker to the team:
+//!
+//!   sim/timestep.zig     wavespeeds, CFL denominator, save_timesteps
+//!   sim/u2p.zig          the per-cell inversion sweep      (calcU2p)
+//!   sim/fixup.zig        cell_fixup staging + averaging    (cellFixup)
+//!   sim/explicit.zig     sweep / fluxes / metric source / update (opExplicit)
+//!   sim/implicit_op.zig  the per-cell implicit solve       (opImplicit)
+//!   sim/entropy.zig      copy_entropycount, update_entropy
+//!   sim/stage.zig        the RK stage arithmetic
+//!   sim/bc.zig · ct.zig · dynamo.zig · rijvisc.zig · polaraxis.zig ·
+//!   storage.zig · timers.zig                               (unchanged)
 //!
 //! C-fidelity notes:
 //!  * "wide" sweep bounds mirror MPI4CORNERS, which choices.h:790 force-
@@ -37,19 +53,13 @@ const metric = @import("metric/metric.zig");
 const coco = @import("metric/coco.zig");
 const precompute = @import("metric/precompute.zig");
 const relele = @import("relele.zig");
-const hydro = @import("physics/hydro.zig");
-const flux_mod = @import("physics/flux.zig");
-const wavespeeds = @import("physics/wavespeeds.zig");
-const recon = @import("fv/recon.zig");
 const invert = @import("solve/invert.zig");
 const invert_rad = @import("solve/invert_rad.zig");
 const implicit = @import("solve/implicit.zig");
-const radiation = @import("physics/radiation.zig");
 const radforce = @import("physics/radforce.zig");
 const radvisc_mod = @import("physics/radvisc.zig");
 const rijvisc_mod = @import("sim/rijvisc.zig");
 const p2u_mod = @import("p2u.zig");
-const laxf_mod = @import("fv/laxf.zig");
 const ct = @import("sim/ct.zig");
 const dynamo_mod = @import("sim/dynamo.zig");
 const storage = @import("sim/storage.zig");
@@ -57,6 +67,13 @@ const bc = @import("sim/bc.zig");
 const polaraxis = @import("sim/polaraxis.zig");
 const threading = @import("threading.zig");
 const timers_mod = @import("sim/timers.zig");
+const timestep = @import("sim/timestep.zig");
+const u2p_pass = @import("sim/u2p.zig");
+const fixup_pass = @import("sim/fixup.zig");
+const explicit_pass = @import("sim/explicit.zig");
+const implicit_op = @import("sim/implicit_op.zig");
+const entropy_pass = @import("sim/entropy.zig");
+const stage = @import("sim/stage.zig");
 const comm_mod = @import("comm/comm.zig");
 
 const Grid = grid_mod.Grid;
@@ -83,20 +100,14 @@ pub const nowNs = timers_mod.nowNs;
 const n_flags = storage.n_flags;
 const Scal = storage.Scal;
 const n_scal = storage.n_scal;
-const ahd_l = storage.ahd_l;
-const ahd_r = storage.ahd_r;
-const ahd_m = storage.ahd_m;
-const arad_l = storage.arad_l;
-const arad_r = storage.arad_r;
-const arad_m = storage.arad_m;
 
 pub fn Sim(comptime cfg: config.Config) type {
     comptime cfg.validate();
     const L = layout.VarLayout(cfg);
     const NV = L.count;
     // C: MPI4CORNERS is force-defined by MAGNFIELD (choices.h:790).
-    const wide = cfg.has(.mhd);
-    const base_order: u8 = switch (cfg.reconstruction) {
+    const mhd_wide = cfg.has(.mhd);
+    const recon_order: u8 = switch (cfg.reconstruction) {
         .donor_cell => 0,
         .linear => 1,
         .ppm => 2,
@@ -109,6 +120,11 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub const nv = NV;
         pub const FieldT = field_mod.Field(NV);
         pub const FaceT = FaceStore(NV);
+        /// C: MPI4CORNERS (force-defined by MAGNFIELD): MHD sweeps reach ±1
+        /// ghost row and fill 2D corners. Read by the sim/ passes.
+        pub const wide = mhd_wide;
+        /// Reconstruction order 0/1/2 from cfg.reconstruction.
+        pub const base_order: u8 = recon_order;
 
         /// A problem's boundary-condition hook. Returns the ghost-cell
         /// primitives, or an Error; the fallible frame/velocity conversions a
@@ -301,8 +317,8 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// exits and the OS reclaims, and the test suite runs under the leak-
         /// checking allocator only after a *successful* init.
         const heap_field_names = .{
-            "p",    "u",    "ut0",     "ut1",   "ut2",
-            "dut1", "dut2", "drt1",    "drt2",  "uforget",
+            "p",     "u",     "ut0",  "ut1",  "ut2",
+            "dut1",  "dut2",  "drt1", "drt2", "uforget",
             "u_bak", "p_bak",
         };
 
@@ -564,10 +580,10 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.flags[self.flagIdx(f, ix, iy, iz)] = v;
         }
 
-        inline fn scGet(self: *const Self, s: Scal, ix: i64, iy: i64, iz: i64) f64 {
+        pub inline fn scGet(self: *const Self, s: Scal, ix: i64, iy: i64, iz: i64) f64 {
             return self.scal.get(@intFromEnum(s), ix, iy, iz);
         }
-        inline fn scSet(self: *Self, s: Scal, ix: i64, iy: i64, iz: i64, v: f64) void {
+        pub inline fn scSet(self: *Self, s: Scal, ix: i64, iy: i64, iz: i64, v: f64) void {
             self.scal.set(@intFromEnum(s), ix, iy, iz, v);
         }
 
@@ -653,7 +669,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         /// doCorrect's contract: these rows are not evolved, they are
         /// overwritten. Derived from the same `polaraxis.band()`, so the
         /// predicate and the overwrite cannot claim different rows.
-        fn isCellCorrectedPolaraxis(self: *const Self, iy: i64) bool {
+        pub fn isCellCorrectedPolaraxis(self: *const Self, iy: i64) bool {
             const b = polaraxis.band(Self, self) orelse return false;
             return b.owns(iy);
         }
@@ -693,39 +709,10 @@ pub fn Sim(comptime cfg: config.Config) type {
             self.initTimestepGuess();
         }
 
-        /// problem.c:59-82; initial dt guess from max_ws = 10⁴.
+        /// problem.c:59-82; initial dt guess from max_ws = 10⁴ (sim/timestep.zig).
         pub fn initTimestepGuess(self: *Self) void {
-            const ws: f64 = 10000.0;
-            var tsd: f64 = undefined;
-            if (self.grid.nz > 1) {
-                tsd = ws / self.min_dx + ws / self.min_dy + ws / self.min_dz;
-            } else if (self.grid.ny > 1) {
-                tsd = ws / self.min_dx + ws / self.min_dy;
-            } else {
-                tsd = ws / self.min_dx;
-            }
-            tsd /= self.opt.tsteplim;
-            self.tstepdenmax = tsd;
-            self.tstepdenmin = tsd;
-
-            var iz: i64 = 0;
-            while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = 0;
-                while (iy < self.nyi()) : (iy += 1) {
-                    var ix: i64 = 0;
-                    while (ix < self.nxi()) : (ix += 1) {
-                        self.scSet(.tstepden, ix, iy, iz, tsd);
-                        self.scSet(.cell_dt, ix, iy, iz, 1.0 / tsd);
-                    }
-                }
-            }
+            timestep.initTimestepGuess(Self, self);
         }
-
-        /// The CFL timestep from the last-computed wavespeeds: 1/tstepdenmax
-        /// (C: 1/tstepdenmax). Single source of truth for the dt that step()
-        /// uses and the driver recomputes; call it in both so they cannot
-        /// drift. Requires the denominator to have been seeded
-        /// (initTimestepGuess or a prior step); returns +inf if tstepdenmax is
         /// still 0, which the driver's pre-step guard rejects.
         pub fn cflDt(self: *const Self) f64 {
             return 1.0 / self.tstepdenmax;
@@ -751,172 +738,19 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub fn calcWavespeeds(self: *Self) Error!void {
             self.timers.begin(.wavespeeds);
             defer self.timers.end();
-            const ly: i64 = if (self.grid.ny > 1) 1 else 0;
-            const res = threading.parallelRange(Self, self, self.team, -ly, self.nyi() + ly, wavespeedRowsWorker);
-            if (res.err) |e| return e;
-            if (res.tsd_max > self.tstepdenmax) self.tstepdenmax = res.tsd_max;
-            if (res.tsd_min < self.tstepdenmin) self.tstepdenmin = res.tsd_min;
+            return timestep.calcWavespeeds(Self, self);
         }
-
-        fn wavespeedRowsWorker(self: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            self.wavespeedRows(iy0, iy1, res) catch |e| {
-                res.err = e;
-            };
-        }
-
-        /// The per-cell wavespeed body for iy ∈ [iy0, iy1) (all iz, all ix
-        /// incl. the ±1 ghost layer).
-        fn wavespeedRows(self: *Self, iy0: i64, iy1: i64, res: *threading.ChunkResult) Error!void {
-            const active_dims = [3]bool{ self.grid.nx > 1, self.grid.ny > 1, self.grid.nz > 1 };
-            const lx: i64 = if (active_dims[0]) 1 else 0;
-            const lz: i64 = if (active_dims[2]) 1 else 0;
-
-            var iz: i64 = -lz;
-            while (iz < self.nzi() + lz) : (iz += 1) {
-                var iy: i64 = iy0;
-                while (iy < iy1) : (iy += 1) {
-                    var ix: i64 = -lx;
-                    while (ix < self.nxi() + lx) : (ix += 1) {
-                        if (comptime !wide) {
-                            if (self.isCorner(ix, iy, iz)) continue;
-                        }
-                        var pp: [NV]f64 = undefined;
-                        self.p.load(ix, iy, iz, &pp);
-                        const geom = self.cache.fillGeometry(ix, iy, iz);
-                        const aaa = try wavespeeds.gasWavespeedsLr(cfg, pp, &geom, self.opt.gam, active_dims);
-
-                        var rad0: [6]f64 = @splat(0);
-                        var radl: [6]f64 = @splat(0);
-                        if (comptime L.hasVar(.ee)) {
-                            // optical depth over the cell (physics.c:549-558);
-                            // ix could be a face index in C, hence the max of
-                            // left/right sizes
-                            var tautot: [3]f64 = @splat(0);
-                            if (self.opt.opac) |*op| {
-                                const chi = try radforce.calcChiSlim(cfg, pp, &geom, self.opt.gam, op);
-                                const idx3 = [3]i64{ ix, iy, iz };
-                                for (0..3) |d| {
-                                    const sg = @sqrt(geom.gg[d + 1][d + 1]);
-                                    const dxp = @max(
-                                        self.grid.cellSize(idx3[d], d) * sg,
-                                        self.grid.cellSize(idx3[d] + 1, d) * sg,
-                                    );
-                                    tautot[d] = chi * dxp;
-                                }
-                            }
-                            // C: DAMPRADWAVESPEEDNEARAXIS (rad.c:3690) — within N
-                            // cells of either pole, discard the optical-depth
-                            // damping so the radiative wavespeed keeps its
-                            // undamped value 1/3 (raising near-axis diffusion for
-                            // stability). Zeroing tautot is equivalent: it drives
-                            // calcRadWavespeeds' tautot≤0 branch → rv²=1/3.
-                            if (self.opt.dampradwavespeednearaxis > 0) {
-                                const nc: i64 = @intCast(self.opt.dampradwavespeednearaxis);
-                                const ny: i64 = @intCast(self.grid.ny);
-                                if (iy < nc or iy >= ny - nc) tautot = @splat(0);
-                            }
-                            const aval = try radiation.calcRadWavespeeds(cfg, pp, &geom, tautot, active_dims);
-                            for (0..6) |i| {
-                                rad0[i] = aval[i];
-                                radl[i] = aval[6 + i];
-                            }
-                            // zero 'co-going' velocities (physics.c:609-621)
-                            for (0..3) |d| {
-                                if (radl[2 * d] > 0.0) radl[2 * d] = 0.0;
-                                if (radl[2 * d + 1] < 0.0) radl[2 * d + 1] = 0.0;
-                                if (rad0[2 * d] > 0.0) rad0[2 * d] = 0.0;
-                                if (rad0[2 * d + 1] < 0.0) rad0[2 * d + 1] = 0.0;
-                            }
-                        }
-                        self.saveWavespeeds(ix, iy, iz, aaa, rad0, radl, res);
-                    }
-                }
-            }
-        }
-
-        /// C: save_wavespeeds (finite.c:394). Store per-cell speeds and,
-        /// for domain cells, the CFL denominator (feeding the next dt).
-        /// rad0 (unlimited by τ) only enters the timestep; radl (τ-limited)
-        /// is what the flux combination reads. The dt max/min go into the
-        /// worker's ChunkResult partials (merged after the region).
-        fn saveWavespeeds(self: *Self, ix: i64, iy: i64, iz: i64, aaa: [6]f64, rad0: [6]f64, radl: [6]f64, res: *threading.ChunkResult) void {
-            for (0..3) |d| {
-                self.scSet(ahd_l[d], ix, iy, iz, aaa[2 * d]);
-                self.scSet(ahd_r[d], ix, iy, iz, aaa[2 * d + 1]);
-            }
-            const ax = @max(@abs(aaa[0]), @abs(aaa[1]));
-            const ay = @max(@abs(aaa[2]), @abs(aaa[3]));
-            const az = @max(@abs(aaa[4]), @abs(aaa[5]));
-            self.scSet(.ahdx, ix, iy, iz, ax);
-            self.scSet(.ahdy, ix, iy, iz, ay);
-            self.scSet(.ahdz, ix, iy, iz, az);
-
-            var wsx = ax;
-            var wsy = ay;
-            var wsz = az;
-            if (comptime L.hasVar(.ee)) {
-                for (0..3) |d| {
-                    self.scSet(arad_l[d], ix, iy, iz, radl[2 * d]);
-                    self.scSet(arad_r[d], ix, iy, iz, radl[2 * d + 1]);
-                    self.scSet(arad_m[d], ix, iy, iz, @max(@abs(radl[2 * d]), @abs(radl[2 * d + 1])));
-                }
-                // timestep uses the wavespeeds NOT limited by optical depth
-                wsx = @max(ax, @max(@abs(rad0[0]), @abs(rad0[1])));
-                wsy = @max(ay, @max(@abs(rad0[2]), @abs(rad0[3])));
-                wsz = @max(az, @max(@abs(rad0[4]), @abs(rad0[5])));
-            }
-
-            const in_domain = ix >= 0 and ix < self.nxi() and
-                iy >= 0 and iy < self.nyi() and iz >= 0 and iz < self.nzi();
-            if (!in_domain) return;
-
-            const dx = self.grid.cellSize(ix, 0);
-            const dy = self.grid.cellSize(iy, 1);
-            const dz = self.grid.cellSize(iz, 2);
-            var tsd: f64 = undefined;
-            if (self.grid.nz > 1 and self.grid.ny > 1) {
-                tsd = wsx / dx + wsy / dy + wsz / dz;
-            } else if (self.grid.nz == 1 and self.grid.ny > 1) {
-                tsd = wsx / dx + wsy / dy;
-            } else if (self.grid.ny == 1 and self.grid.nz > 1) {
-                tsd = wsx / dx + wsz / dz;
-            } else {
-                tsd = wsx / dx;
-            }
-            tsd /= self.opt.tsteplim;
-            self.scSet(.tstepden, ix, iy, iz, tsd);
-            if (tsd > res.tsd_max) res.tsd_max = tsd;
-            if (tsd < res.tsd_min) res.tsd_min = tsd;
-        }
-
-        /// C: save_timesteps (finite.c:490), no SHORTERTIMESTEP.
-        fn saveTimesteps(self: *Self) void {
-            var iz: i64 = 0;
-            while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = 0;
-                while (iy < self.nyi()) : (iy += 1) {
-                    var ix: i64 = 0;
-                    while (ix < self.nxi()) : (ix += 1) {
-                        const tsd = self.scGet(.tstepden, ix, iy, iz);
-                        self.scSet(.cell_dt, ix, iy, iz, 1.0 / tsd);
-                    }
-                }
-            }
-        }
-
-        // ---- u2p over the grid ------------------------------------------------
 
         // ---- band-parallel dispatch ----------------------------------------
         // The persistent team + dynamic-tile mechanism (parallelRange +
-        // ChunkResult) lives in threading.zig; the sim-specific worker
-        // bodies stay here. Most passes only ever report an error, so they
-        // hand their banded loop body (`xxxRows` / `xxxBand`, or an `xxxFn`
-        // closure when it takes a comptime parameter) straight to
-        // `parallelRangeErr`. Two categories keep the raw `parallelRange`:
-        // the passes that *reduce* — wavespeeds (tsd_max/min) and the
-        // implicit operator (iteration/solve/failure counters) — consume the
-        // merged `ChunkResult` themselves, and the infallible ones (the
-        // stage arithmetic, sim/ct.zig) discard it.
+        // ChunkResult) lives in threading.zig; the per-cell pass bodies live
+        // in sim/*.zig (timestep, u2p, fixup, explicit, implicit_op, entropy,
+        // stage), each generic over SimT. The operators below are the stable
+        // entry points: they own the timers and hand the pass's banded worker
+        // to the team. Most passes only ever report an error, so they go
+        // through `parallelRangeErr`; the two that *reduce* — wavespeeds
+        // (tsd_max/min) and the implicit operator (iteration/solve/failure
+        // counters) — consume the merged `ChunkResult` themselves.
 
         /// C: calc_u2p (finite.c:546). Per-cell inversion + floors, then
         /// fixup averaging and a boundary refresh.
@@ -928,7 +762,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub fn calcU2p(self: *Self, t: f64) Error!void {
             self.timers.begin(.u2p);
             defer self.timers.end();
-            try threading.parallelRangeErr(Self, self, self.team, 0, self.nyi(), u2pRows);
+            try threading.parallelRangeErr(Self, self, self.team, 0, self.nyi(), u2p_pass.rowsFn(Self));
 
             try self.cellFixup(.hd_fixup);
             if (comptime L.hasVar(.ee)) {
@@ -937,97 +771,10 @@ pub fn Sim(comptime cfg: config.Config) type {
             try self.setBc(t, false);
         }
 
-        /// The per-cell inversion body for iy ∈ [iy0, iy1) (all iz, all ix).
-        fn u2pRows(self: *Self, iy0: i64, iy1: i64) Error!void {
-            var iz: i64 = 0;
-            while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = iy0;
-                while (iy < iy1) : (iy += 1) {
-                    // Row-invariant: hoisted out of the ix loop.
-                    const polar = self.isCellCorrectedPolaraxis(iy);
-                    var ix: i64 = 0;
-                    while (ix < self.nxi()) : (ix += 1) {
-                        var uu: [NV]f64 = undefined;
-                        var pp: [NV]f64 = undefined;
-                        self.u.load(ix, iy, iz, &uu);
-                        self.p.load(ix, iy, iz, &pp);
-
-                        self.setFlag(.entropy, ix, iy, iz, 0);
-                        self.setFlag(.entropy2, ix, iy, iz, 0);
-
-                        const geom = self.cache.fillGeometry(ix, iy, iz);
-
-                        if (polar) {
-                            // C: u2p_solver_Bonly (u2p.c:57) — invert only B
-                            // (the rest is overwritten by do_correct); both
-                            // floor checks skipped (u2p.c:80-92); corrected/
-                            // fixups stay 0 so all flags read 0.
-                            if (comptime L.hasVar(.b1)) {
-                                const gdetu_inv = 1.0 / geom.gdet; // GDETIN == 1
-                                pp[L.index(.b1)] = uu[L.index(.b1)] * gdetu_inv;
-                                pp[L.index(.b2)] = uu[L.index(.b2)] * gdetu_inv;
-                                pp[L.index(.b3)] = uu[L.index(.b3)] * gdetu_inv;
-                            }
-                            self.p.store(ix, iy, iz, &pp);
-                            self.setFlag(.hd_fixup, ix, iy, iz, 0);
-                            if (comptime L.hasVar(.ee)) {
-                                self.setFlag(.rad_fixup, ix, iy, iz, 0);
-                            }
-                            continue;
-                        }
-
-                        const res = invert.u2pMhd(cfg, uu, &pp, &geom, self.opt.gam, self.opt.floors);
-                        if (res.entropy_used) self.setFlag(.entropy, ix, iy, iz, 1);
-
-                        // radiative closed-form inversion (u2p.c:386); runs
-                        // regardless of the MHD outcome, on the same uu
-                        var rad_fixup = false;
-                        if (comptime L.hasVar(.ee)) {
-                            const rr = invert_rad.u2pRad(cfg, uu, &pp, &geom, self.opt.rad);
-                            rad_fixup = rr.corrected;
-                        }
-
-                        _ = try invert.checkFloorsMhd(cfg, &pp, &geom, self.opt.gam, self.opt.floors);
-                        if (comptime L.hasVar(.ee)) {
-                            _ = try invert_rad.checkFloorsRad(cfg, &pp, &geom, self.opt.rad);
-                        }
-
-                        self.p.store(ix, iy, iz, &pp);
-                        self.setFlag(.hd_fixup, ix, iy, iz, if (res.fixup) 1 else 0);
-                        if (comptime L.hasVar(.ee)) {
-                            // C sets RADFIXUPFLAG to −1 (not 1) on request
-                            self.setFlag(.rad_fixup, ix, iy, iz, if (rad_fixup) -1 else 0);
-                        }
-                    }
-                }
-            }
-        }
-
-        /// C: cell_fixup (finite.c:5012), types FIXUP_U2PMHD / FIXUP_U2PRAD.
-        /// Averages flagged cells from their non-flagged in-domain neighbors.
-        /// U2PMHD never averages rho or the magnetic field (iv != RHO &&
-        /// iv < B1); U2PRAD averages only the radiative block (EE..FZ).
-        /// True if any domain cell carries flag `which`. Early-out scan for
-        /// cellFixup: reads one i32/cell (getFlag is inline) and returns on the
-        /// first hit. Serial: the scan is ~NV× cheaper than the copies it may
-        /// save, and short-circuits (P2 #3).
-        fn anyFlagSet(self: *const Self, comptime which: Flag) bool {
-            const nx = self.nxi();
-            const ny = self.nyi();
-            const nz = self.nzi();
-            var iz: i64 = 0;
-            while (iz < nz) : (iz += 1) {
-                var iy: i64 = 0;
-                while (iy < ny) : (iy += 1) {
-                    var ix: i64 = 0;
-                    while (ix < nx) : (ix += 1) {
-                        if (self.getFlag(which, ix, iy, iz) != 0) return true;
-                    }
-                }
-            }
-            return false;
-        }
-
+        /// C: cell_fixup (finite.c:5012), types FIXUP_U2PMHD / FIXUP_U2PRAD /
+        /// FIXUP_RADIMP (sim/fixup.zig). This is the stable entry point: the
+        /// enable switches and the timer; the flag scan, the u/p staging and
+        /// the neighbour averaging live in the pass.
         pub fn cellFixup(self: *Self, comptime which: Flag) Error!void {
             const enabled = switch (which) {
                 // C: DOFIXUPS && DOU2PMHDFIXUPS / DOU2PRADFIXUPS / DORADIMPFIXUPS
@@ -1039,483 +786,31 @@ pub fn Sim(comptime cfg: config.Config) type {
             if (!enabled) return;
             self.timers.begin(.fixup);
             defer self.timers.end();
-
-            // Common case: no cell carries `which` this pass. Then fixupRows
-            // writes nothing (every cell hits `getFlag == 0 → continue`), so the
-            // four full-grid copies below (u↔u_bak, p↔p_bak — ~4×NV×cells×8 B,
-            // ~350 MB/step at production size across the ~6 hd + radimp calls)
-            // are pure churn. Scan the flag column first — one i32/cell, ~100×
-            // less traffic than the copies — and skip the whole staging dance.
-            // Bit-identical: with nothing flagged, u/p are unchanged either way
-            // (P2 #3).
-            if (!self.anyFlagSet(which)) return;
-
-            threading.parallelCopy(self.team, self.u_bak.data, self.u.data);
-            threading.parallelCopy(self.team, self.p_bak.data, self.p.data);
-
-            // the averaging loop is parallel-safe as-is: flags are frozen
-            // during the pass, reads touch only non-flagged neighbours of
-            // the (frozen) p, writes only the flagged cells' _bak slots
-            try threading.parallelRangeErr(Self, self, self.team, 0, self.nyi(), fixupRowsFn(which));
-
-            threading.parallelCopy(self.team, self.u.data, self.u_bak.data);
-            threading.parallelCopy(self.team, self.p.data, self.p_bak.data);
-        }
-
-        fn fixupRowsFn(comptime which: Flag) fn (*Self, i64, i64) Error!void {
-            return struct {
-                fn w(s: *Self, iy0: i64, iy1: i64) Error!void {
-                    return s.fixupRows(which, iy0, iy1);
-                }
-            }.w;
-        }
-
-        fn fixupRows(self: *Self, comptime which: Flag, iy0: i64, iy1: i64) Error!void {
-            const b1_bound: usize = comptime if (L.hasVar(.b1)) L.index(.b1) else L.count;
-            const nx = self.nxi();
-            const ny = self.nyi();
-            const nz = self.nzi();
-
-            var iz: i64 = 0;
-            while (iz < nz) : (iz += 1) {
-                var iy: i64 = iy0;
-                while (iy < iy1) : (iy += 1) {
-                    // C: "do not correct if overwritten later on" — row-
-                    // invariant, so skip the whole row rather than each cell.
-                    if (self.isCellCorrectedPolaraxis(iy)) continue;
-                    var ix: i64 = 0;
-                    while (ix < nx) : (ix += 1) {
-                        if (self.getFlag(which, ix, iy, iz) == 0) continue;
-
-                        var ppn: [6][NV]f64 = undefined;
-                        var in_n: usize = 0;
-                        // neighbor order matches C: x−, x+, y−, y+, z−, z+
-                        const nbrs = [6][3]i64{
-                            .{ ix - 1, iy, iz }, .{ ix + 1, iy, iz },
-                            .{ ix, iy - 1, iz }, .{ ix, iy + 1, iz },
-                            .{ ix, iy, iz - 1 }, .{ ix, iy, iz + 1 },
-                        };
-                        for (nbrs) |nb| {
-                            if (nb[0] < 0 or nb[0] >= nx or nb[1] < 0 or nb[1] >= ny or
-                                nb[2] < 0 or nb[2] >= nz) continue;
-                            if (self.getFlag(which, nb[0], nb[1], nb[2]) != 0) continue;
-                            self.p.load(nb[0], nb[1], nb[2], &ppn[in_n]);
-                            in_n += 1;
-                        }
-
-                        const enough = (nz == 1 and ny == 1 and in_n >= 1) or
-                            (nz == 1 and in_n >= 2) or
-                            (ny == 1 and in_n >= 2) or
-                            in_n >= 3;
-                        if (!enough) continue; // C prints "didn't manage"
-
-                        var pp: [NV]f64 = undefined;
-                        self.p.load(ix, iy, iz, &pp);
-                        for (0..NV) |iv| {
-                            // `which` is comptime — only the taken arm is analyzed
-                            const fixthis = switch (which) {
-                                .hd_fixup => iv != L.index(.rho) and iv < b1_bound,
-                                .rad_fixup => iv >= L.index(.ee) and iv <= L.index(.fz),
-                                // FIXUP_RADIMP: both fluids, never rho/B
-                                .radimp_fixup => iv != L.index(.rho) and
-                                    (iv < b1_bound or (iv >= L.index(.ee) and iv <= L.index(.fz))),
-                                else => unreachable,
-                            };
-                            if (fixthis) {
-                                var s: f64 = 0;
-                                for (0..in_n) |k| s += ppn[k][iv];
-                                pp[iv] = s / @as(f64, @floatFromInt(in_n));
-                            }
-                        }
-                        const geom = self.cache.fillGeometry(ix, iy, iz);
-                        const uu = try p2u_mod.p2u(cfg, pp, &geom, self.opt.gam);
-                        self.u_bak.store(ix, iy, iz, &uu);
-                        self.p_bak.store(ix, iy, iz, &pp);
-                    }
-                }
-            }
-        }
-
-        // ---- source terms -----------------------------------------------------
-
-        /// C: f_metric_source_term_arb (physics.c:789), GDETIN == 1: only the
-        /// Christoffel contraction rows survive; f_general_source_term is
-        /// zero for every M5/M6 problem (no artificial heating/cooling).
-        fn metricSource(self: *Self, ix: i64, iy: i64, iz: i64) Error![NV]f64 {
-            const geom = self.cache.fillGeometry(ix, iy, iz);
-            var pp: [NV]f64 = undefined;
-            self.p.load(ix, iy, iz, &pp);
-
-            const gdetu = geom.gdet;
-            var ss: [NV]f64 = @splat(0);
-
-            const tij = try hydro.calcTij(cfg, pp, &geom, self.opt.gam);
-            const t = relele.lowerSecond(tij, &geom);
-
-            const kr_blk = self.cache.krBlock(ix, iy, iz);
-            const rows = [4]usize{ L.index(.uu), L.index(.vx), L.index(.vy), L.index(.vz) };
-            if (comptime L.hasVar(.ee)) {
-                const rij_up = try radiation.calcRij(cfg, pp, &geom);
-                const rij = relele.lowerSecond(rij_up, &geom);
-                const rrows = [4]usize{ L.index(.ee), L.index(.fx), L.index(.fy), L.index(.fz) };
-                for (0..4) |k| {
-                    for (0..4) |l| {
-                        for (0..4) |nu| {
-                            ss[rows[nu]] += gdetu * t[k][l] * kr_blk[l * 16 + nu * 4 + k];
-                            ss[rrows[nu]] += gdetu * rij[k][l] * kr_blk[l * 16 + nu * 4 + k];
-                        }
-                    }
-                }
-            } else {
-                for (0..4) |k| {
-                    for (0..4) |l| {
-                        for (0..4) |nu| {
-                            ss[rows[nu]] += gdetu * t[k][l] * kr_blk[l * 16 + nu * 4 + k];
-                        }
-                    }
-                }
-            }
-            return ss;
+            return fixup_pass.cellFixup(Self, self, which);
         }
 
         // ---- the explicit operator ---------------------------------------------
 
-        /// Sweep bounds for the cross directions of a sweep/face loop:
-        /// narrow = domain; wide (MHD) = ±1 where that dimension is active.
-        fn crossLo(self: *const Self, dim: usize) i64 {
-            if (comptime wide) {
-                return if (self.nDim(dim) > 1) -1 else 0;
-            }
-            return 0;
-        }
-        fn crossHi(self: *const Self, dim: usize) i64 {
-            if (comptime wide) {
-                return if (self.nDim(dim) > 1) self.nDim(dim) + 1 else self.nDim(dim);
-            }
-            return self.nDim(dim);
-        }
-
-        /// The two cross directions of a sweep/face pass in dimension `dim`.
-        /// Band-parallelism runs over cross[0]; the largest transverse axis
-        /// in 2D (y for the x-sweep, x for the y-sweep).
-        fn crossDims(comptime dim: usize) [2]usize {
-            return switch (dim) {
-                0 => .{ 1, 2 },
-                1 => .{ 0, 2 },
-                2 => .{ 0, 1 },
-                else => unreachable,
-            };
-        }
-
-        /// One direction of op_explicit's interpolation sweep
-        /// (finite.c:708-1181): reconstruct cell → face states, floor them,
-        /// compute one-sided fluxes, stash into pb/fl face arrays.
-        fn sweep(self: *Self, comptime dim: usize) Error!void {
-            const n = self.nDim(dim);
-            if (n <= 1) return;
-            self.timers.begin(.sweep);
-            defer self.timers.end();
-            const cross = comptime crossDims(dim);
-            try threading.parallelRangeErr(Self, self, self.team, self.crossLo(cross[0]), self.crossHi(cross[0]), sweepBandFn(dim));
-        }
-
-        fn sweepBandFn(comptime dim: usize) fn (*Self, i64, i64) Error!void {
-            return struct {
-                fn w(s: *Self, c0_lo: i64, c0_hi: i64) Error!void {
-                    return s.sweepBand(dim, c0_lo, c0_hi);
-                }
-            }.w;
-        }
-
-        /// One direction of the interpolation sweep for cross[0] ∈
-        /// [c0_lo, c0_hi): every (c0, c1) line's faces are written only by its
-        /// own band, so the banding is bit-identical to serial. Loop order keeps
-        /// the contiguous x index innermost; for dim==0 that is the sweep
-        /// direction itself; for dim!=0 x is cross[0] (the band range this
-        /// worker owns), so we iterate it innermost with the sweep direction in
-        /// the middle, turning the five-point stencil into contiguous x streams
-        /// instead of iy/iz strides (out of L2 on the 2D grid, a DRAM/TLB cliff
-        /// in 3D). Each (i,c0,c1) writes only its own face slots, so reordering
-        /// the iterations is bit-identical (P2 #5).
-        fn sweepBand(self: *Self, comptime dim: usize, c0_lo: i64, c0_hi: i64) Error!void {
-            const n = self.nDim(dim);
-            const cross = comptime crossDims(dim);
-            const c1_lo = self.crossLo(cross[1]);
-            const c1_hi = self.crossHi(cross[1]);
-
-            if (comptime dim == 0) {
-                var c0 = c0_lo;
-                while (c0 < c0_hi) : (c0 += 1) {
-                    var c1 = c1_lo;
-                    while (c1 < c1_hi) : (c1 += 1) {
-                        var i: i64 = -1;
-                        while (i < n + 1) : (i += 1) {
-                            try self.sweepFace(dim, i, c0, c1, self.dx5At(dim, i));
-                        }
-                    }
-                }
-            } else {
-                var c1 = c1_lo;
-                while (c1 < c1_hi) : (c1 += 1) {
-                    var i: i64 = -1;
-                    while (i < n + 1) : (i += 1) {
-                        const dx5 = self.dx5At(dim, i); // invariant over the inner (x) loop — hoisted (#6)
-                        var c0 = c0_lo;
-                        while (c0 < c0_hi) : (c0 += 1) {
-                            try self.sweepFace(dim, i, c0, c1, dx5);
-                        }
-                    }
-                }
-            }
-        }
-
-        /// The ±2 sweep-direction cell sizes at slot i (C: get_size_x). Function
-        /// of (i,dim) only, so it lifts out of the cross loops.
-        inline fn dx5At(self: *const Self, comptime dim: usize, i: i64) [5]f64 {
-            return .{
-                self.grid.cellSize(i - 2, dim),
-                self.grid.cellSize(i - 1, dim),
-                self.grid.cellSize(i, dim),
-                self.grid.cellSize(i + 1, dim),
-                self.grid.cellSize(i + 2, dim),
-            };
-        }
-
-        /// Reconstruct + one-sided fluxes for the face pair bracketing the cell
-        /// at (i along dim, c0=cross[0], c1=cross[1]); dx5 is the sweep-direction
-        /// stencil spacing. `inline` so the body stays fused into sweepBand's
-        /// loops (Debug too). All writes land in this cell's own face slots.
-        inline fn sweepFace(self: *Self, comptime dim: usize, i: i64, c0: i64, c1: i64, dx5: [5]f64) Error!void {
-            const n = self.nDim(dim);
-            const cross = comptime crossDims(dim);
-            var cell = [3]i64{ 0, 0, 0 };
-            cell[dim] = i;
-            cell[cross[0]] = c0;
-            cell[cross[1]] = c1;
-
-            const dol = i >= 0;
-            const dor = i < n;
-
-            var pm2: [NV]f64 = @splat(0);
-            var pm1: [NV]f64 = undefined;
-            var p0: [NV]f64 = undefined;
-            var pp1: [NV]f64 = undefined;
-            var pp2: [NV]f64 = @splat(0);
-            var c = cell;
-            c[dim] = i - 1;
-            self.p.load(c[0], c[1], c[2], &pm1);
-            c[dim] = i;
-            self.p.load(c[0], c[1], c[2], &p0);
-            c[dim] = i + 1;
-            self.p.load(c[0], c[1], c[2], &pp1);
-            // C guards the ±2 stencil with INT_ORDER>1 — with
-            // linear reconstruction there are only 2 ghost cells.
-            if (comptime base_order > 1) {
-                c[dim] = i - 2;
-                self.p.load(c[0], c[1], c[2], &pm2);
-                c[dim] = i + 2;
-                self.p.load(c[0], c[1], c[2], &pp2);
-            }
-
-            // C: REDUCEORDERWHENNEEDED + REDUCEORDERATBH — drop the order by one
-            // for cells whose center is inside the BL horizon (reduce_order_check,
-            // finite.c:14). cell[0] is the radial index. REDUCEMINMODTHETA is
-            // still off.
-            var reduce: u8 = if (cell[0] <= self.reduce_order_ix_max) 1 else 0;
-            // koral_lite_puffy REDUCEORDERAFTERFIXUP: the flags hold whatever
-            // the most recent u2p/implicit pass wrote — within a step that is
-            // the calcU2p/opImplicit that ran right before this opExplicit
-            // (C's RK2IMEX stage order is identical). Ghost cells read 0
-            // (flags are ghost-allocated, memset, never set there).
-            if (self.opt.reduceorderafterfixup and reduce == 0 and
-                (self.getFlag(.hd_fixup, cell[0], cell[1], cell[2]) != 0 or
-                    self.getFlag(.rad_fixup, cell[0], cell[1], cell[2]) != 0 or
-                    self.getFlag(.radimp_fixup, cell[0], cell[1], cell[2]) != 0))
-            {
-                reduce = 1;
-            }
-            const scheme: recon.Scheme = switch (base_order -| reduce) {
-                0 => .donor,
-                1 => .{ .linear = .{ .theta = self.opt.minmod_theta } },
-                else => .ppm,
-            };
-            const f = recon.reconstructN(NV, scheme, .{ pm2, pm1, p0, pp1, pp2 }, dx5);
-            var pl = f.left;
-            var pr = f.right;
-
-            var ffl: [NV]f64 = undefined;
-            var ffr: [NV]f64 = undefined;
-            if (dol) {
-                const geom = self.cache.fillGeometryFace(cell[0], cell[1], cell[2], dim);
-                _ = try invert.checkFloorsMhd(cfg, &pl, &geom, self.opt.gam, self.opt.floors);
-                ffl = try flux_mod.fFluxPrime(cfg, pl, dim, &geom, self.opt.gam);
-                // radiative viscosity: face i is between cells i−1 and i
-                if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
-                    const rv = rijvisc_mod.faceAvg(Self, self, dim, cell[0], cell[1], cell[2]);
-                    try rijvisc_mod.addRadViscFlux(Self, self, &ffl, &pl, &geom, dim, &rv);
-                }
-            }
-            if (dor) {
-                var cp = cell;
-                cp[dim] = i + 1;
-                const geom = self.cache.fillGeometryFace(cp[0], cp[1], cp[2], dim);
-                _ = try invert.checkFloorsMhd(cfg, &pr, &geom, self.opt.gam, self.opt.floors);
-                ffr = try flux_mod.fFluxPrime(cfg, pr, dim, &geom, self.opt.gam);
-                // radiative viscosity: face i+1 is between cells i and i+1
-                if (self.opt.radviscosity and comptime L.hasVar(.ee)) {
-                    const rv = rijvisc_mod.faceAvg(Self, self, dim, cp[0], cp[1], cp[2]);
-                    try rijvisc_mod.addRadViscFlux(Self, self, &ffr, &pr, &geom, dim, &rv);
-                }
-            }
-
-            // pbR[dim] at face i ← pl; pbL[dim] at face i+1 ← pr
-            var cp = cell;
-            self.pb_r[dim].store(cp[0], cp[1], cp[2], &pl);
-            if (dol) self.fl_r[dim].store(cp[0], cp[1], cp[2], &ffl);
-            cp[dim] = i + 1;
-            self.pb_l[dim].store(cp[0], cp[1], cp[2], &pr);
-            if (dor) self.fl_l[dim].store(cp[0], cp[1], cp[2], &ffr);
-        }
-
-        /// C: f_calc_fluxes_at_faces (finite.c:1461). For every face,
-        /// combine the one-sided fluxes with LAXF or HLL using the saved
-        /// cell wavespeeds. Hydro and radiation rows use separate speeds.
-        /// Band-parallel over cross[0] per dimension, like the sweep.
-        fn fluxesAtFaces(self: *Self) Error!void {
-            self.timers.begin(.fluxes);
-            defer self.timers.end();
-            for (0..3) |d| threading.parallelZero(self.team, self.flb[d].data);
-
-            inline for (0..3) |dim| {
-                if (self.nDim(dim) > 1) {
-                    const cross = comptime crossDims(dim);
-                    try threading.parallelRangeErr(Self, self, self.team, self.crossLo(cross[0]), self.crossHi(cross[0]), fluxesBandFn(dim));
-                }
-            }
-        }
-
-        fn fluxesBandFn(comptime dim: usize) fn (*Self, i64, i64) Error!void {
-            return struct {
-                fn w(s: *Self, c0_lo: i64, c0_hi: i64) Error!void {
-                    return s.fluxesBand(dim, c0_lo, c0_hi);
-                }
-            }.w;
-        }
-
-        /// Band-parallel flux combination over cross[0] ∈ [c0_lo, c0_hi). Same
-        /// x-innermost loop order as sweepBand (P2 #5): dim==0 has the face index
-        /// i=x innermost already; for dim!=0 the band range x=cross[0] iterates
-        /// innermost with the face index in the middle, so the per-face reads and
-        /// the flb store stream x. Each face writes only its own flb[dim] slot →
-        /// order-independent, bit-identical.
-        fn fluxesBand(self: *Self, comptime dim: usize, c0_lo: i64, c0_hi: i64) Error!void {
-            const n = self.nDim(dim);
-            const cross = comptime crossDims(dim);
-            const c1_lo = self.crossLo(cross[1]);
-            const c1_hi = self.crossHi(cross[1]);
-
-            if (comptime dim == 0) {
-                var c0 = c0_lo;
-                while (c0 < c0_hi) : (c0 += 1) {
-                    var c1 = c1_lo;
-                    while (c1 < c1_hi) : (c1 += 1) {
-                        var i: i64 = 0;
-                        while (i <= n) : (i += 1) try self.fluxFace(dim, i, c0, c1);
-                    }
-                }
-            } else {
-                var c1 = c1_lo;
-                while (c1 < c1_hi) : (c1 += 1) {
-                    var i: i64 = 0;
-                    while (i <= n) : (i += 1) {
-                        var c0 = c0_lo;
-                        while (c0 < c0_hi) : (c0 += 1) try self.fluxFace(dim, i, c0, c1);
-                    }
-                }
-            }
-        }
-
-        /// Combine the one-sided fluxes at the single face (i along dim,
-        /// c0=cross[0], c1=cross[1]) into flb[dim] via LAXF/HLL. `inline` to stay
-        /// fused into fluxesBand's loops; writes only this face's own flb slot.
-        inline fn fluxFace(self: *Self, comptime dim: usize, i: i64, c0: i64, c1: i64) Error!void {
-            const cross = comptime crossDims(dim);
-            var cf = [3]i64{ 0, 0, 0 };
-            cf[dim] = i;
-            cf[cross[0]] = c0;
-            cf[cross[1]] = c1;
-            var cm = cf;
-            cm[dim] = i - 1;
-
-            const ap1l = self.scGet(ahd_l[dim], cf[0], cf[1], cf[2]);
-            const ap1r = self.scGet(ahd_r[dim], cf[0], cf[1], cf[2]);
-            const ap1 = self.scGet(ahd_m[dim], cf[0], cf[1], cf[2]);
-            const am1l = self.scGet(ahd_l[dim], cm[0], cm[1], cm[2]);
-            const am1r = self.scGet(ahd_r[dim], cm[0], cm[1], cm[2]);
-            const am1 = self.scGet(ahd_m[dim], cm[0], cm[1], cm[2]);
-
-            var pLl: [NV]f64 = undefined;
-            var pRl: [NV]f64 = undefined;
-            self.pb_l[dim].load(cf[0], cf[1], cf[2], &pLl);
-            self.pb_r[dim].load(cf[0], cf[1], cf[2], &pRl);
-
-            const geom = self.cache.fillGeometryFace(cf[0], cf[1], cf[2], dim);
-            const uLl = try p2u_mod.p2u(cfg, pLl, &geom, self.opt.gam);
-            const uRl = try p2u_mod.p2u(cfg, pRl, &geom, self.opt.gam);
-
-            // hydro and radiation are two separate systems,
-            // each combined with its own speeds (finite.c:1549)
-            const ag = @max(ap1, am1);
-            const al = @min(ap1l, am1l);
-            const ar = @max(ap1r, am1r);
-
-            var agr: f64 = 0;
-            var alr: f64 = 0;
-            var arr: f64 = 0;
-            if (comptime L.hasVar(.ee)) {
-                const rp1l = self.scGet(arad_l[dim], cf[0], cf[1], cf[2]);
-                const rp1r = self.scGet(arad_r[dim], cf[0], cf[1], cf[2]);
-                const rp1 = self.scGet(arad_m[dim], cf[0], cf[1], cf[2]);
-                const rm1l = self.scGet(arad_l[dim], cm[0], cm[1], cm[2]);
-                const rm1r = self.scGet(arad_r[dim], cm[0], cm[1], cm[2]);
-                const rm1 = self.scGet(arad_m[dim], cm[0], cm[1], cm[2]);
-                agr = @max(rp1, rm1);
-                alr = @min(rp1l, rm1l);
-                arr = @max(rp1r, rm1r);
-            }
-
-            // load the two one-sided flux vectors once, combine into a stack
-            // buffer, store the face once — vs per-iv get/set offset recompute
-            // (P2 #4). uLl/uRl are already whole-cell arrays.
-            var fll: [NV]f64 = undefined;
-            var flr: [NV]f64 = undefined;
-            self.fl_l[dim].load(cf[0], cf[1], cf[2], &fll);
-            self.fl_r[dim].load(cf[0], cf[1], cf[2], &flr);
-            var fstar: [NV]f64 = undefined;
-            for (0..NV) |iv| {
-                // C: i < NVMHD → hydro block, else radiation
-                const is_rad = if (comptime L.hasVar(.ee)) iv >= L.index(.ee) else false;
-                const ag_sel = if (is_rad) agr else ag;
-                const al_sel = if (is_rad) alr else al;
-                const ar_sel = if (is_rad) arr else ar;
-                fstar[iv] = switch (comptime cfg.flux) {
-                    .laxf => laxf_mod.laxf(fll[iv], flr[iv], uLl[iv], uRl[iv], ag_sel),
-                    .hll => laxf_mod.hll(fll[iv], flr[iv], uLl[iv], uRl[iv], al_sel, ar_sel),
-                };
-            }
-            self.flb[dim].store(cf[0], cf[1], cf[2], &fstar);
-        }
-
-        /// C: op_explicit (finite.c:633).
+        /// C: op_explicit (finite.c:633). The transport passes (sweep, flux
+        /// combination, conserved update + metric source) live in
+        /// sim/explicit.zig; this composes them in C's order.
         pub fn opExplicit(self: *Self, t: f64, dtin: f64) Error!void {
             // (upreexplicit/ppreexplicit copies skipped — see header)
             // calc_avgs_throughout: CALCHRONTHEGO only (M12)
 
             try self.calcWavespeeds();
 
-            inline for (0..3) |dim| try self.sweep(dim);
+            {
+                self.timers.begin(.sweep);
+                defer self.timers.end();
+                inline for (0..3) |dim| try explicit_pass.sweep(Self, self, dim);
+            }
 
-            try self.fluxesAtFaces();
+            {
+                self.timers.begin(.fluxes);
+                defer self.timers.end();
+                try explicit_pass.fluxesAtFaces(Self, self);
+            }
 
             if (comptime cfg.has(.mhd)) {
                 self.timers.begin(.fluxct);
@@ -1527,8 +822,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             {
                 self.timers.begin(.update);
                 defer self.timers.end();
-                var ctx = DtCtx{ .sim = self, .dt = dtin };
-                try threading.parallelRangeErr(DtCtx, &ctx, self.team, 0, self.nyi(), updateRowsBand);
+                try explicit_pass.update(Self, self, dtin);
             }
 
             // (EXPLICIT_LAB_RAD_SOURCE not used — PUFFY couples implicitly)
@@ -1537,149 +831,26 @@ pub fn Sim(comptime cfg: config.Config) type {
             // (MIXENTROPIESPROPERLY off)
         }
 
-        fn updateRowsBand(ctx: *DtCtx, iy0: i64, iy1: i64) Error!void {
-            return ctx.sim.updateRows(ctx.dt, iy0, iy1);
-        }
-
-        /// The conserved update (flux divergence + metric source) for
-        /// iy ∈ [iy0, iy1); writes only its own cells' u.
-        fn updateRows(self: *Self, dtin: f64, iy0: i64, iy1: i64) Error!void {
-            var iz: i64 = 0;
-            while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = iy0;
-                while (iy < iy1) : (iy += 1) {
-                    var ix: i64 = 0;
-                    while (ix < self.nxi()) : (ix += 1) {
-                        const ms = try self.metricSource(ix, iy, iz);
-                        const dx = self.grid.cellSize(ix, 0);
-                        const dy = self.grid.cellSize(iy, 1);
-                        const dz = self.grid.cellSize(iz, 2);
-                        const dt = dtin;
-
-                        // Load each accessed face/cell vector once into a stack
-                        // buffer (single offset per cell) and index the buffers
-                        // per iv — vs re-deriving the offset NV× per FaceStore.get
-                        // (P2 #4). Per-component arithmetic unchanged → bit-identical.
-                        var flxl: [NV]f64 = undefined;
-                        var flxr: [NV]f64 = undefined;
-                        var flyl: [NV]f64 = undefined;
-                        var flyr: [NV]f64 = undefined;
-                        var flzl: [NV]f64 = undefined;
-                        var flzr: [NV]f64 = undefined;
-                        self.flb[0].load(ix, iy, iz, &flxl);
-                        self.flb[0].load(ix + 1, iy, iz, &flxr);
-                        self.flb[1].load(ix, iy, iz, &flyl);
-                        self.flb[1].load(ix, iy + 1, iz, &flyr);
-                        self.flb[2].load(ix, iy, iz, &flzl);
-                        self.flb[2].load(ix, iy, iz + 1, &flzr);
-                        var uu: [NV]f64 = undefined;
-                        self.u.load(ix, iy, iz, &uu);
-
-                        for (0..NV) |iv| {
-                            const du = -(flxr[iv] - flxl[iv]) * dt / dx - (flyr[iv] - flyl[iv]) * dt / dy - (flzr[iv] - flzl[iv]) * dt / dz;
-                            uu[iv] = uu[iv] + du + ms[iv] * dt;
-                        }
-                        self.u.store(ix, iy, iz, &uu);
-                    }
-                }
-            }
-        }
-
-        // ---- stage arithmetic (exact C expression shapes) ------------------------
+        // ---- stage arithmetic (exact C expression shapes; sim/stage.zig) ----------
 
         fn copyFull(self: *Self, dst: *FieldT, src: *const FieldT) void {
             self.timers.begin(.stage);
             defer self.timers.end();
-            threading.parallelCopy(self.team, dst.data, src.data);
+            stage.copyFull(Self, self, dst, src);
         }
 
-        /// Worker context for the two stage-arithmetic shapes: deriv uses
-        /// (dst, a, b, f1, f2); combine also uses c.
-        const StageCtx = struct {
-            sim: *Self,
-            dst: *FieldT,
-            a_f: *const FieldT,
-            b_f: *const FieldT,
-            c_f: *const FieldT = undefined,
-            f1: f64,
-            f2: f64,
-        };
-
         /// dst = (1/Δ)·a + (−1/Δ)·b over the domain (problem.c:181/230/…).
-        /// Band-parallel over iy; pure per-cell assignments.
         fn stageDeriv(self: *Self, dst: *FieldT, a_f: *const FieldT, b_f: *const FieldT, delta: f64) void {
             self.timers.begin(.stage);
             defer self.timers.end();
-            var ctx = StageCtx{ .sim = self, .dst = dst, .a_f = a_f, .b_f = b_f, .f1 = 1.0 / delta, .f2 = -1.0 / delta };
-            _ = threading.parallelRange(StageCtx, &ctx, self.team, 0, self.nyi(), stageDerivWorker);
-        }
-
-        fn stageDerivWorker(ctx: *StageCtx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            _ = res;
-            const self = ctx.sim;
-            var iz: i64 = 0;
-            while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = iy0;
-                while (iy < iy1) : (iy += 1) {
-                    var ix: i64 = 0;
-                    while (ix < self.nxi()) : (ix += 1) {
-                        // one offset per cell, index the stack buffers per iv (P2 #4)
-                        var a_v: [NV]f64 = undefined;
-                        var b_v: [NV]f64 = undefined;
-                        ctx.a_f.load(ix, iy, iz, &a_v);
-                        ctx.b_f.load(ix, iy, iz, &b_v);
-                        var d_v: [NV]f64 = undefined;
-                        for (0..NV) |iv| d_v[iv] = ctx.f1 * a_v[iv] + ctx.f2 * b_v[iv];
-                        ctx.dst.store(ix, iy, iz, &d_v);
-                    }
-                }
-            }
+            stage.deriv(Self, self, dst, a_f, b_f, delta);
         }
 
         /// dst = a + f1·b + f2·c over the domain (problem.c:243/357).
         fn stageCombine(self: *Self, dst: *FieldT, a_f: *const FieldT, f1: f64, b_f: *const FieldT, f2: f64, c_f: *const FieldT) void {
             self.timers.begin(.stage);
             defer self.timers.end();
-            var ctx = StageCtx{ .sim = self, .dst = dst, .a_f = a_f, .b_f = b_f, .c_f = c_f, .f1 = f1, .f2 = f2 };
-            _ = threading.parallelRange(StageCtx, &ctx, self.team, 0, self.nyi(), stageCombineWorker);
-        }
-
-        fn stageCombineWorker(ctx: *StageCtx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            _ = res;
-            const self = ctx.sim;
-            var iz: i64 = 0;
-            while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = iy0;
-                while (iy < iy1) : (iy += 1) {
-                    var ix: i64 = 0;
-                    while (ix < self.nxi()) : (ix += 1) {
-                        // one offset per cell, index the stack buffers per iv (P2 #4)
-                        var a_v: [NV]f64 = undefined;
-                        var b_v: [NV]f64 = undefined;
-                        var c_v: [NV]f64 = undefined;
-                        ctx.a_f.load(ix, iy, iz, &a_v);
-                        ctx.b_f.load(ix, iy, iz, &b_v);
-                        ctx.c_f.load(ix, iy, iz, &c_v);
-                        var d_v: [NV]f64 = undefined;
-                        for (0..NV) |iv| d_v[iv] = a_v[iv] + ctx.f1 * b_v[iv] + ctx.f2 * c_v[iv];
-                        ctx.dst.store(ix, iy, iz, &d_v);
-                    }
-                }
-            }
-        }
-
-        /// C: copy_entropycount (u2p.c:2237).
-        fn copyEntropyCount(self: *Self) void {
-            var iz: i64 = 0;
-            while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = 0;
-                while (iy < self.nyi()) : (iy += 1) {
-                    var ix: i64 = 0;
-                    while (ix < self.nxi()) : (ix += 1) {
-                        self.setFlag(.entropy3, ix, iy, iz, self.getFlag(.entropy, ix, iy, iz));
-                    }
-                }
-            }
+            stage.combine(Self, self, dst, a_f, f1, b_f, f2, c_f);
         }
 
         /// C: update_entropy (u2p.c:2257). Recompute S(ρ,u) and refresh the
@@ -1687,29 +858,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub fn updateEntropy(self: *Self) Error!void {
             self.timers.begin(.entropy);
             defer self.timers.end();
-            try threading.parallelRangeErr(Self, self, self.team, 0, self.nyi(), entropyRows);
-        }
-
-        fn entropyRows(self: *Self, iy0: i64, iy1: i64) Error!void {
-            var iz: i64 = 0;
-            while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = iy0;
-                while (iy < iy1) : (iy += 1) {
-                    var ix: i64 = 0;
-                    while (ix < self.nxi()) : (ix += 1) {
-                        var pp: [NV]f64 = undefined;
-                        self.p.load(ix, iy, iz, &pp);
-                        pp[L.index(.entr)] = hydro.sFromU(pp[L.index(.rho)], pp[L.index(.uu)], self.opt.gam);
-                        self.p.set(L.index(.entr), ix, iy, iz, pp[L.index(.entr)]);
-
-                        var uu: [NV]f64 = undefined;
-                        self.u.load(ix, iy, iz, &uu);
-                        const geom = self.cache.fillGeometry(ix, iy, iz);
-                        try p2u_mod.p2uMhd(cfg, pp, &uu, &geom, self.opt.gam);
-                        self.u.store(ix, iy, iz, &uu);
-                    }
-                }
-            }
+            try threading.parallelRangeErr(Self, self, self.team, 0, self.nyi(), entropy_pass.rowsFn(Self));
         }
 
         /// C: op_implicit (finite.c:1400). The implicit radiative source
@@ -1723,60 +872,14 @@ pub fn Sim(comptime cfg: config.Config) type {
 
             self.timers.begin(.implicit);
             defer self.timers.end();
-            var ctx = DtCtx{ .sim = self, .dt = dtin };
-            const res = threading.parallelRange(DtCtx, &ctx, self.team, 0, self.nyi(), implicitRowsWorker);
+            var ctx = implicit_op.Ctx(Self){ .sim = self, .dt = dtin };
+            const res = threading.parallelRange(implicit_op.Ctx(Self), &ctx, self.team, 0, self.nyi(), implicit_op.rowsWorker(Self));
             self.n_radimp_failures += res.n_fail;
             self.n_radimp_iters += res.n_iters;
             self.n_radimp_solves += res.n_solves;
             if (res.err) |e| return e;
 
             try self.cellFixup(.radimp_fixup);
-        }
-
-        /// Worker context for the passes parameterized by the sub-step dt
-        /// (op_implicit, the conserved update).
-        const DtCtx = struct { sim: *Self, dt: f64 };
-
-        fn implicitRowsWorker(ctx: *DtCtx, iy0: i64, iy1: i64, res: *threading.ChunkResult) void {
-            // errors here would be relele failures inside the solver, but
-            // solve_implicit_lab returns a status (never throws), so this
-            // worker cannot error — it only tallies counters into `res`.
-            const self = ctx.sim;
-            const opac = &(self.opt.opac.?);
-            const ImplT = implicit.Solver(cfg);
-
-            var iz: i64 = 0;
-            while (iz < self.nzi()) : (iz += 1) {
-                var iy: i64 = iy0;
-                while (iy < iy1) : (iy += 1) {
-                    // C: finite.c:1427 — polar-corrected cells skip the
-                    // implicit entirely (is_cell_active ≡ 1 and PUFFY defines
-                    // no SKIPIMPLICIT_* hooks). Row-invariant: skip the row.
-                    if (self.isCellCorrectedPolaraxis(iy)) continue;
-                    var ix: i64 = 0;
-                    while (ix < self.nxi()) : (ix += 1) {
-                        var uu: [NV]f64 = undefined;
-                        var pp: [NV]f64 = undefined;
-                        self.u.load(ix, iy, iz, &uu);
-                        self.p.load(ix, iy, iz, &pp);
-
-                        const geom = self.cache.fillGeometry(ix, iy, iz);
-                        const rr = ImplT.solveImplicitLab(&uu, &pp, &geom, ctx.dt, self.opt.gam, self.opt.rad, opac, &self.opt.implicit);
-
-                        if (rr.ok) {
-                            self.u.store(ix, iy, iz, &uu);
-                            self.p.store(ix, iy, iz, &pp);
-                            self.setFlag(.radimp_fixup, ix, iy, iz, 0);
-                            res.n_iters += rr.iters;
-                            res.n_solves += 1;
-                        } else {
-                            // C: unchanged u/p, flag for fixups
-                            self.setFlag(.radimp_fixup, ix, iy, iz, -1);
-                            res.n_fail += 1;
-                        }
-                    }
-                }
-            }
         }
 
         /// C: do_correct (finite.c:594); CORRECT_POLARAXIS only; the 3D /
@@ -1829,7 +932,7 @@ pub fn Sim(comptime cfg: config.Config) type {
             const gam_imex = 1.0 - 1.0 / @sqrt(2.0);
 
             // my_finger: PR_FINGER not defined for any target problem
-            self.saveTimesteps();
+            timestep.saveTimesteps(Self, self);
             // set_gammagas: CONSISTENTGAMMA off
 
             // ---- 1st implicit ----
@@ -1852,7 +955,7 @@ pub fn Sim(comptime cfg: config.Config) type {
                 try dynamo_mod.applyDynamo(Self, self, t, dt);
             }
             // op_intermediate (electrons) — no-op
-            self.copyEntropyCount();
+            entropy_pass.copyEntropyCount(Self, self);
             self.stageDeriv(&self.dut1, &self.u, &self.ut1, dt);
 
             // ---- 1st together: u = ut0 + dt·dut1 + dt(1−2γ)·drt1 ----
