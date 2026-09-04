@@ -562,11 +562,11 @@ test "M5: acoustic wave — dispersion (phase) order ≥ 1.9, amplitude preserve
 // ---- Bondi/Michel stationarity in KS ------------------------------------------
 //
 
-const michel_gam: f64 = 4.0 / 3.0;
+pub const michel_gam: f64 = 4.0 / 3.0;
 
 /// Michel (1972) transonic accretion: polytropic P = Kρ^Γ onto M=1,
 /// sonic radius rc. Returns ρ and radial infall speed u = |u^r| at r.
-const Michel = struct {
+pub const Michel = struct {
     k: f64,
     c_mdot: f64, // r² u ρ (steady)
     e2: f64, // Bernoulli constant h²(1−2/r+u²)
@@ -576,7 +576,7 @@ const Michel = struct {
             std.math.pow(f64, rho, michel_gam - 1.0);
     }
 
-    fn init(rc: f64) Michel {
+    pub fn init(rc: f64) Michel {
         const uc2 = 1.0 / (2.0 * rc);
         const csc2 = uc2 / (1.0 - 3.0 * uc2);
         // ΓΘ = cs²/(1 − cs²/(Γ−1)), Θ = Kρ^{Γ−1}, ρ_c ≡ 1 → K = Θ_c
@@ -599,7 +599,7 @@ const Michel = struct {
     /// residual f(u) at fixed r dips negative between its two roots; scan
     /// log-spaced u for sign changes and pick the branch (note u = |u^r|
     /// exceeds 1 near the horizon; it is not a three-velocity).
-    fn solve(self: *const Michel, r: f64, rc: f64) struct { rho: f64, u: f64 } {
+    pub fn solve(self: *const Michel, r: f64, rc: f64) struct { rho: f64, u: f64 } {
         const nscan = 4000;
         var brackets: [8][2]f64 = undefined;
         var nb: usize = 0;

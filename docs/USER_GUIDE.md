@@ -591,7 +591,11 @@ data:
   `radvisc_tests.zig`, `scalars_tests.zig`, `threading_tests.zig`,
   `puffy_tests.zig`, `sim_tests.zig` (`Sim.init` validation and initializer invariants),
   `restart_tests.zig` (KDMP round-trip), `simd_tests.zig` (scalar ↔ SIMD
-  bit-identity), plus in-module `test` blocks in nearly every source file.
+  bit-identity), `ks_evolution_tests.zig` (2D Bondi/Michel through the polar axis
+  in KS, and the Gammie et al. 2003 magnetized Bondi monopole: exact discrete
+  monopole, divB at machine zero, stationarity converging), `timestep_tests.zig`
+  (`Core.cflDt` against the CFL bound with the SR hydro eigenvalues), plus
+  in-module `test` blocks in nearly every source file.
 
 **2. Function-level C goldens.** `.kgld` records compare Zig and C at recorded input
 points, with C's *own* geometry embedded per record (`geomFromRecord`) so only the

@@ -366,6 +366,23 @@ is compiler-enforced; `Options` (`sim/options.zig`) is grouped by owner
 `*const CoreT`; `Params` gained an optional `problem` key the driver checks.
 `sim.zig` is about 500 lines. Goldens unchanged.
 
+**Theory anchors for the spherical machinery and the CFL seam, 2026-09-04.** Two gate
+files close gaps the redesign made visible: every MHD analytic test was Minkowski, the
+polar-axis band had contract tests but no physics anchor, and `Core.cflDt` had none.
+`tests/ks_evolution_tests.zig` runs the 2D axisymmetric Bondi/Michel flow on a full-θ KS
+grid through the polar band, the stock `polarReflect` BC and the θ metric sources: the ρ
+drift converges at order ≈ 2.3 (the 1D gate's numbers) and the profile stays θ-uniform to
+roundoff, because the Christoffel-trace correction makes the discrete θ-balance of a
+uniform pressure exact. Its magnetized variant (Gammie, McKinney & Tóth 2003 §5.3; the
+same `A_φ = B0(1−cos θ)` as C's FFBONDI) shows the discrete curl of that potential is an
+exact monopole (4e-15), corner divB stays at machine zero through the run, and the field is
+preserved to ~1e-7 on a fixed interior region; the domain corners carry C's diagonal-average
+ghost artifact (`finite.c:3203`) and are excluded by construction, not by tolerance.
+`tests/timestep_tests.zig` pins `Core.cflDt` to the CFL bound with the SR hydro
+eigenvalues (velocity addition along the boost, `c_s√(1−v²)/√(1−v²c_s²)` transverse,
+per-dimension speeds summed) at 1e-12. Battery: 304 tests, ~5.6 min Debug; the KS pair
+is ~66 s of that, and a t = 10 repeat sits under `-Dslow-tests`.
+
 **Test hardening and golden reorganization, 2026-07-15.** New invariant gates cover the
 M12 physics, `dynamo_tests.zig` (the per-cell dynamo law `dynamoDeltaA` extracted as a pure
 function) and `radvisc_tests.zig` (`shearFromGradients` extracted from `calcShearLab`;

@@ -200,6 +200,7 @@ test {
     _ = @import("tests/evolution_tests.zig");
     _ = @import("tests/flux_tests.zig");
     _ = @import("tests/implicit_tests.zig");
+    _ = @import("tests/ks_evolution_tests.zig");
     _ = @import("tests/metric_tests.zig");
     _ = @import("tests/mhd_evolution_tests.zig");
     _ = @import("tests/mpi_abi_tests.zig");
@@ -220,6 +221,7 @@ test {
     _ = @import("tests/simd_tests.zig");
     _ = @import("tests/state_tests.zig");
     _ = @import("tests/threading_tests.zig");
+    _ = @import("tests/timestep_tests.zig");
 
     // C-oracle goldens — koral/tests/golden/
     _ = @import("tests/golden/dynamo_golden_tests.zig");
