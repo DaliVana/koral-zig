@@ -888,8 +888,10 @@ dynamo calls.
 
 ### 8.3 Radiative shear viscosity, filled once/step, added at faces
 
-`calcRijViscTotal(sim, dt)` (`koral/sim/rijvisc.zig`) runs **once per step** (from
-`step()`, before the RK stages) with `global_dt = this step's dt`, populating `sim.rijvisc`
+`Sim.calcRijViscTotal(dt)` → `rijvisc.calcRijViscTotal(CoreT, core, visc, dt)`
+(`koral/sim/rijvisc.zig`) runs **once per step** (from `step()`, before the RK stages) with
+`global_dt = this step's dt`, populating `sim.visc.?.rijvisc` (the `rijvisc.State` the Sim
+owns only when `radvisc` is set)
 (the viscous R^i_j over domain + one ghost ring). The stress is `R^{ij}_visc = −2ν Ê σ^{ij}`,
 with the shear tensor σ from the radiation-frame velocity field (`calcShearLab` gathers the
 FD gradients, the pure `shearFromGradients` builds σ) and the viscosity coefficient
@@ -904,7 +906,7 @@ and adds `gdet·dampfac·R^i_j` into the M1 radiation flux rows. The pure kernel
 
 `dynamo.applyDynamo(SimT, sim, t, dt)` runs after *each* explicit sub-step (see the two
 `applyDynamo` calls in `step()`). The sequence is `calcScaleHeight` (density-weighted RMS
-angular scale height per radius, into `sim.scaleth`) → `setBc` → `mimicDynamo` → `calcU2p`.
+angular scale height per radius, into `sim.dynamo.?.scaleth`, the `dynamo.State` the Sim owns only when `dynamo` is set) → `setBc` → `mimicDynamo` → `calcU2p`.
 `mimicDynamo` builds a toroidal δA_φ (an α-Ω prescription gated by field pitch angle,
 plasma β, radius, and scale height, with `ALPHAFLIPSSIGN` making α antisymmetric about the
 midplane), applies `DAMPBETA` azimuthal-field damping to `p[b3]`, curls δA_φ into a poloidal
@@ -945,7 +947,7 @@ solver one, and PUFFY inherits it unchanged.
 
 **Polar-axis correction.** Lives in `koral/sim/polaraxis.zig`, fronted by `sim.zig`'s
 `doCorrect` and `isCellCorrectedPolaraxis`. `polaraxis.correct` overwrites the
-`nccorrectpolar` most-polar rows at each θ-edge from a source row, scaling the θ-velocity
+`num.polaraxis.ncells` (C: `NCCORRECTPOLAR`) most-polar rows at each θ-edge from a source row, scaling the θ-velocity
 components by `fac = |θ − θ_axis|/|θ_src − θ_axis|` (so they ramp to zero at the pole)
 while copying other scalars/velocities verbatim; p2u at the *target* geometry rewrites the
 conserveds. B is untouched.
@@ -969,7 +971,8 @@ configs that would make the contract unsatisfiable. The polar-axis EMF zeroing
 (`adjust_fluxcttoth_emfs`) belongs in this module when it is transcribed, even though C
 keeps it in `magn.c`.
 
-The PUFFY driver's `specific_bc` (fragments in `koral/problems/common/bcs.zig`) implements: xhi outflow with radial rescaling and a
+PUFFY's `SpecificBc` callback (`Bc(SimT).calc` in `puffy.zig`, dispatching on the face to the
+fragments in `koral/problems/common/bcs.zig`) implements: xhi outflow with radial rescaling and a
 no-inflow clamp; xlo plain copy (no inflow check because `RMIN = 1.85 < r_horizon = 2`, so
 material only leaves the grid); and ylo/yhi polar reflection with VY/B2/FY sign flips.
 The z faces are `unreachable` (TNZ=1).

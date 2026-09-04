@@ -547,7 +547,7 @@ pub fn calcChi(
     return kappa + calcKappaes(cfg, pp, gamma_adiab, par);
 }
 
-/// Slim calc_chi for the wavespeed τ-limiter (sim.zig) and the radviscosity
+/// Slim calc_chi for the wavespeed τ-limiter (sim/timestep.zig) and the radviscosity
 /// mean-free-path (sim/rijvisc.zig); finding #5. χ = κ + κ_es needs neither the
 /// radiation frame (Rij / Ê / TradBB) nor the four Trad-dependent opacity
 /// channels: κ = opac.gas_abs depends only on (ρ, Te, ne, b²) and the

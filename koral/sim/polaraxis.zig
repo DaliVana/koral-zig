@@ -16,9 +16,9 @@
 //! nothing then supplies; p decouples from u, and since the B-only u2p branch
 //! deliberately zeroes the fixup flags, nothing reports it. `Band` is the
 //! single source of truth both halves derive from, and it carries BOTH
-//! activation gates (the `correct_polaraxis` option and the coordinate system)
+//! activation gates (the `num.polaraxis` option and the coordinate system)
 //! so they cannot drift apart. `Sim.init` also rejects the two configs
-//! that would make the contract unsatisfiable: `ny ≤ 2·nccorrectpolar` (the
+//! that would make the contract unsatisfiable: `ny ≤ 2·ncells` (the
 //! overwrite's sources would lie inside the overwritten band) and non-spherical
 //! coords (preconditions (5) and (7)).
 //!

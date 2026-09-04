@@ -120,7 +120,7 @@ pub fn fFluxPrime(
     // calc_Tij ('nan in flux_prime', physics.c:1230-1247 → my_err + exit(-1),
     // compiled in for PUFFY). We check the assembled flux instead (so the
     // radiative rows are covered too) and surface it as error.NanInFlux, which
-    // the sweep's `try` (sim.zig) propagates to the driver's step-failure path.
+    // the sweep's `try` (sim/explicit.zig) propagates to the driver's step-failure path.
     // The point is to pin the origin cell and close the between-outputs window
     // where cell_fixup could otherwise neighbour-average a transient NaN away —
     // making the run finish with quietly wrong physics and no trace. We do NOT

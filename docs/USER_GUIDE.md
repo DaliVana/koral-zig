@@ -260,6 +260,7 @@ From `koral/params.zig` (defaults shown):
 | `tstart` | `0.0` | Start time. |
 | `tmax` | `0.0` | Stop time (code units). |
 | `nstep_max` | `maxInt(usize)` | Max number of steps. |
+| `problem` | `""` | Optional problem tag (top-level key). A non-empty tag that names a different problem is refused by the driver with `error.ProblemMismatch`; every shipped PUFFY preset carries `problem = "puffy"`. |
 | `tsteplim` | `0.5` | CFL factor (`TSTEPLIM`). |
 | `dtout1` | `0.0` | Output cadence (code time): scalars + KDMP checkpoint + silo, all on the same frame. |
 | `dtout2` | `0.0` | **Reserved / unread** (C's avg-file cadence). KDMP dumps are written on *every* output frame, not gated by this. |
@@ -323,6 +324,7 @@ run without a recompile; see `docs/PUFFY_AGN_DIVERGENCES.md`)
 
 ```toml
 # PUFFY, radiative-MHD limotorus, 10 M☉ Schwarzschild, MKS2
+problem = "puffy"  # optional tag; the driver refuses a file tagged for another problem
 
 [physical]
 mass = 10.0        # MASS (solar masses)
@@ -1175,7 +1177,7 @@ MINK radiation box and a full PUFFY torus step). The 2D ghost-corner fill,
 flux-CT region boundary, and dynamo curl remain serial and form
 natural barriers between regions. Spawn failure at init just means fewer
 helpers. Any new independent per-cell pass dispatches with
-`threading.parallelRange(CtxT, ctx, sim.team, lo, hi, worker)` and a worker
+`threading.parallelRange(CtxT, ctx, core.team, lo, hi, worker)` and a worker
 matching `fn(*CtxT, i64, i64, *ChunkResult) void`; pass extra per-region
 parameters (like the sub-step `dt`) through a small stack context struct.
 
@@ -1184,7 +1186,7 @@ parameters (like the sub-step `dt`) through a small stack context struct.
 In `koral/io/scalars.zig` and `koral/io/dump.zig`:
 
 1. Write a pure reduction in `scalars.zig` following the `mdot`/`lum` pattern
-   (loop `nzi/nyi/nxi`, `sim.p.load`, `sim.cache.fillGeometry` for MYCOORDS or
+   (loop `nzi/nyi/nxi`, `sim.core.p.load`, `sim.core.cache.fillGeometry` for MYCOORDS or
    `blGeom` for BL-frame quantities, accumulate). Reuse `hydro.calcTij` /
    `radiation.calcRij` + `relele.lowerSecond` for tensor fluxes rather than
    re-deriving the stress tensors.
@@ -1213,9 +1215,12 @@ This is the large change. In canonical order:
    by `L.hasVar(...)`), the wavespeeds, and the `p2u`/`u2p` conversions. Kernels
    dispatch on `cfg.has(m)` / `L.hasVar(tag)` at comptime, so inactive modules cost
    nothing.
-4. **`koral/sim.zig`.** If the module needs an explicit source, add it to
-   `opExplicit`'s conserved-update (alongside `metricSource*dt`); an implicit source
-   goes in `opImplicit` / `solve/implicit.zig`.
+4. **`koral/sim/explicit.zig` and `koral/sim/implicit_op.zig`.** If the module needs
+   an explicit source, add it to `explicit.update`'s conserved-update (alongside
+   `metricSource*dt`); an implicit source goes in `implicit_op` / `solve/implicit.zig`.
+   `sim.zig` only composes the passes (`opExplicit`, `opImplicit`); the passes read
+   `*CoreT` plus their own scratch, so a new source term that needs state the `Core`
+   does not carry belongs in a new pass-owned scratch struct, not in `Core`.
 
 Because everything is comptime-gated on the module set, enabling the module for a
 problem is just a `Config` change; the layout and indices follow automatically.
@@ -1238,16 +1243,19 @@ Where the major pieces live (all under `koral/` unless noted):
 | Microphysics (thermo, opacities, four-force) | `physics/thermo.zig`, `physics/opacities.zig`, `physics/mesa.zig` (+ `data/mesa_tables/`), `physics/radforce.zig`, `units.zig` |
 | Implicit rad-gas source | `solve/implicit.zig` |
 | Reconstruction / wavespeeds / flux / Riemann | `fv/recon.zig`, `physics/wavespeeds.zig`, `physics/flux.zig`, `fv/laxf.zig` |
-| Evolution driver | `sim.zig`, `sim/storage.zig`, `sim/bc.zig`, `sim/timers.zig`, `threading.zig` |
+| Evolution core | `sim.zig` (the `Sim` composition), `sim/core.zig` (the state every pass sees), `sim/options.zig` (`Options`, `applyParams`, `validate`), `sim/rk2imex.zig` (integrator + stage buffers), the passes `sim/{timestep,u2p,fixup,explicit,implicit_op,entropy,stage,bc,polaraxis}.zig`, `sim/storage.zig`, `sim/timers.zig`, `threading.zig` |
+| Run driver | `driver.zig` (`run(App, init)`: CLI, params, restart, loop, output, NaN abort) |
 | Constrained transport, dynamo, radiative viscosity | `sim/ct.zig`, `sim/dynamo.zig`, `physics/radvisc.zig` (pure kernels), `sim/rijvisc.zig` (gather + per-step pass) |
-| PUFFY problem + quadrature | `problems/puffy/puffy.zig` (`Physics`, `setup`, `initAllWith`), `problems/puffy/main.zig`, `problems/puffy/*.toml`, `math/quad.zig` |
+| PUFFY problem + quadrature | `problems/puffy/puffy.zig` (`Physics`, `setup`, `initAllWith`, `Bc`), `problems/puffy/main.zig` (the `App`), `problems/puffy/*.toml`, `math/quad.zig` |
+| Shared problem library | `problems/common/{limotorus,atmosphere,magnetize,mri,bcs,perturb}.zig` (any spherical torus problem; JETCOORDS will build on it), `math/misc.zig` (`rtbis`) |
 | Diagnostics / I/O | `io/scalars.zig`, `io/dump.zig`, `io/silo.zig` (+ `io/silo_disabled.zig`) |
 | Build / tests / oracle / tools | `build.zig`, `koral.zig` (`test {}`), `tools/gen_golden.sh`, `tools/{res2kdmp,kdmp2silo,qmri,kdmp2png,kdmp2lc,goldtest,mpi_gates,bench_implicit}.zig`, `testing/golden.zig`, `testing/tubes.zig`, `oracle/harness_*.c`, `tests/golden/` |
 
 The library imports almost nothing outward. The foundation (`config`/`layout`/
 `grid`/`field`/`units`/`params`) is leaf infrastructure consumed by every physics
-and solve module; `sim.zig` is the orchestrator that ties them together. Problems
-sit on top and are the only executables.
+and solve module; `sim/core.zig` is the state every pass sees, `sim.zig` composes the
+passes into `step()`, and `driver.zig` runs a problem's `App`. Problems sit on top and
+are the only executables.
 
 ---
 

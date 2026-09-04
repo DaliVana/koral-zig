@@ -38,8 +38,8 @@
 //!  * copyi_u (domain+ghosts, no corners) is replaced by full-array copies:
 //!    the slots that differ (ghost corners of stage buffers) are never read.
 //!  * op_implicit (M9) is a structural no-op when phys.opac is null
-//!    (≡ SKIPRADSOURCE); do_correct → correct_polaraxis (M10) is enabled
-//!    by num.polaraxis (CORRECT_POLARAXIS, on for PUFFY in M11).
+//!    (≡ SKIPRADSOURCE); doCorrect → polaraxis.correct (C: correct_polaraxis,
+//!    M10) is enabled by `num.polaraxis` (CORRECT_POLARAXIS, on for PUFFY).
 //!  * upreexplicit/ppreexplicit copies (finite.c:644) are skipped; nothing
 //!    reads them before M12 (radviscosity / entropy mixing).
 

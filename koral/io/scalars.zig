@@ -206,11 +206,11 @@ fn blPhiWidth(comptime SimT: type, sim: *const SimT, ix: i64, iy: i64, iz: i64) 
 }
 
 /// C: calc_scaleheight (postproc.c:2645). The density-weighted RMS |π/2−θ|
-/// at the radial shell nearest `radius`. Fills sim.scaleth first (C's
+/// at the radial shell nearest `radius`. C fills scaleth first (its
 /// scaleth_otg is populated by calc_avgs_throughout during the step).
 pub fn scaleHeightAt(comptime SimT: type, sim: *const SimT, radius: f64) f64 {
     // Read-only: query the one radial column directly instead of filling the
-    // whole sim.scaleth (that fill is dynamo-owned state; a diagnostic must
+    // whole `sim.dynamo.?.scaleth` (dynamo-owned scratch; a diagnostic must
     // not mutate the Sim). Bit-identical — same per-ix body as calcScaleHeight.
     const ix = radialShellIndex(SimT, sim, radius);
     return dynamo.scaleHeightAtIx(SimT.CoreT, &sim.core, ix);

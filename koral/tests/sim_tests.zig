@@ -62,14 +62,14 @@ test "Sim.init rejects radviscosity with a null opac" {
     }));
 }
 
-test "Sim.init rejects correct_polaraxis when ny <= 2*nccorrectpolar" {
+test "Sim.init rejects num.polaraxis when ny <= 2*ncells" {
     try std.testing.expectError(error.InvalidConfig, SimT.init(a, grid(3, 4), .{
         .phys = .{ .coords = .mink },
         .num = .{ .polaraxis = .{ .ncells = 2 } },
     }));
 }
 
-test "Sim.init rejects correct_polaraxis on non-spherical coords" {
+test "Sim.init rejects num.polaraxis on non-spherical coords" {
     // correctPolaraxis returns early on .mink but isCellCorrectedPolaraxis does
     // not: u2p would invert B only, cell_fixup and op_implicit would skip the
     // polar rows, and nothing would overwrite them — p silently decoupled from

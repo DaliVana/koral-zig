@@ -591,12 +591,12 @@ clamp so $|B^\phi|$ never crosses zero.
 
 ## 8. Numerical scheme
 
-The driver ([`koral/sim.zig`](../koral/sim.zig), `Sim`) advances the finite-volume
-system. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the module wiring.
+The evolution core ([`koral/sim.zig`](../koral/sim.zig)'s `Sim`, composing the passes in
+`koral/sim/*.zig` over the `Core` state view) advances the finite-volume system. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the module wiring.
 
 ### 8.1 Finite-volume discretization
 
-The conserved update per cell is (`opExplicit`):
+The conserved update per cell is (`opExplicit`, `koral/sim/explicit.zig`):
 $$U^{n+1} = U^n - \sum_d \frac{F^{d}_{i+1/2} - F^{d}_{i-1/2}}{\Delta x_d}\,dt + S\,dt,$$
 where the geometric (metric) source (`metricSource`, KORAL
 `f_metric_source_term_arb`, `GDETIN=1`) is the Christoffel contraction
@@ -627,7 +627,7 @@ variants of C's `FLUXLIMITER` are not implemented.
 
 One-sided fluxes are combined per face
 ([`koral/fv/laxf.zig`](../koral/fv/laxf.zig); the face loop is
-`sim.zig::fluxesAtFaces`). **Lax-Friedrichs** (PUFFY):
+`sim/explicit.zig::fluxesAtFaces`). **Lax-Friedrichs** (PUFFY):
 $$F^\star = \tfrac12\big(F_L + F_R\big) - \tfrac12\,a_g\,(U_R - U_L),$$
 with $a_g$ the local maximum characteristic speed. The HLL flux is
 $$F^\star = \begin{cases} F_L, & a_l > 0\\ F_R, & a_r < 0\\ \dfrac{-a_l F_R + a_r F_L + a_l a_r (U_R - U_L)}{a_r - a_l}, & \text{else}\end{cases}$$
