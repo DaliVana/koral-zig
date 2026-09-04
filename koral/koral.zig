@@ -79,6 +79,9 @@ pub const fv = struct {
 
 pub const sim = @import("sim.zig");
 pub const Sim = sim.Sim;
+/// The generic run driver (CLI → params → MPI ring → Sim → loop → I/O);
+/// a problem executable is `driver.run(App, init)`.
+pub const driver = @import("driver.zig");
 
 pub const magn = struct {
     pub const ct = @import("sim/ct.zig");
