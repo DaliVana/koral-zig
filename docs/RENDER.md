@@ -33,7 +33,7 @@ zig build -Doptimize=ReleaseFast
 | file | role |
 |---|---|
 | `render/render.zig` | Core: resumable geodesic integrator `advanceRay` (generic over sampler + pause controller), `traceRay`/`traceRayWith`, `Scene`, `Camera`, `renderImage`, trilinear `sampleData`, KDMP v1/v2 `DumpData` |
-| `render/emission.zig` | Monochromatic microphysics (thermal synchrotron Leung+2011, free-free, scattering source; Kirchhoff/LTE pinned by test) |
+| `render/emission.zig` | Monochromatic microphysics (thermal synchrotron Leung+2011, free-free with the Born thermal Gaunt factor ḡ(hν/kT), scattering source; Kirchhoff/LTE pinned by test) |
 | `render/image.zig` | PNG (stored-deflate zlib), afmhot colormap, blur, white point, stretch |
 | `render/shadow.zig` | Analytic Bardeen critical curve (validation overlay + gates) |
 | `render/series.zig` | Slow light: KDMP series scan (header-only), time-interpolating `WindowSampler`, refcounted `FileSource` |
@@ -143,6 +143,16 @@ polarized variants (no polarization yet).
 * Capture boundary on the analytic Bardeen curve (a = 0.9375, conserved
   (ξ, η) to < 0.5%); `--screen` renders the shadow with the curve overlaid.
 * LTE: source function j/χ = B(T) exactly (gray and monochromatic).
+* Free-free: the thermal Gaunt factor is the Born average
+  ḡ(u) = (√3/π)e^{u/2}K₀(u/2), u = hν/kT_e (limits (√3/π)ln(4kT/ζhν) and
+  √(3kT/πhν); ḡ ≈ 12 at 230 GHz for hot gas, ≈ 0.8 at hν ≈ kT). Gates: both
+  asymptotes, ḡ(1) = 0.8403, the emission-weighted mean ∫ḡe^{−u}du = 2√3/π
+  = 1.10 (the gray opacity's total uses 1.2), and j_ν ∝ ḡ(u)e^{−u}, the
+  free-free spectral shape being the Gaunt factor itself. A constant ḡ is
+  right only near u ≈ 1; across 0.1–10 keV it mis-tilts the continuum by
+  up to 2× at the band edges, which matters once spectra are folded through
+  an X-ray response. The relativistic factor 1 + 4.4×10⁻¹⁰T_e matches the
+  gray opacity (PHYSICS.md §5.3).
 * Timing (slow light): radial KS flight time = Δr + 4M ln((r_c−2M)/(r_e−2M))
   to < 0.05 M over 1000 M. The renderer integrates the Shapiro delay;
   consecutive photon-ring windings (Δφ + 2π) delayed by the photon-orbit
@@ -234,7 +244,10 @@ in `--screen` (vacuum) pass `--max-steps 15000`.
   m-periodic.
 * **Current `sgra_spin` data.** Its 230 GHz flux is
   ~1.2×10⁻⁵ Jy vs Sgr A*'s 2.4 Jy (thermal T_b ~ 2×10⁵ K, no hot
-  synchrotron electrons; T_e ≡ T_gas single-temperature), the series is
+  synchrotron electrons; T_e ≡ T_gas single-temperature). That number was
+  measured with the former constant ḡ_ff = 1.2; the Born Gaunt factor is
+  6–12 at these hν/kT, so the bulk free-free flux should come out several
+  times higher on re-render (still ≪ 1 mJy; not yet re-measured). The series is
   MRI-unresolved (qmri verdict) and one hour long, and the π/2 wedge
   imposes m=4 symmetry. A physical EHT comparison needs a separate electron
   temperature model and longer, resolved full-2π runs.

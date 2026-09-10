@@ -7,6 +7,8 @@
 //!    inside are swallowed, outside escape,
 //!  * LTE consistency of the emission model: source function j/χ = B(T)
 //!    when gas and radiation are in equilibrium,
+//!  * the free-free Gaunt factor (Born thermal average): both asymptotes,
+//!    ḡ(1), the 2√3/π emission-weighted mean, and j_ν ∝ ḡ e^{−u},
 //!  * φ-wedge periodic sampling,
 //!  * the PNG encoder (chunk CRCs, zlib stored blocks, pixel roundtrip)
 //!    and the afmhot colormap,
@@ -563,6 +565,89 @@ test "emission: synchrotron has the exponential high-frequency cutoff" {
     const j_hi = em.monoJChi(hi).j;
     try std.testing.expect(j_lo > 0);
     try std.testing.expect(j_hi < 1e-6 * j_lo);
+}
+
+test "emission: Born free-free Gaunt factor: both asymptotes, ḡ(1), monotone, continuous" {
+    const em = @import("../render/emission.zig");
+    const s3p = @sqrt(3.0) / pi;
+    // u ≪ 1: (√3/π)(ln(4/u) − γ_E)
+    const gamma_e = 0.5772156649015329;
+    const u_lo = 1.0e-8;
+    try std.testing.expectApproxEqRel(s3p * (@log(4.0 / u_lo) - gamma_e), em.gauntFF(u_lo), 1e-5);
+    // u ≫ 1: √(3/(πu))·(1 − 1/(4u) + …)
+    const u_hi = 2000.0;
+    try std.testing.expectApproxEqRel(@sqrt(3.0 / (pi * u_hi)) * (1.0 - 1.0 / (4.0 * u_hi)), em.gauntFF(u_hi), 1e-5);
+    // reference point: ḡ(1) = (√3/π) e^{1/2} K₀(1/2), K₀(0.5) = 0.92441907
+    try std.testing.expectApproxEqRel(0.840286, em.gauntFF(1.0), 5e-4);
+    // the mm and X-ray regimes the renderer images: ḡ ≈ 12 vs ≈ 0.8
+    try std.testing.expect(em.gauntFF(1.0e-9) > 11.0 and em.gauntFF(1.0e-9) < 13.0);
+    try std.testing.expect(em.gauntFF(1.16) > 0.7 and em.gauntFF(1.16) < 0.9);
+    // monotone decreasing over 12 decades, through the K₀ branch point (u = 4)
+    var prev = em.gauntFF(1.0e-9);
+    var lu: f64 = -8.95;
+    while (lu <= 3.0) : (lu += 0.05) {
+        const g = em.gauntFF(std.math.pow(f64, 10.0, lu));
+        try std.testing.expect(g > 0 and g < prev);
+        prev = g;
+    }
+    try std.testing.expectApproxEqRel(em.gauntFF(4.0 * (1.0 - 1e-9)), em.gauntFF(4.0 * (1.0 + 1e-9)), 1e-5);
+    // scaled Bessel: e^x K₀(x) agrees with the plain product where both exist
+    try std.testing.expectApproxEqRel(@exp(1.5) * em.besselK0(1.5), em.besselK0e(1.5), 1e-12);
+    try std.testing.expectApproxEqRel(@exp(30.0) * em.besselK0(30.0), em.besselK0e(30.0), 1e-12);
+    try std.testing.expect(std.math.isFinite(em.besselK0e(5.0e4)) and em.besselK0e(5.0e4) > 0);
+}
+
+test "emission: Gaunt factor emission-weighted average is 2√3/π (the gray opacity uses 1.2)" {
+    const em = @import("../render/emission.zig");
+    // ∫₀^∞ ḡ(u) e^{−u} du = (2√3/π) ∫₀^∞ e^{−x} K₀(x) dx = 2√3/π; midpoint in log u
+    var sum: f64 = 0;
+    const s0 = -45.0;
+    const s1 = 6.0;
+    const n: usize = 40000;
+    const ds = (s1 - s0) / @as(f64, @floatFromInt(n));
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const u = @exp(s0 + (@as(f64, @floatFromInt(i)) + 0.5) * ds);
+        sum += em.gauntFF(u) * @exp(-u) * u * ds;
+    }
+    try std.testing.expectApproxEqRel(2.0 * @sqrt(3.0) / pi, sum, 1e-4);
+}
+
+test "emission: free-free spectral shape is exactly ḡ(u)·e^{−u} (Kirchhoff × RL 5.18b)" {
+    const em = @import("../render/emission.zig");
+    // B = 0 (no synchrotron), no scattering: j_ν = α_ν B_ν(T_e), the ν³
+    // factors cancel, so j(ν₁)/j(ν₂) = ḡ(u₁)e^{−u₁} / (ḡ(u₂)e^{−u₂}).
+    const temp = 1.0e7; // kT = 0.86 keV
+    const base = em.MonoIn{
+        .nu = 0,
+        .ne_cgs = 1.0e15,
+        .ni_cgs = 1.0e15,
+        .te = temp,
+        .trad = temp,
+        .b_gauss = 0,
+        .sin_pitch = 0,
+        .chi_es_cgs = 0,
+        .dip = 1.0,
+    };
+    const nus = [_]f64{ 2.418e16, 2.418e17, 1.209e18 }; // 0.1, 1, 5 keV
+    var a = base;
+    a.nu = nus[0];
+    const j0 = em.monoJChi(a).j;
+    try std.testing.expect(j0 > 0);
+    const u_ref = em.h_cgs * nus[0] / (em.k_cgs * temp);
+    for (nus[1..]) |nu| {
+        var b = base;
+        b.nu = nu;
+        const u = em.h_cgs * nu / (em.k_cgs * temp);
+        const want = em.gauntFF(u) * @exp(-u) / (em.gauntFF(u_ref) * @exp(-u_ref));
+        try std.testing.expectApproxEqRel(want, em.monoJChi(b).j / j0, 1e-9);
+    }
+    // what the old constant missed: across 0.1–5 keV at 10⁷ K the Gaunt
+    // factor alone tilts the continuum by > 2.5× (ḡ ≈ 1.6 → 0.4)
+    const u_5kev = em.h_cgs * nus[2] / (em.k_cgs * temp);
+    try std.testing.expect(em.gauntFF(u_ref) / em.gauntFF(u_5kev) > 2.5);
+    // and the relativistic factor matches the gray opacity's form
+    try std.testing.expectEqual(1.0 + 4.4e-10 * 1.0e8, em.relFF(1.0e8));
 }
 
 test "render: supersampled rays — pixel center matches ray(), ss=2 averages cleanly" {

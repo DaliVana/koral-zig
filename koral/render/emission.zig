@@ -1,7 +1,9 @@
 //! Frequency-dependent (monochromatic) emissivities for the renderer's
 //! synthetic-observation mode: thermal synchrotron (the Leung, Tchekhovskoy
 //! & Gammie 2011 fit used by grmonty/ipole), thermal bremsstrahlung
-//! (Rybicki & Lightman 5.18b with a constant mean Gaunt factor), and the
+//! (Rybicki & Lightman 5.18b with the Born-approximation thermal Gaunt
+//! factor ḡ_ff(hν/kT_e) and the gray opacity's relativistic correction; the
+//! spectral shape j_ν ∝ ḡ e^{−u} IS the Gaunt factor), and the
 //! electron-scattering source with the radiation field taken blackbody-
 //! shaped at T_rad, which is exact in normalization by the definition of
 //! T_rad (Ê = 4σT_rad⁴), times the M1 dipole factor the caller supplies.
@@ -21,10 +23,35 @@ pub const k_cgs: f64 = 1.3806488e-16; // units.K_BOLTZ_CGS
 pub const m_e_cgs: f64 = 9.1094e-28; // units.M_ELECTR_CGS
 pub const e_esu: f64 = 4.80320425e-10; // electron charge (statC; not in units.zig)
 
-/// Mean free-free Gaunt factor. A constant ~1.2 is good to ~20% across the
-/// mm-X-ray range we image; upgrade to a ν,T-dependent fit if spectra ever
-/// need better.
-pub const gaunt_ff: f64 = 1.2;
+// ---- free-free Gaunt factor ----------------------------------------------
+
+/// √3/π, the prefactor of the thermal free-free Gaunt factor.
+const sqrt3_over_pi: f64 = 0.5513288954217921;
+
+/// Thermally averaged free-free Gaunt factor in the Born approximation,
+///     ḡ_ff(u) = (√3/π) e^{u/2} K₀(u/2),   u = hν/kT_e,
+/// the γ² = Z²Ry/kT → 0 limit of the exact Karzas & Latter (1961) result
+/// (Rybicki & Lightman §5.3; van Hoof et al. 2014 tabulate the exact one).
+/// Limits: (√3/π) ln(4kT/(ζhν)) for u ≪ 1 (ζ = e^{γ_E}) and √(3kT/(πhν))
+/// for u ≫ 1, so one expression covers the mm band (u ~ 10⁻⁹, ḡ ~ 12) and
+/// the X-ray band (u ~ 1, ḡ ~ 0.8) the renderer images; a constant is
+/// right only near u ≈ 1 and turns X-ray slopes into factor-2 errors at
+/// the band edges. Its emission-weighted average ∫ḡ e^{−u} du = 2√3/π =
+/// 1.10, next to the 1.2 the gray opacity uses for the total power.
+/// Elwert–Sommerfeld corrections grow with γ² and matter below ~10⁶ K
+/// (γ² ≳ 0.2), where X-ray free-free is Wien-suppressed anyway; at mm
+/// frequencies the Born value stays within tens of percent there.
+pub fn gauntFF(u: f64) f64 {
+    return sqrt3_over_pi * besselK0e(0.5 * @max(u, 1e-300));
+}
+
+/// Relativistic correction to the thermal free-free power, 1 + 4.4×10⁻¹⁰ T_e
+/// (Rybicki & Lightman 5.25b), applied frequency-independently: the same
+/// factor physics/opacities.zig puts on the gray emissivity, so the
+/// frequency integral of j_ν tracks the cooling the sim actually evolved.
+pub fn relFF(te: f64) f64 {
+    return 1.0 + 4.4e-10 * te;
+}
 
 // ---- Planck --------------------------------------------------------------
 
@@ -51,8 +78,20 @@ pub fn besselK0(x: f64) f64 {
             (-0.57721566 + t * (0.42278420 + t * (0.23069756 + t * (0.03488590 + t * (0.00262698 + t * (0.00010750 + t * 0.00000740))))));
     }
     const u = 2.0 / x;
-    return @exp(-x) / @sqrt(x) *
-        (1.25331414 + u * (-0.07832358 + u * (0.02189568 + u * (-0.01062446 + u * (0.00587872 + u * (-0.00251540 + u * 0.00053208))))));
+    return @exp(-x) / @sqrt(x) * k0AsymPoly(u);
+}
+
+/// A&S 9.8.6 polynomial in u = 2/x: e^x √x K₀(x) for x ≥ 2.
+inline fn k0AsymPoly(u: f64) f64 {
+    return 1.25331414 + u * (-0.07832358 + u * (0.02189568 + u * (-0.01062446 + u * (0.00587872 + u * (-0.00251540 + u * 0.00053208)))));
+}
+
+/// e^x·K₀(x), the exponentially scaled K₀: finite for every x > 0 (K₀
+/// itself underflows past x ≈ 700 while the product tends to √(π/2x)).
+pub fn besselK0e(x: f64) f64 {
+    std.debug.assert(x > 0);
+    if (x <= 2.0) return @exp(x) * besselK0(x);
+    return k0AsymPoly(2.0 / x) / @sqrt(x);
 }
 
 pub fn besselK1(x: f64) f64 {
@@ -127,11 +166,14 @@ pub fn monoJChi(in: MonoIn) MonoOut {
 
     const bnu_e = planckNu(in.nu, in.te);
 
-    // free-free: α from RL 5.18b, j via Kirchhoff
+    // free-free: α from RL 5.18b with the Born thermal Gaunt factor and the
+    // gray opacity's relativistic correction; j via Kirchhoff. With the ν³
+    // factors cancelling, j_ν = α_ν B_ν ∝ ḡ(u) e^{−u} at fixed T_e — the
+    // spectral shape is the Gaunt factor itself (pinned by test).
     if (in.te > 0 and in.ne_cgs > 0 and in.nu > 0) {
         const x = h_cgs * in.nu / (k_cgs * in.te);
         const one_m_emx = if (x > 1e-6) -std.math.expm1(-x) else x;
-        const aff = 3.7e8 * in.ne_cgs * in.ni_cgs * gaunt_ff * one_m_emx /
+        const aff = 3.7e8 * in.ne_cgs * in.ni_cgs * gauntFF(x) * relFF(in.te) * one_m_emx /
             (@sqrt(in.te) * in.nu * in.nu * in.nu);
         j += aff * bnu_e;
         chi += aff;
