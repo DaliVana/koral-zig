@@ -69,6 +69,15 @@ Transfer uses the attenuated-emission solution in invariant form with
   own gray opacities + M1 scattering source (with the 1 + 3n̂·F̂/Ê dipole);
   `--nu GHZ` integrates I_ν/ν̂³ with the CGS microphysics of emission.zig
   and reports I_ν, T_b, and (with `--dist`) S_ν in Jy.
+The scattered part of the monochromatic source is colour-corrected: the
+  M1 field is re-emitted as the diluted blackbody f⁻⁴B_ν(fT_rad) (Shimura &
+  Takahara 1995) with f(T_rad) from Done et al. (2012, eqs. 1–2), weighted
+  by the cell's gray scattering fraction κ_es/(κ_es+κ_abs) so
+  absorption-dominated gas stays Planckian. `--fcol off|done12|F` selects
+  it (default done12; F = a fixed factor such as 1.7). The f⁻⁴ keeps the
+  energy budget identical to gray mode; only the shape hardens (peak × f,
+  Rayleigh–Jeans tail × f⁻³). See "X-ray caveats" below for what this does
+  not do.
 The sigma cut (b²/ρ) and floor cut (atmosphere profile) suppress
   the emission of floor-dominated material but keep its extinction.
 * The integrator is **resumable** (`RayState` + `advanceRay(sampler, ctl)`),
@@ -143,6 +152,14 @@ polarized variants (no polarization yet).
 * Capture boundary on the analytic Bardeen curve (a = 0.9375, conserved
   (ξ, η) to < 0.5%); `--screen` renders the shadow with the curve overlaid.
 * LTE: source function j/χ = B(T) exactly (gray and monochromatic).
+* Colour correction (against the papers): Done+2012's quoted anchors
+  (1.6 at kT = 1 keV, 2.34 at 4×10⁵ K, 2.4 at 3×10⁵ K, 2.7 at 10⁵ K), the
+  Shimura & Takahara 1.7 ± 0.15 over kT 0.4–0.8 keV, the Davis & El-Abd
+  (2019) 1.4–2 envelope for 0.3–1.5 keV with their eq. 11 offset pinned;
+  the diluted blackbody conserves σT⁴/π to 10⁻³, moves the peak by f and
+  the RJ tail by f⁻³; a thick scattering slab traced through the production
+  path hardens by exactly f⁻⁴B_ν(fT)/B_ν(T) (2%), `--fcol 1` is bit-identical
+  to `off`, and the blend returns Kirchhoff's S = B where absorption dominates.
 * Free-free: the thermal Gaunt factor is the Born average
   ḡ(u) = (√3/π)e^{u/2}K₀(u/2), u = hν/kT_e (limits (√3/π)ln(4kT/ζhν) and
   √(3kT/πhν); ḡ ≈ 12 at 230 GHz for hot gas, ≈ 0.8 at hν ≈ kT). Gates: both
@@ -252,18 +269,39 @@ in `--screen` (vacuum) pass `--max-steps 15000`.
   imposes m=4 symmetry. A physical EHT comparison needs a separate electron
   temperature model and longer, resolved full-2π runs.
 
+## X-ray caveats
+
+The monochromatic mode was built for the mm band. What the colour
+correction buys, and what it does not:
+
+* It is the standard first-order treatment of a scattering-dominated
+  atmosphere (Shimura & Takahara 1995; Davis et al. 2005; Done et al.
+  2012; Davis & El-Abd 2019) and makes the soft continuum below a few keV
+  defensible. Without it the scattered light was a blackbody at T_rad,
+  too soft by f ≈ 1.5–2 at the peak.
+* It adds no Comptonized tail. Wielgus et al. (2022) post-processed these
+  puffy discs with HEROIC and found a thermal peak near 3 keV plus a
+  power law of photon index ≈ 4 above 10 keV; Lančová et al. (2022) showed
+  colour-corrected disc models mis-recover puffy-disc parameters. Nothing
+  above the thermal peak should be trusted from this renderer.
+* Magnetically supported atmospheres harden beyond the prescription
+  (Blaes et al. 2006), so Done+2012 is a floor for puffy discs.
+* T_e ≡ T_gas everywhere; the tenuous puffy layer and funnel radiate at
+  the ion temperature. No lines, no edges (continuum processes only).
+* Interstellar absorption is not applied; add it downstream (SIMPUT/XSPEC).
+
 ## Tool reference
 
 `kdmp2png <toml> <kdmp|--slow DIR [ref.kdmp]> [out.png]`. See the header of
 `tools/kdmp2png.zig` for the full flag list: camera (`--size --fov --incl
---phi --rcam --ss`), physics (`--nu --dist --sigma-cut --floor-cut --tau`),
+--phi --rcam --ss`), physics (`--nu --fcol --dist --sigma-cut --floor-cut --tau`),
 integration (`--eps --max-steps --threads`), display (`--gamma --wp
 --blur`), validation (`--screen`), slow light (`--slow --tobs --stride
 --rslow`), refinement (`--adapt --adapt-dt`), export (`--fits --ra --dec
 --mjd`).
 
 `kdmp2lc <toml> --slow DIR [out.txt]`, epochs (`--t0 --t1 --nt`), physics
-(`--nu --dist`), movie (`--frames DIR`), plus the shared camera/slow-light
+(`--nu --fcol --dist`), movie (`--frames DIR`), plus the shared camera/slow-light
 flags.
 
 `goldtest [outdir] --size N --ss N --eps E --tests 12345`, the
@@ -278,6 +316,8 @@ KDMP v1 (32-byte header) is accepted by the renderer's loader only;
   discriminator.
 * Single-temperature electrons (T_e = T_gas), dominates 230 GHz
   synchrotron uncertainty for RIAF-regime sources.
+* No Comptonization beyond the colour correction of the scattered source
+  (see "X-ray caveats"); a Monte Carlo post-processor is the real fix.
 * Slow light interpolates primitives linearly between frames (standard
   practice); no higher-order time interpolation.
 * GPU/Metal port sketched but not built (bake Γ into a 2D texture,

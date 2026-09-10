@@ -141,6 +141,36 @@ pub const FloorCut = struct {
     factor: f64,
 };
 
+/// Colour temperature correction of the monochromatic scattered source: the
+/// M1 field is re-emitted as the diluted blackbody f⁻⁴B_ν(fT_rad) instead of
+/// B_ν(T_rad) (emission.zig; docs/RENDER.md "X-ray caveats"). Energy is
+/// conserved for any f; only the spectral shape changes.
+pub const Fcol = union(enum) {
+    /// plain blackbody at T_rad
+    off,
+    /// Done, Davis, Jin, Blaes & Ward (2012) f(T_rad), eqs. 1–2 (default)
+    done12,
+    /// a constant hardening factor, e.g. 1.7 (Shimura & Takahara 1995)
+    fixed: f64,
+
+    /// CLI spelling: "off" | "done12" | a number ≥ 1.
+    pub fn parse(text: []const u8) ?Fcol {
+        if (std.mem.eql(u8, text, "off")) return .off;
+        if (std.mem.eql(u8, text, "done12")) return .done12;
+        const v = std.fmt.parseFloat(f64, text) catch return null;
+        if (!(v >= 1.0) or !std.math.isFinite(v)) return null;
+        return .{ .fixed = v };
+    }
+
+    pub fn name(self: Fcol) []const u8 {
+        return switch (self) {
+            .off => "off",
+            .done12 => "done12",
+            .fixed => "fixed",
+        };
+    }
+};
+
 /// Everything a ray needs: geometry of the data grid, spacetime, thermo
 /// constants (mass-scaled), opacity channels, and the snapshot itself.
 pub const Scene = struct {
@@ -167,6 +197,22 @@ pub const Scene = struct {
     /// density profile (null = off). Extinction is kept either way; masked
     /// material still occults, only its (unphysical) glow is dropped.
     floor: ?FloorCut = null,
+    /// colour correction of the monochromatic scattered source (see Fcol)
+    fcol: Fcol = .done12,
+
+    /// Effective colour correction at a sampled point: the prescription's
+    /// f(T_rad) blended with the gray scattering fraction κ_es/(κ_es +
+    /// κ_abs) (emission.blendFcol), so absorption-dominated gas keeps its
+    /// Planckian source and Kirchhoff's law.
+    pub fn fcolAt(s: *const Scene, trad: f64, chi_es: f64, chi: f64) f64 {
+        const f: f64 = switch (s.fcol) {
+            .off => return 1.0,
+            .done12 => emission.fcolDone12(trad),
+            .fixed => |v| v,
+        };
+        const albedo = if (chi > 0) chi_es / chi else 0.0;
+        return emission.blendFcol(f, albedo);
+    }
 
     pub fn init(g: Grid, mp: MetricParams, consts: thermo.Consts, channels: opacities.Channels, gam: f64, data: *const DumpData, r_cam: f64, rmax: f64) Scene {
         return .{
@@ -740,6 +786,8 @@ pub fn advanceRay(comptime cfg: config.Config, s: *const Scene, sampler: anytype
                             const cosp = kdotb / (nuhat * @sqrt(lst.bsq));
                             sin_pitch = @sqrt(@max(0.0, 1.0 - cosp * cosp));
                         }
+                        // colour correction of the scattered field (Scene.fcol)
+                        const fcol = s.fcolAt(lst.trad, lst.chi_es, lst.chi);
                         const em = emission.monoJChi(.{
                             .nu = opts.nu_obs * nuhat,
                             .ne_cgs = lst.ne * s.consts.numdensgu2cgs,
@@ -750,6 +798,7 @@ pub fn advanceRay(comptime cfg: config.Config, s: *const Scene, sampler: anytype
                             .sin_pitch = sin_pitch,
                             .chi_es_cgs = lst.chi_es / un.masscm,
                             .dip = dip,
+                            .fcol = fcol,
                         });
                         jl = if (lst.masked) 0.0 else em.j;
                         chil = em.chi;

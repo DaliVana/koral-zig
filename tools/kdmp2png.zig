@@ -57,6 +57,10 @@
 //!                  ν_obs (thermal synchrotron + free-free + scattering,
 //!                  emission.zig) with I_ν reported in CGS and brightness
 //!                  temperature: 0 = gray bolometric      (default 0)
+//!   --fcol MODE    colour correction of the scattered field in --nu mode:
+//!                  off | done12 (Done+2012 f(T_rad); default) | a fixed
+//!                  f ≥ 1 (e.g. 1.7). Energy-conserving; hardens the shape
+//!                  only. See docs/RENDER.md, X-ray caveats.
 //!   --dist KPC     source distance; with --nu, also print the integrated
 //!                  flux density in Jy (0 = skip)         (default 0)
 //!   --screen       VALIDATION mode: ignore the fluid, render a bright
@@ -122,6 +126,7 @@ pub fn main(init: std.process.Init) !void {
     var rcam: f64 = 1000.0;
     var ss: usize = 2;
     var sigma_cut: f64 = 1.0;
+    var fcol: render.Fcol = .done12;
     var floor_cut: f64 = 1.0e3;
     var nu_ghz: f64 = 0.0;
     var dist_kpc: f64 = 0.0;
@@ -162,6 +167,12 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--ss")) {
             const v = args.next() orelse return usageErr();
             ss = std.fmt.parseInt(usize, v, 10) catch return usageErr();
+        } else if (std.mem.eql(u8, arg, "--fcol")) {
+            const v = args.next() orelse return usageErr();
+            fcol = render.Fcol.parse(v) orelse {
+                std.debug.print("kdmp2png: --fcol wants off|done12|<f >= 1>, got '{s}'\n", .{v});
+                return usageErr();
+            };
         } else if (std.mem.eql(u8, arg, "--sigma-cut")) {
             sigma_cut = try parseF(args.next() orelse return usageErr(), "--sigma-cut");
         } else if (std.mem.eql(u8, arg, "--floor-cut")) {
@@ -342,6 +353,7 @@ pub fn main(init: std.process.Init) !void {
         var scene = render.Scene.init(grid, phys.mp, phys.consts(), phys.channels, phys.gam, ref, rcam, phys.rmax);
         scene.scattering = phys.scattering;
         scene.sigma_cut = sigma_cut;
+        scene.fcol = fcol;
         if (floor_cut > 0) {
             scene.floor = .{ .rho0 = phys.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
         }
@@ -395,6 +407,7 @@ pub fn main(init: std.process.Init) !void {
         );
         scene.scattering = phys.scattering;
         scene.sigma_cut = sigma_cut;
+        scene.fcol = fcol;
         if (floor_cut > 0) {
             // PUFFY's floor atmosphere (setHdAtmosphere): ρ = RHOATMMIN·(r/2)^-1.5
             scene.floor = .{ .rho0 = phys.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
@@ -463,7 +476,7 @@ pub fn main(init: std.process.Init) !void {
     if (nu_obs > 0) {
         const em = koral.render.emission;
         const tb_max = max_i * em.c_cgs * em.c_cgs / (2.0 * em.k_cgs * nu_obs * nu_obs);
-        std.debug.print("kdmp2png: nu={d} GHz  I_max={e:.3} erg/s/cm2/sr/Hz  T_b,max={e:.3} K\n", .{ nu_ghz, max_i, tb_max });
+        std.debug.print("kdmp2png: nu={d} GHz  fcol={s}  I_max={e:.3} erg/s/cm2/sr/Hz  T_b,max={e:.3} K\n", .{ nu_ghz, fcol.name(), max_i, tb_max });
         if (dist_kpc > 0) {
             const d_cm = dist_kpc * 3.086e21;
             const pix_rad = fov * phys.consts().units.masscm / d_cm / @as(f64, @floatFromInt(size));
@@ -543,7 +556,7 @@ fn usageErr() error{BadArgs} {
         "usage: kdmp2png <params.toml> <file.kdmp> [out.png]\n" ++
             "       kdmp2png <params.toml> --slow DIR [ref.kdmp] [out.png]   (slow light)\n" ++
             "       [--size N] [--fov M] [--incl DEG] [--phi DEG] [--rcam M]\n" ++
-            "       [--ss N] [--sigma-cut S] [--floor-cut F] [--nu GHZ] [--dist KPC] [--screen]\n" ++
+            "       [--ss N] [--sigma-cut S] [--floor-cut F] [--nu GHZ] [--fcol off|done12|F] [--dist KPC] [--screen]\n" ++
             "       [--gamma G] [--wp PCT] [--blur PX] [--eps E] [--tau T] [--max-steps N] [--threads N]\n" ++
             "       [--slow DIR] [--tobs T] [--stride N] [--rslow R] [--adapt D] [--adapt-dt M]\n" ++
             "       [--fits PATH] [--ra DEG] [--dec DEG] [--mjd D]\n",

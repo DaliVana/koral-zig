@@ -9,6 +9,9 @@
 //!    when gas and radiation are in equilibrium,
 //!  * the free-free Gaunt factor (Born thermal average): both asymptotes,
 //!    ḡ(1), the 2√3/π emission-weighted mean, and j_ν ∝ ḡ e^{−u},
+//!  * the colour-corrected scattered source: Done+2012 anchors, the ST95 /
+//!    Davis & El-Abd envelope, energy conservation of the diluted blackbody,
+//!    and a thick scattering slab hardening by exactly f⁻⁴B(fT)/B(T),
 //!  * φ-wedge periodic sampling,
 //!  * the PNG encoder (chunk CRCs, zlib stored blocks, pixel roundtrip)
 //!    and the afmhot colormap,
@@ -648,6 +651,185 @@ test "emission: free-free spectral shape is exactly ḡ(u)·e^{−u} (Kirchhoff 
     try std.testing.expect(em.gauntFF(u_ref) / em.gauntFF(u_5kev) > 2.5);
     // and the relativistic factor matches the gray opacity's form
     try std.testing.expectEqual(1.0 + 4.4e-10 * 1.0e8, em.relFF(1.0e8));
+}
+
+test "emission: Done+2012 colour correction reproduces the paper's quoted values" {
+    const em = @import("../render/emission.zig");
+    // eq. 1 anchors quoted in the text: kT = 1 keV → 1.6; 4×10⁵ K → 2.34;
+    // 3×10⁵ K → 2.4 (their Ross+1992 check); 10⁵ K → 2.7 (top of eq. 2)
+    const t_1kev = 1.0 / em.kev_per_kelvin;
+    try std.testing.expectApproxEqRel(std.math.pow(f64, 72.0, 1.0 / 9.0), em.fcolDone12(t_1kev), 1e-12);
+    try std.testing.expectApproxEqRel(1.608, em.fcolDone12(t_1kev), 2e-3);
+    try std.testing.expectApproxEqRel(2.34, em.fcolDone12(4.0e5), 5e-3);
+    try std.testing.expectApproxEqRel(2.4, em.fcolDone12(3.0e5), 1e-2);
+    try std.testing.expectApproxEqRel(2.7, em.fcolDone12(1.0e5), 2e-2);
+    // eq. 2 (H/He ionizing range) and the neutral floor
+    try std.testing.expectApproxEqRel(std.math.pow(f64, 2.0, 0.82), em.fcolDone12(6.0e4), 1e-12);
+    try std.testing.expectEqual(@as(f64, 1.0), em.fcolDone12(3.0e4));
+    try std.testing.expectEqual(@as(f64, 1.0), em.fcolDone12(1.0e4));
+    // shape: rises through the ionizing range, falls slowly (T^{−1/9}) above
+    try std.testing.expect(em.fcolDone12(5.0e4) < em.fcolDone12(9.0e4));
+    try std.testing.expect(em.fcolDone12(1.0e6) > em.fcolDone12(1.0e7) and em.fcolDone12(1.0e7) > em.fcolDone12(1.0e8));
+    // continuous everywhere (the published branches differ by 2% at 10⁵ K;
+    // the min-form joins them): no step larger than the local slope allows
+    var lt: f64 = 4.5;
+    var prev = em.fcolDone12(std.math.pow(f64, 10.0, lt));
+    while (lt < 9.0) : (lt += 0.01) {
+        const f = em.fcolDone12(std.math.pow(f64, 10.0, lt + 0.01));
+        try std.testing.expect(@abs(f - prev) < 0.03 * prev);
+        prev = f;
+    }
+}
+
+test "emission: colour correction agrees with ST95 and the Davis & El-Abd (2019) envelope for XRB discs" {
+    const em = @import("../render/emission.zig");
+    // Shimura & Takahara 1995: f ≈ 1.7 for a ~10% Eddington stellar-mass
+    // disc, whose hottest annuli have kT_eff ≈ 0.4–0.8 keV
+    var kt: f64 = 0.4;
+    while (kt <= 0.801) : (kt += 0.1) {
+        try std.testing.expectApproxEqAbs(1.7, em.fcolDone12(kt / em.kev_per_kelvin), 0.15);
+    }
+    // Davis & El-Abd 2019 (abstract): f ≈ 1.4–2 for 1–100% Eddington; the
+    // hottest annuli of 10 M☉ discs span kT_max ≈ 0.3–1.5 keV
+    kt = 0.3;
+    while (kt <= 1.501) : (kt += 0.05) {
+        const f = em.fcolDone12(kt / em.kev_per_kelvin);
+        try std.testing.expect(f >= 1.4 and f <= 2.0);
+    }
+    // their eq. 11 at a = 0, α = 0.1, M = 10 M☉ gives 1.48 (ṁ = 0.1) and
+    // 1.81 (ṁ = 1). Done+2012 at the matching kT_max ≈ 10(ṁ/M₈)^{1/4} eV
+    // lands in the same envelope, ~20% higher at ṁ = 0.1: that spread is
+    // the prescription uncertainty, and the gate pins it rather than hides it.
+    const kt_01 = 10.0e-3 * std.math.pow(f64, 0.1 / 1.0e-7, 0.25); // keV
+    const kt_1 = 10.0e-3 * std.math.pow(f64, 1.0 / 1.0e-7, 0.25);
+    const f01 = em.fcolDone12(kt_01 / em.kev_per_kelvin);
+    const f1 = em.fcolDone12(kt_1 / em.kev_per_kelvin);
+    try std.testing.expect(@abs(f01 - 1.48) < 0.4 and @abs(f1 - 1.81) < 0.4);
+    try std.testing.expect(f01 > 1.48); // the known direction of the offset
+}
+
+test "emission: diluted blackbody keeps σT⁴/π, moves the peak by f, lowers the RJ tail by f⁻³" {
+    const em = @import("../render/emission.zig");
+    const temp = 1.0e7;
+    const f = 2.3;
+    // ∫ f⁻⁴ B_ν(fT) dν = σT⁴/π for any f (Davis & El-Abd 2019, below their eq. 1)
+    var sum: f64 = 0;
+    var peak_nu_bb: f64 = 0;
+    var peak_bb: f64 = 0;
+    var peak_nu_cc: f64 = 0;
+    var peak_cc: f64 = 0;
+    const lo = @log(1.0e13);
+    const hi = @log(1.0e20);
+    const n: usize = 200_000;
+    const dln = (hi - lo) / @as(f64, @floatFromInt(n));
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const nu = @exp(lo + (@as(f64, @floatFromInt(i)) + 0.5) * dln);
+        const bb = em.planckNu(nu, temp);
+        const cc = em.dilutedPlanck(nu, temp, f);
+        sum += cc * nu * dln;
+        if (bb > peak_bb) {
+            peak_bb = bb;
+            peak_nu_bb = nu;
+        }
+        if (cc > peak_cc) {
+            peak_cc = cc;
+            peak_nu_cc = nu;
+        }
+    }
+    const sigma_cgs = 5.670367e-5;
+    try std.testing.expectApproxEqRel(sigma_cgs * temp * temp * temp * temp / pi, sum, 1e-3);
+    try std.testing.expectApproxEqRel(f, peak_nu_cc / peak_nu_bb, 2e-3);
+    // Rayleigh–Jeans: f⁻⁴ · (fT) = f⁻³ T
+    const nu_rj = 1.0e-4 * em.k_cgs * temp / em.h_cgs;
+    try std.testing.expectApproxEqRel(1.0 / (f * f * f), em.dilutedPlanck(nu_rj, temp, f) / em.planckNu(nu_rj, temp), 1e-3);
+    // Wien side: harder (more flux above the blackbody peak)
+    const nu_w = 8.0 * em.k_cgs * temp / em.h_cgs;
+    try std.testing.expect(em.dilutedPlanck(nu_w, temp, f) > em.planckNu(nu_w, temp));
+    // f = 1 is the Planck function bit-for-bit (what Fcol.off relies on)
+    try std.testing.expectEqual(em.planckNu(nu_w, temp), em.dilutedPlanck(nu_w, temp, 1.0));
+}
+
+test "emission: blended colour correction: Kirchhoff where absorption dominates, full f where scattering does" {
+    const em = @import("../render/emission.zig");
+    try std.testing.expectEqual(@as(f64, 1.0), em.blendFcol(2.3, 0.0));
+    try std.testing.expectEqual(@as(f64, 2.3), em.blendFcol(2.3, 1.0));
+    try std.testing.expectApproxEqRel(1.65, em.blendFcol(2.3, 0.5), 1e-12);
+    try std.testing.expectEqual(@as(f64, 1.0), em.blendFcol(2.3, -1.0)); // clamped
+    // scattering-dominated cell, T_e = T_rad: the source function becomes
+    // f⁻⁴B_ν(fT), no longer B_ν(T)
+    const temp = 1.0e7;
+    const nu = 2.418e17; // 1 keV
+    var in = em.MonoIn{
+        .nu = nu,
+        .ne_cgs = 1.0e15,
+        .ni_cgs = 1.0e15,
+        .te = temp,
+        .trad = temp,
+        .b_gauss = 0,
+        .sin_pitch = 0,
+        .chi_es_cgs = 1.0,
+        .dip = 1.0,
+        .fcol = 1.635,
+    };
+    const out = em.monoJChi(in);
+    try std.testing.expectApproxEqRel(em.dilutedPlanck(nu, temp, 1.635), out.j / out.chi, 1e-6);
+    try std.testing.expect(out.j / out.chi < 0.5 * em.planckNu(nu, temp)); // dimmer below the peak
+    // fcol = 1 reproduces the plain LTE source exactly
+    in.fcol = 1.0;
+    const out1 = em.monoJChi(in);
+    try std.testing.expectApproxEqRel(em.planckNu(nu, temp), out1.j / out1.chi, 1e-12);
+}
+
+test "render: colour-corrected scattered source hardens a thick scattering slab by exactly f⁻⁴B(fT)/B(T)" {
+    const allocator = std.testing.allocator;
+    const em = @import("../render/emission.zig");
+    const mp = metric.MetricParams{ .a = 0.9375, .mksr0 = 0.1, .mksh0 = 0.9 };
+    const consts = testConsts();
+    var d = try zeroDump(allocator, 32, 24, 1);
+    defer allocator.free(d.body);
+    const tK = 1.0e7;
+    // ρ = 1e-20 GU ≈ 6e-5 g/cm³: τ_es ~ 1e4 across the domain (the first
+    // sampled segment is already thick), κ_es ≫ Planck-mean κ_ff, gas and
+    // radiation at rest (F̂ = 0, dipole 1): emergent I_ν = S_ν of the rim
+    fillUniform(&d, 1.0e-20, tK, &consts);
+    const g = puffyGrid(32, 24, 1, mp, 1.25, 500.0);
+    var scene = render.Scene.init(g, mp, consts, opacities.Channels.puffy, 5.0 / 3.0, &d, 1000.0, 500.0);
+    var cam = render.Camera{ .r = 1000, .incl_deg = 60, .fov = 30, .width = 3, .height = 3, .ss = 1 };
+    cam.setup(mp);
+    const k0 = cam.ray(1, 1);
+    const f = em.fcolDone12(tK);
+    try std.testing.expect(f > 1.5 and f < 1.8);
+
+    // 1 keV sits below the colour-corrected peak (dimmer), 5 keV on the
+    // Wien side (brighter): both must follow the analytic ratio
+    for ([_]f64{ 2.418e17, 1.209e18 }) |nu| {
+        const opts = render.TraceOpts{ .eps = 0.5, .tau_max = 30.0, .nu_obs = nu };
+        scene.fcol = .off;
+        const off = render.traceRay(cfg, &scene, cam.x0, k0, opts);
+        scene.fcol = .done12;
+        const on = render.traceRay(cfg, &scene, cam.x0, k0, opts);
+        scene.fcol = .{ .fixed = 1.0 };
+        const one = render.traceRay(cfg, &scene, cam.x0, k0, opts);
+        try std.testing.expect(off.intensity > 0 and off.tau > 20.0);
+        try std.testing.expectEqual(off.intensity, one.intensity); // f = 1 ≡ off, bit-for-bit
+        const want = em.dilutedPlanck(nu, tK, f) / em.planckNu(nu, tK);
+        try std.testing.expectApproxEqRel(want, on.intensity / off.intensity, 2e-2);
+        if (nu < 5.0e17) {
+            try std.testing.expect(want < 0.5 and on.intensity < off.intensity);
+        } else {
+            try std.testing.expect(want > 1.2 and on.intensity > off.intensity);
+        }
+        // a fixed f follows the same law with its own value
+        scene.fcol = .{ .fixed = 1.7 };
+        const fx = render.traceRay(cfg, &scene, cam.x0, k0, opts);
+        try std.testing.expectApproxEqRel(em.dilutedPlanck(nu, tK, 1.7) / em.planckNu(nu, tK), fx.intensity / off.intensity, 2e-2);
+    }
+    // the CLI spelling round-trips
+    try std.testing.expect(render.Fcol.parse("off").? == .off);
+    try std.testing.expect(render.Fcol.parse("done12").? == .done12);
+    try std.testing.expectEqual(@as(f64, 1.7), render.Fcol.parse("1.7").?.fixed);
+    try std.testing.expect(render.Fcol.parse("0.5") == null and render.Fcol.parse("bogus") == null);
 }
 
 test "render: supersampled rays — pixel center matches ray(), ss=2 averages cleanly" {

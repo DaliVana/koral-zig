@@ -4,9 +4,12 @@
 //! (Rybicki & Lightman 5.18b with the Born-approximation thermal Gaunt
 //! factor ḡ_ff(hν/kT_e) and the gray opacity's relativistic correction; the
 //! spectral shape j_ν ∝ ḡ e^{−u} IS the Gaunt factor), and the
-//! electron-scattering source with the radiation field taken blackbody-
-//! shaped at T_rad, which is exact in normalization by the definition of
-//! T_rad (Ê = 4σT_rad⁴), times the M1 dipole factor the caller supplies.
+//! electron-scattering source: the M1 field re-emitted as the diluted
+//! (colour-corrected) blackbody f⁻⁴B_ν(fT_rad), exact in normalization by
+//! the definition of T_rad (Ê = 4σT_rad⁴) for ANY f, with the hardening
+//! factor f from Done et al. (2012) blended by the cell's scattering
+//! fraction (fcolDone12/blendFcol; f = 1 is the plain blackbody), times the
+//! M1 dipole factor the caller supplies.
 //!
 //! Everything here is CGS and per-Hz in the FLUID frame: j [erg/s/cm³/sr/Hz],
 //! χ [1/cm], ν [Hz], T [K], B [Gauss]. Absorption obeys Kirchhoff's law
@@ -62,6 +65,55 @@ pub fn planckNu(nu: f64, temp: f64) f64 {
     if (x > 700.0) return 0; // Wien underflow
     const pref = 2.0 * h_cgs * nu * nu * nu / (c_cgs * c_cgs);
     return pref / std.math.expm1(x);
+}
+
+// ---- colour temperature correction ----------------------------------------
+
+/// kT in keV per kelvin (1 keV = 1.602176634×10⁻⁹ erg).
+pub const kev_per_kelvin: f64 = k_cgs / 1.602176634e-9;
+
+/// Spectral hardening (colour correction) factor of a scattering-dominated
+/// atmosphere as a function of its effective temperature: the local
+/// prescription of Done, Davis, Jin, Blaes & Ward (2012, MNRAS 420, 1848,
+/// eqs. 1–2; eq. 1 is Davis et al. 2006's A13, the electron-scattering
+/// saturation value):
+///     f = (72 keV / kT)^{1/9}     electron scattering saturated (T ≳ 10⁵ K)
+///     f = (T / 3×10⁴ K)^{0.82}    3×10⁴ K < T < 10⁵ K (H/He ionizing)
+///     f = 1                       below 3×10⁴ K (no free electrons)
+/// Written as max(1, min(eq. 2, eq. 1)) so the branches join continuously
+/// (published as-is they differ by 2% at 10⁵ K). Reference values quoted in
+/// the paper: 1.6 at kT = 1 keV, 2.34 at 4×10⁵ K, 2.4 at 3×10⁵ K, 2.7 at
+/// 10⁵ K; inside the f ≈ 1.4–2 range of Davis & El-Abd (2019) for 1–100%
+/// Eddington and next to Shimura & Takahara's (1995) canonical 1.7.
+/// Magnetically supported atmospheres harden further (Blaes et al. 2006),
+/// so for puffy discs treat this as a floor.
+pub fn fcolDone12(t_kelvin: f64) f64 {
+    if (!(t_kelvin > 3.0e4)) return 1.0;
+    const low = std.math.pow(f64, t_kelvin / 3.0e4, 0.82);
+    const high = std.math.pow(f64, 72.0 / (kev_per_kelvin * t_kelvin), 1.0 / 9.0);
+    return @max(1.0, @min(low, high));
+}
+
+/// Diluted (colour-corrected) blackbody f⁻⁴ B_ν(fT): the Shimura & Takahara
+/// (1995) form of the emergent spectrum of a scattering-dominated
+/// atmosphere. f⁻⁴ keeps the frequency integral at σT⁴/π for any f, so the
+/// gray energy budget of the scattered light is unchanged; only the shape
+/// hardens (peak at f × the blackbody peak, Rayleigh–Jeans tail × f⁻³).
+/// f = 1 is planckNu bit-for-bit.
+pub fn dilutedPlanck(nu: f64, temp: f64, f: f64) f64 {
+    const f2 = f * f;
+    return planckNu(nu, f * temp) / (f2 * f2);
+}
+
+/// Blend the prescription with the cell's scattering fraction
+/// w = κ_es/(κ_es + κ_abs) (gray single-scattering albedo):
+/// f_eff = 1 + (f − 1)·w. Done et al. state eq. 1 holds where scattering
+/// dominates and f → 1 where absorption does (the field is then Planckian
+/// at the gas temperature and Kirchhoff's law is recovered); the linear
+/// blend is the simplest interpolation between those two limits.
+pub fn blendFcol(f: f64, albedo: f64) f64 {
+    const w = std.math.clamp(albedo, 0.0, 1.0);
+    return 1.0 + (f - 1.0) * w;
 }
 
 // ---- modified Bessel functions (A&S 9.8, |rel err| ~ 1e-7) ---------------
@@ -133,6 +185,9 @@ pub const MonoIn = struct {
     chi_es_cgs: f64,
     /// M1 dipole factor 1 + 3n̂·F̂/Ê, clamped ≥ 0 by the caller
     dip: f64,
+    /// effective colour correction of the scattered field (blendFcol of
+    /// the prescription with the cell's albedo); 1 = plain blackbody at T_rad
+    fcol: f64 = 1.0,
 };
 
 pub const MonoOut = struct {
@@ -187,8 +242,9 @@ pub fn monoJChi(in: MonoIn) MonoOut {
         chi += js / bnu_e;
     }
 
-    // scattering source: blackbody-shaped M1 field at T_rad times the dipole
-    j += in.chi_es_cgs * planckNu(in.nu, in.trad) * in.dip;
+    // scattering source: the M1 field at T_rad, colour-corrected
+    // (f⁻⁴B_ν(fT_rad); f = 1 → plain blackbody), times the dipole
+    j += in.chi_es_cgs * dilutedPlanck(in.nu, in.trad, in.fcol) * in.dip;
 
     return .{ .j = j, .chi = chi };
 }

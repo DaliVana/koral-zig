@@ -17,6 +17,8 @@
 //!
 //! usage: kdmp2lc <params.toml> --slow DIR [out.txt]
 //!   --nu GHZ       observing frequency          (default 230)
+//!   --fcol MODE    scattered-field colour correction: off | done12 | F
+//!                  (default done12; see kdmp2png / docs/RENDER.md)
 //!   --dist KPC     source distance              (default 8.277, Sgr A*)
 //!   --t0 M         first epoch t_obs            (default: t_first + rslow + 60,
 //!                  past which the sweep needs no pre-series extrapolation
@@ -87,6 +89,7 @@ pub fn main(init: std.process.Init) !void {
     var rslow: f64 = 40.0;
     var stride: usize = 1;
     var sigma_cut: f64 = 1.0;
+    var fcol: render.Fcol = .done12;
     var floor_cut: f64 = 1.0e3;
     var eps: f64 = 0.5;
     var tau_max: f64 = 30.0;
@@ -130,6 +133,12 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--stride")) {
             const v = args.next() orelse return usageErr();
             stride = std.fmt.parseInt(usize, v, 10) catch return usageErr();
+        } else if (std.mem.eql(u8, arg, "--fcol")) {
+            const v = args.next() orelse return usageErr();
+            fcol = render.Fcol.parse(v) orelse {
+                std.debug.print("kdmp2lc: --fcol wants off|done12|<f >= 1>, got '{s}'\n", .{v});
+                return usageErr();
+            };
         } else if (std.mem.eql(u8, arg, "--sigma-cut")) {
             sigma_cut = try parseF(args.next() orelse return usageErr(), "--sigma-cut");
         } else if (std.mem.eql(u8, arg, "--floor-cut")) {
@@ -210,6 +219,7 @@ pub fn main(init: std.process.Init) !void {
     var scene = render.Scene.init(grid, phys.mp, phys.consts(), phys.channels, phys.gam, ref, rcam, phys.rmax);
     scene.scattering = phys.scattering;
     scene.sigma_cut = sigma_cut;
+    scene.fcol = fcol;
     if (floor_cut > 0) {
         scene.floor = .{ .rho0 = phys.rhoatmmin, .r0 = 2.0, .power = -1.5, .factor = floor_cut };
     }
@@ -337,7 +347,7 @@ pub fn main(init: std.process.Init) !void {
 fn usageErr() error{BadArgs} {
     std.debug.print(
         "usage: kdmp2lc <params.toml> --slow DIR [out.txt]\n" ++
-            "       [--nu GHZ] [--dist KPC] [--t0 M] [--t1 M] [--nt N] [--frames DIR]\n" ++
+            "       [--nu GHZ] [--fcol off|done12|F] [--dist KPC] [--t0 M] [--t1 M] [--nt N] [--frames DIR]\n" ++
             "       [--size N] [--fov M] [--incl DEG] [--phi DEG] [--rcam M] [--ss N]\n" ++
             "       [--rslow R] [--stride N] [--sigma-cut S] [--floor-cut F]\n" ++
             "       [--eps E] [--tau T] [--max-steps N] [--gamma G] [--wp PCT] [--threads N]\n",
