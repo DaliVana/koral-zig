@@ -509,6 +509,31 @@ pub const TraceOpts = struct {
     screen: bool = false,
 };
 
+/// IMAGE-ORDER TAGS. Every backward ray counts its equatorial-plane
+/// crossings (θ = π/2, which is x2 = ½ EXACTLY in MKS2: θ(x2) is odd about
+/// ½, so the test is a sign change, no trigonometry). Emission picked up
+/// along a segment is booked to the bucket of the count at that segment:
+/// n = 0 the direct image, n = 1 the lensed ring, n = 2 the photon ring
+/// proper, n ≥ 3 folded into the last bucket. This is the subring order of
+/// Gralla, Lupsasca & Marrone (2020, PRD 102, 124004) and the n = 0/1/2
+/// image decomposition of Chael, Johnson & Lupsasca (2021, ApJ 918, 6);
+/// for a thin equatorial disc it is also the higher-order-image count of
+/// Falanga et al. (2021, MNRAS 504, 3424). Per-order buffers are laid out
+/// [order][pixel] with the pixel stride of the plain image.
+///
+/// Convention to keep in mind for thick emitters: the count increments
+/// INSIDE a torus straddling the equator, so the far half of a direct
+/// pass lands in n = 1 (standard practice; the "lensed ring" is defined by
+/// crossings, not by orbits).
+pub const n_orders = 4;
+
+/// file-name / column suffixes of the buckets, in order
+pub const order_names = [n_orders][]const u8{ "n0", "n1", "n2", "n3p" };
+
+pub inline fn orderBucket(ncross: u32) usize {
+    return @min(ncross, n_orders - 1);
+}
+
 pub const TraceResult = struct {
     /// camera-frame frequency-integrated intensity (GU; ν̂_cam = 1)
     intensity: f64,
@@ -518,6 +543,12 @@ pub const TraceResult = struct {
     /// ray endpoint (for conservation checks / diagnostics)
     x: [4]f64,
     k: [4]f64,
+    /// equatorial-plane crossings along the whole trace (image order)
+    ncross: u32,
+    /// intensity split by image order (Σ = intensity to roundoff). Screen
+    /// mode: 1 in the escaped ray's own order bucket, all 0 if captured,
+    /// so a per-order screen render maps the GLM lensing bands.
+    i_order: [n_orders]f64,
 };
 
 fn accel(kris: *const [4][4][4]f64, k: [4]f64) [4]f64 {
@@ -693,7 +724,21 @@ pub const RayState = struct {
     tau: f64 = 0,
     steps: usize = 0,
     status: RayStatus = .active,
+    /// equatorial crossings so far (image-order counter, see n_orders)
+    ncross: u32 = 0,
+    /// intensity booked per image order; Σ equals `intensity` to roundoff
+    i_order: [n_orders]f64 = @splat(0),
 };
+
+/// The per-order split a finished ray reports: the booked intensities, or
+/// in screen mode a unit weight in the escaped ray's own order (captured
+/// rays contribute nothing). Shared by packResult and the sweep reduce.
+pub fn orderSplit(st: *const RayState, opts: TraceOpts) [n_orders]f64 {
+    if (!opts.screen) return st.i_order;
+    var o: [n_orders]f64 = @splat(0);
+    if (st.status != .captured) o[orderBucket(st.ncross)] = 1.0;
+    return o;
+}
 
 /// Never pause: run the ray to a terminal status (the fast-light behavior).
 pub const NeverPause = struct {
@@ -811,16 +856,26 @@ pub fn advanceRay(comptime cfg: config.Config, s: *const Scene, sampler: anytype
 
                     const dtau = chil * dl;
                     const att = @exp(-st.tau);
-                    if (dtau > 1e-8) {
-                        st.intensity += att * (jl / (chil * nup)) * (1.0 - @exp(-dtau));
-                    } else {
-                        st.intensity += att * (jl / nup) * dl;
-                    }
+                    // the increment is formed exactly as before and added to
+                    // `intensity` first (fast-path bit-identity), then booked
+                    // to the ray's current image order
+                    const di = if (dtau > 1e-8)
+                        att * (jl / (chil * nup)) * (1.0 - @exp(-dtau))
+                    else
+                        att * (jl / nup) * dl;
+                    st.intensity += di;
+                    st.i_order[orderBucket(st.ncross)] += di;
                     st.tau += dtau;
                 }
             }
         }
 
+        // image-order tag: one equatorial crossing per sign change of
+        // (x2 − ½) between the accepted endpoints. The polar chord of
+        // flatPoleStep lives at x2 ≈ 0 or 1, so it can never fake one; a
+        // tangential double crossing inside one step is measure zero and
+        // is the physically ambiguous case anyway.
+        if ((st.x[2] - 0.5) * (next.x[2] - 0.5) < 0) st.ncross +|= 1;
         st.x = next.x;
         st.k = next.k;
         st.steps += 1;
@@ -838,6 +893,8 @@ fn packResult(st: *const RayState, opts: TraceOpts) TraceResult {
         .captured = st.status == .captured,
         .x = st.x,
         .k = st.k,
+        .ncross = st.ncross,
+        .i_order = orderSplit(st, opts),
     };
 }
 
@@ -923,29 +980,39 @@ pub const Camera = struct {
 /// Render the camera's frame into `out` (row-major, width×height), one
 /// ray per pixel, work-stealing rows across `nthreads` OS threads (the
 /// main thread participates; failed spawns just narrow the team).
-pub fn renderImage(comptime cfg: config.Config, s: *const Scene, cam: *const Camera, out: []f64, opts: TraceOpts, nthreads: usize) void {
+/// `orders`, if given, receives the image split by image order
+/// (n_orders × out.len, laid out [order][pixel]; Σ_n = out to roundoff).
+pub fn renderImage(comptime cfg: config.Config, s: *const Scene, cam: *const Camera, out: []f64, orders: ?[]f64, opts: TraceOpts, nthreads: usize) void {
     std.debug.assert(out.len == cam.width * cam.height);
+    if (orders) |ob| std.debug.assert(ob.len == n_orders * out.len);
     var next_row: std.atomic.Value(usize) = .init(0);
 
     const Worker = struct {
-        fn run(sc: *const Scene, c: *const Camera, o: []f64, op: TraceOpts, rows: *std.atomic.Value(usize)) void {
+        fn run(sc: *const Scene, c: *const Camera, o: []f64, ord: ?[]f64, op: TraceOpts, rows: *std.atomic.Value(usize)) void {
             const ssn = @max(c.ss, 1);
             const ssf: f64 = @floatFromInt(ssn);
             const inv = 1.0 / (ssf * ssf);
+            const npix = c.width * c.height;
             while (true) {
                 const py = rows.fetchAdd(1, .monotonic);
                 if (py >= c.height) return;
                 for (0..c.width) |px| {
                     var acc: f64 = 0;
+                    var acc_o: [n_orders]f64 = @splat(0);
                     for (0..ssn) |sy| {
                         for (0..ssn) |sx| {
                             const fx = @as(f64, @floatFromInt(px)) + (@as(f64, @floatFromInt(sx)) + 0.5) / ssf;
                             const fy = @as(f64, @floatFromInt(py)) + (@as(f64, @floatFromInt(sy)) + 0.5) / ssf;
                             const k0 = c.rayAt(fx, fy);
-                            acc += traceRay(cfg, sc, c.x0, k0, op).intensity;
+                            const res = traceRay(cfg, sc, c.x0, k0, op);
+                            acc += res.intensity;
+                            for (0..n_orders) |n| acc_o[n] += res.i_order[n];
                         }
                     }
                     o[py * c.width + px] = acc * inv;
+                    if (ord) |ob| {
+                        for (0..n_orders) |n| ob[n * npix + py * c.width + px] = acc_o[n] * inv;
+                    }
                 }
             }
         }
@@ -955,9 +1022,9 @@ pub fn renderImage(comptime cfg: config.Config, s: *const Scene, cam: *const Cam
     const want: usize = @min(@max(nthreads, 1) - 1, threads.len);
     var spawned: usize = 0;
     for (0..want) |i| {
-        threads[i] = std.Thread.spawn(.{}, Worker.run, .{ s, cam, out, opts, &next_row }) catch break;
+        threads[i] = std.Thread.spawn(.{}, Worker.run, .{ s, cam, out, orders, opts, &next_row }) catch break;
         spawned = i + 1;
     }
-    Worker.run(s, cam, out, opts, &next_row);
+    Worker.run(s, cam, out, orders, opts, &next_row);
     for (threads[0..spawned]) |t| t.join();
 }

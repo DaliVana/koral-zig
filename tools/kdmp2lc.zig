@@ -97,10 +97,13 @@ pub fn main(init: std.process.Init) !void {
     var gamma: f64 = 0.65;
     var wp_pct: f64 = 99.8;
     var nthreads: usize = std.Thread.getCpuCount() catch 8;
+    var want_orders = false;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--slow")) {
             slow_dir = args.next() orelse return usageErr();
+        } else if (std.mem.eql(u8, arg, "--orders")) {
+            want_orders = true;
         } else if (std.mem.eql(u8, arg, "--frames")) {
             frames_dir = args.next() orelse return usageErr();
         } else if (std.mem.eql(u8, arg, "--nu")) {
@@ -267,9 +270,12 @@ pub fn main(init: std.process.Init) !void {
 
     const out = try allocator.alloc(f64, npix * nt);
     defer allocator.free(out);
+    // per-order layers for ALL epochs: [order][epoch·npix + pixel]
+    const orders_buf: ?[]f64 = if (want_orders) try allocator.alloc(f64, render.n_orders * npix * nt) else null;
+    defer if (orders_buf) |ob| allocator.free(ob);
     const topts = render.TraceOpts{ .eps = eps, .tau_max = tau_max, .max_steps = max_steps, .nu_obs = nu_ghz * 1.0e9 };
     const tstart = std.Io.Timestamp.now(io, .awake);
-    const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, specs, out, topts, .{ .t_cam = 0, .r_slow = rslow, .t_cam_of = t_of }, nthreads, false);
+    const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, specs, out, orders_buf, topts, .{ .t_cam = 0, .r_slow = rslow, .t_cam_of = t_of }, nthreads, false);
     const dur = tstart.durationTo(std.Io.Timestamp.now(io, .awake));
     std.debug.print(
         "kdmp2lc: sweep done in {d:.1}s: {d} rounds, {d} frame loads | {d} entered, {d} tails, {d} captured | edge holds: {d} late, {d} early, {d} rays past start\n",
@@ -286,11 +292,16 @@ pub fn main(init: std.process.Init) !void {
     defer text.deinit(allocator);
     var lbuf: [256]u8 = undefined;
     try text.appendSlice(allocator, try std.fmt.bufPrint(&lbuf, "# kdmp2lc {s} nu={d}GHz dist={d}kpc fov={d}M incl={d} size={d} rslow={d} stride={d}\n", .{ sdir, nu_ghz, dist_kpc, fov, incl, size, rslow, stride }));
-    try text.appendSlice(allocator, "# idx  t_obs[M]  t_obs[s]  S_nu[Jy]  I_max[cgs]\n");
+    if (orders_buf != null) {
+        try text.appendSlice(allocator, "# idx  t_obs[M]  t_obs[s]  S_nu[Jy]  I_max[cgs]  S_n0[Jy]  S_n1[Jy]  S_n2[Jy]  S_n3p[Jy]\n");
+    } else {
+        try text.appendSlice(allocator, "# idx  t_obs[M]  t_obs[s]  S_nu[Jy]  I_max[cgs]\n");
+    }
 
     const flux = try allocator.alloc(f64, nt);
     defer allocator.free(flux);
     var mean: f64 = 0;
+    var mean_o: [render.n_orders]f64 = @splat(0);
     for (0..nt) |e| {
         const im = out[e * npix ..][0..npix];
         var s_: f64 = 0;
@@ -302,7 +313,19 @@ pub fn main(init: std.process.Init) !void {
         flux[e] = s_ * jy_scale;
         mean += flux[e];
         const te = t0 + dt * @as(f64, @floatFromInt(e));
-        try text.appendSlice(allocator, try std.fmt.bufPrint(&lbuf, "{d}  {d:.4}  {d:.2}  {e:.6}  {e:.4}\n", .{ e, te, te * gmc3, flux[e], mx }));
+        if (orders_buf) |ob| {
+            // per-order light curves: the n-th order is the n−1-th delayed by
+            // one photon half-orbit and demagnified (the ring "echo")
+            var so: [render.n_orders]f64 = @splat(0);
+            for (0..render.n_orders) |n| {
+                for (ob[n * npix * nt + e * npix ..][0..npix]) |v| so[n] += v;
+                so[n] *= jy_scale;
+                mean_o[n] += so[n];
+            }
+            try text.appendSlice(allocator, try std.fmt.bufPrint(&lbuf, "{d}  {d:.4}  {d:.2}  {e:.6}  {e:.4}  {e:.6}  {e:.6}  {e:.6}  {e:.6}\n", .{ e, te, te * gmc3, flux[e], mx, so[0], so[1], so[2], so[3] }));
+        } else {
+            try text.appendSlice(allocator, try std.fmt.bufPrint(&lbuf, "{d}  {d:.4}  {d:.2}  {e:.6}  {e:.4}\n", .{ e, te, te * gmc3, flux[e], mx }));
+        }
     }
     mean /= @as(f64, @floatFromInt(nt));
     var varsum: f64 = 0;
@@ -310,6 +333,10 @@ pub fn main(init: std.process.Init) !void {
     const sigma = @sqrt(varsum / @as(f64, @floatFromInt(nt - 1)));
     const mi = if (mean > 0) sigma / mean else 0.0;
     try text.appendSlice(allocator, try std.fmt.bufPrint(&lbuf, "# mean = {e:.6} Jy  sigma = {e:.6} Jy  modulation index M = {d:.4} over {d:.1} M = {d:.1} min\n", .{ mean, sigma, mi, t1 - t0, (t1 - t0) * gmc3 / 60.0 }));
+    if (orders_buf != null and mean > 0) {
+        const ntf: f64 = @floatFromInt(nt);
+        try text.appendSlice(allocator, try std.fmt.bufPrint(&lbuf, "# mean flux fraction by image order: n0 {d:.4}  n1 {d:.4}  n2 {d:.4}  n3p {d:.4}\n", .{ mean_o[0] / ntf / mean, mean_o[1] / ntf / mean, mean_o[2] / ntf / mean, mean_o[3] / ntf / mean }));
+    }
 
     if (out_path) |op| {
         std.Io.Dir.cwd().writeFile(io, .{ .sub_path = op, .data = text.items }) catch |err| {
@@ -347,7 +374,7 @@ pub fn main(init: std.process.Init) !void {
 fn usageErr() error{BadArgs} {
     std.debug.print(
         "usage: kdmp2lc <params.toml> --slow DIR [out.txt]\n" ++
-            "       [--nu GHZ] [--fcol off|done12|F] [--dist KPC] [--t0 M] [--t1 M] [--nt N] [--frames DIR]\n" ++
+            "       [--nu GHZ] [--fcol off|done12|F] [--dist KPC] [--t0 M] [--t1 M] [--nt N] [--frames DIR] [--orders]\n" ++
             "       [--size N] [--fov M] [--incl DEG] [--phi DEG] [--rcam M] [--ss N]\n" ++
             "       [--rslow R] [--stride N] [--sigma-cut S] [--floor-cut F]\n" ++
             "       [--eps E] [--tau T] [--max-steps N] [--gamma G] [--wp PCT] [--threads N]\n",

@@ -41,8 +41,8 @@ zig build -Doptimize=ReleaseFast
 | `render/adaptive.zig` | Photon-ring image-plane refinement: vacuum pre-pass + per-pixel quadtree `planRays`, `renderPlan` |
 | `render/fits.zig` | FITS image writer (Jy/pixel, ehtim-compatible headers) |
 | `render/verify.zig` | Gold et al. 2020 standardized verification scenes |
-| `tools/kdmp2png.zig` | The imaging CLI (fast/slow/adaptive/FITS) |
-| `tools/kdmp2lc.zig` | Light curves + movie frames (one streaming sweep for all epochs) |
+| `tools/kdmp2png.zig` | The imaging CLI (fast/slow/adaptive/FITS, `--orders` image-order layers) |
+| `tools/kdmp2lc.zig` | Light curves + movie frames (one streaming sweep for all epochs; `--orders` per-order light curves) |
 | `tools/goldtest.zig` | The verification runner vs the published flux tables |
 
 Tests live in `koral/tests/render_tests.zig` (registered in `koral.zig`).
@@ -83,6 +83,23 @@ The sigma cut (b²/ρ) and floor cut (atmosphere profile) suppress
 * The integrator is **resumable** (`RayState` + `advanceRay(sampler, ctl)`),
   generic over the data source. The fast-light path is bit-identical to the
   pre-refactor loop by construction and by test.
+* **Image-order tags.** Every ray counts its equatorial-plane crossings
+  (θ = π/2 is x2 = ½ exactly in MKS2, so the test is a sign change between
+  accepted step endpoints; one multiply per step). Emission along a segment
+  is booked to the count at that segment: n = 0 direct, n = 1 the lensed
+  ring, n = 2 the photon ring proper, n ≥ 3 folded into a last bucket
+  (`render.n_orders`). This is the subring order of Gralla, Lupsasca &
+  Marrone (2020) and the n = 0/1/2 decomposition Chael, Johnson & Lupsasca
+  (2021) applied to GRMHD images; for a thin disc it is the higher-order
+  image count of Falanga et al. (2021), whose LSDplus code counts the same
+  crossings. The full intensity is untouched (the increment is formed
+  exactly as before and added first); the split rides along in every mode
+  as an optional `orders` buffer laid out [order][pixel]. Convention to
+  remember for thick emitters: the count increments *inside* a torus that
+  straddles the equator, so the far half of a direct pass is booked as
+  n = 1. The adaptive pre-pass also records each probe's count and
+  refines wherever corners differ, an integer criterion with no threshold
+  that labels every agreeing leaf with its subring.
 
 ## Verification (Gold et al. 2020)
 
@@ -178,6 +195,20 @@ polarized variants (no polarization yet).
 * Slow-light identity: with a static series, both `traceRayWith` and the
   full 3-phase sweep are BIT-IDENTICAL to fast light; batched multi-epoch
   sweeps are bit-identical to independent per-epoch sweeps.
+* Image orders (Schwarzschild, camera at finite radius, no image-plane
+  mapping): the per-ray crossing count equals the exact orbital-plane
+  prediction, the conserved L = x × p fixing the plane and the Binet
+  quadrature the swept angle, for 48 rays from b/b_c − 1 ≈ 7×10⁻⁴ (three
+  half-orbits) to weak bending; the lensing-band edges (where the count
+  reaches 2, 3, 4) sit where the exact deflection puts them to 1%, 1%, 10%
+  of the distance to the critical curve, and consecutive analytic bands
+  shrink by e^{−π} to 3% at the 3→4 pair (γ = π, Gralla, Lupsasca &
+  Marrone 2020), the code reproducing the 2→3 shrinkage to 3%; on a
+  synthetic thin disc the per-order layers sum to the image to 10⁻¹²,
+  n ≥ 2 light hugs the critical curve, and the sweep's per-order reduce is
+  bit-identical to direct tracing; the adaptive plan marks exactly the
+  pixels whose corner counts or fates differ, and its per-order screen
+  render reproduces the analytic area of the first lensing band to 5%.
 
 ## Slow light
 
@@ -298,11 +329,17 @@ correction buys, and what it does not:
 integration (`--eps --max-steps --threads`), display (`--gamma --wp
 --blur`), validation (`--screen`), slow light (`--slow --tobs --stride
 --rslow`), refinement (`--adapt --adapt-dt`), export (`--fits --ra --dec
---mjd`).
+--mjd`), image orders (`--orders`: writes `<out>_n0..n3p.png` with the main
+image's white point, prints the flux fraction per order, and with `--fits`
+also `<fits>_n0..n3p.fits`; the n1 layer is the input a BHEX-type
+space-VLBI forecast needs, and in `--screen` mode the layers are the
+lensing bands).
 
 `kdmp2lc <toml> --slow DIR [out.txt]`, epochs (`--t0 --t1 --nt`), physics
-(`--nu --fcol --dist`), movie (`--frames DIR`), plus the shared camera/slow-light
-flags.
+(`--nu --fcol --dist`), movie (`--frames DIR`), `--orders` for per-order
+columns S_n0..S_n3p (the n-th order is the previous one delayed by a photon
+half-orbit and demagnified: the photon-ring echo of Hadar et al. 2021),
+plus the shared camera/slow-light flags.
 
 `goldtest [outdir] --size N --ss N --eps E --tests 12345`, the
 verification suite vs the published tables; writes per-test PNGs.

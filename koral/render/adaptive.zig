@@ -58,7 +58,9 @@ pub const Plan = struct {
     }
 };
 
-const Corner = struct { captured: bool, t_flight: f64 };
+/// One vacuum probe: fate, endpoint-corrected flight time, and the image
+/// order it terminated in (equatorial crossings, render.n_orders).
+const Corner = struct { captured: bool, t_flight: f64, ncross: u32 };
 
 fn vacuumRay(comptime cfg: config.Config, s: *const render.Scene, cam: *const render.Camera, fx: f64, fy: f64, opts: render.TraceOpts) Corner {
     var o = opts;
@@ -78,15 +80,18 @@ fn vacuumRay(comptime cfg: config.Config, s: *const render.Scene, cam: *const re
     if (@abs(target - r_end) < 0.5 * r_end and @abs(drdl) > 1e-30) {
         t_end += (target - r_end) * res.k[0] / drdl;
     }
-    return .{ .captured = res.captured, .t_flight = cam.x0[0] - t_end };
+    return .{ .captured = res.captured, .t_flight = cam.x0[0] - t_end, .ncross = res.ncross };
 }
 
 /// Corners in cell order [00, 10, 01, 11] (x fastest). Disagreement =
-/// mixed capture, or a flight-time spread above the threshold among
-/// like-fated corners.
+/// mixed capture, a different image order (two corners one crossing
+/// apart straddle a subring boundary exactly: an integer test with no
+/// threshold, which also labels every agreeing leaf with its subring), or
+/// a flight-time spread above the threshold among like-fated corners.
 fn disagree(c: [4]Corner, dt_thresh: f64) bool {
     for (c[1..]) |ci| {
         if (ci.captured != c[0].captured) return true;
+        if (ci.ncross != c[0].ncross) return true;
     }
     var lo = c[0].t_flight;
     var hi = c[0].t_flight;
@@ -294,6 +299,8 @@ inline fn pixelCorners(corners: []const Corner, w: usize, px: usize, py: usize) 
 
 /// Fast-light render of a ray plan: traceRay per spec, then a sequential
 /// spec-order reduction into pixels (deterministic at any thread count).
+/// `orders`, if given, receives the image-order split (render.n_orders ×
+/// out.len, [order][pixel]).
 pub fn renderPlan(
     comptime cfg: config.Config,
     allocator: std.mem.Allocator,
@@ -301,18 +308,23 @@ pub fn renderPlan(
     cam: *const render.Camera,
     specs: []const RaySpec,
     out: []f64,
+    orders: ?[]f64,
     opts: render.TraceOpts,
     nthreads: usize,
 ) !void {
     std.debug.assert(out.len == cam.width * cam.height);
+    if (orders) |ob| std.debug.assert(ob.len == render.n_orders * out.len);
     const results = try allocator.alloc(f64, specs.len);
     defer allocator.free(results);
+    const results_o = try allocator.alloc([render.n_orders]f64, if (orders != null) specs.len else 0);
+    defer allocator.free(results_o);
     {
         const Ctx = struct {
             s: *const render.Scene,
             cam: *const render.Camera,
             specs: []const RaySpec,
             results: []f64,
+            results_o: [][render.n_orders]f64,
             next: *std.atomic.Value(usize),
             opts: render.TraceOpts,
             fn run(c: *const @This()) void {
@@ -322,17 +334,25 @@ pub fn renderPlan(
                     if (base >= c.specs.len) return;
                     for (base..@min(base + chunk, c.specs.len)) |i| {
                         const sp = c.specs[i];
-                        c.results[i] = render.traceRay(cfg, c.s, c.cam.x0, c.cam.rayAt(sp.fx, sp.fy), c.opts).intensity;
+                        const res = render.traceRay(cfg, c.s, c.cam.x0, c.cam.rayAt(sp.fx, sp.fy), c.opts);
+                        c.results[i] = res.intensity;
+                        if (c.results_o.len > 0) c.results_o[i] = res.i_order;
                     }
                 }
             }
         };
         var next: std.atomic.Value(usize) = .init(0);
-        const ctx = Ctx{ .s = s, .cam = cam, .specs = specs, .results = results, .next = &next, .opts = opts };
+        const ctx = Ctx{ .s = s, .cam = cam, .specs = specs, .results = results, .results_o = results_o, .next = &next, .opts = opts };
         spawnRun(Ctx, &ctx, nthreads);
     }
     @memset(out, 0);
     for (specs, results) |sp, ri| out[sp.pix] += sp.weight * ri;
+    if (orders) |ob| {
+        @memset(ob, 0);
+        for (specs, results_o) |sp, ro| {
+            for (0..render.n_orders) |n| ob[n * out.len + sp.pix] += sp.weight * ro[n];
+        }
+    }
 }
 
 fn spawnRun(comptime Ctx: type, ctx: *const Ctx, nthreads: usize) void {

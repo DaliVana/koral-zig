@@ -148,7 +148,9 @@ const chunk = 64;
 
 /// Render `specs` through the frame series into `out` (overwritten; must
 /// cover every spec's pix; one width×height image normally, epochs×that
-/// for a batched light curve/movie via SlowOpts.t_cam_of). `source` must
+/// for a batched light curve/movie via SlowOpts.t_cam_of). `orders`, if
+/// given, receives the image-order split (render.n_orders × out.len,
+/// [order][pixel] with stride out.len). `source` must
 /// provide times()/acquire()/release() (see series.FileSource /
 /// SliceSource); times ascend. Scene.data must be the REFERENCE frame
 /// (the static-zone snapshot) and stay acquired by the caller for the
@@ -161,12 +163,14 @@ pub fn renderSlow(
     source: anytype,
     specs: []const RaySpec,
     out: []f64,
+    orders: ?[]f64,
     opts: render.TraceOpts,
     sopts: SlowOpts,
     nthreads: usize,
     progress: bool,
 ) !Stats {
     std.debug.assert(out.len >= cam.width * cam.height);
+    if (orders) |ob| std.debug.assert(ob.len == render.n_orders * out.len);
     std.debug.assert(sopts.r_slow > s.r_capture and sopts.r_slow < cam.r);
     if (sopts.t_cam_of) |tc| std.debug.assert(tc.len == specs.len);
     var stats = Stats{ .rays = specs.len };
@@ -379,10 +383,15 @@ pub fn renderSlow(
 
     // -- reduce (sequential, spec order: deterministic at any thread count) --
     @memset(out, 0);
+    if (orders) |ob| @memset(ob, 0);
     for (specs, states) |sp, *st| {
         var intensity = st.intensity;
         if (opts.screen) intensity = if (st.status == .captured) 0.0 else 1.0;
         out[sp.pix] += sp.weight * intensity;
+        if (orders) |ob| {
+            const split = render.orderSplit(st, opts);
+            for (0..render.n_orders) |n| ob[n * out.len + sp.pix] += sp.weight * split[n];
+        }
         switch (st.status) {
             .captured => stats.captured += 1,
             .escaped => stats.escaped += 1,

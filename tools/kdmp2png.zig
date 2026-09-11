@@ -38,6 +38,16 @@
 //!   --adapt-dt M   corner flight-time disagreement that triggers
 //!                  refinement (default 5 M; a photon half-orbit is ~16 M)
 //!
+//!   --orders       also split the image by IMAGE ORDER, the number of
+//!                  equatorial-plane crossings of each ray before emission
+//!                  (n0 direct, n1 lensed ring, n2 photon ring, n3p beyond;
+//!                  render.zig n_orders): writes <out>_n0..n3p.png with the
+//!                  main image's white point, prints the flux fraction per
+//!                  order, and with --fits also writes <fits>_n0..n3p.fits
+//!                  layers (the n1 layer is what a BHEX-type space-VLBI
+//!                  forecast needs). In --screen mode the layers are the
+//!                  lensing bands (image-plane area per order). Works in
+//!                  fast, slow and --adapt modes.
 //!   --fits PATH    also write the UNPROCESSED image (no blur/stretch) as
 //!                  a FITS file in Jy/pixel with ehtim-compatible headers
 //!                  (render/fits.zig); the entry point to the EHT
@@ -145,6 +155,7 @@ pub fn main(init: std.process.Init) !void {
     var adapt: usize = 0;
     var adapt_dt: f64 = 5.0;
     var fits_path: ?[]const u8 = null;
+    var want_orders = false;
     var ra_deg: f64 = 266.4168371; // Sgr A* J2000
     var dec_deg: f64 = -29.0078106;
     var mjd: f64 = 57850.0;
@@ -212,6 +223,8 @@ pub fn main(init: std.process.Init) !void {
             adapt_dt = try parseF(args.next() orelse return usageErr(), "--adapt-dt");
         } else if (std.mem.eql(u8, arg, "--fits")) {
             fits_path = args.next() orelse return usageErr();
+        } else if (std.mem.eql(u8, arg, "--orders")) {
+            want_orders = true;
         } else if (std.mem.eql(u8, arg, "--ra")) {
             ra_deg = try parseF(args.next() orelse return usageErr(), "--ra");
         } else if (std.mem.eql(u8, arg, "--dec")) {
@@ -302,6 +315,9 @@ pub fn main(init: std.process.Init) !void {
 
     const img = try allocator.alloc(f64, size * size);
     defer allocator.free(img);
+    // per-order layers, [order][pixel] (render.n_orders × image)
+    const orders_buf: ?[]f64 = if (want_orders) try allocator.alloc(f64, render.n_orders * size * size) else null;
+    defer if (orders_buf) |ob| allocator.free(ob);
     const nu_obs = nu_ghz * 1.0e9;
     const topts = render.TraceOpts{ .eps = eps, .tau_max = tau_max, .max_steps = max_steps, .nu_obs = nu_obs, .screen = screen };
     const nvar = koral.VarLayout(cfg).count;
@@ -377,7 +393,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const t0 = std.Io.Timestamp.now(io, .awake);
-        const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, plan_specs, img, topts, .{ .t_cam = tobs + rcam, .r_slow = rslow }, nthreads, true);
+        const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, plan_specs, img, orders_buf, topts, .{ .t_cam = tobs + rcam, .r_slow = rslow }, nthreads, true);
         const dur = t0.durationTo(std.Io.Timestamp.now(io, .awake));
         secs = @as(f64, @floatFromInt(@as(i64, @intCast(dur.nanoseconds)))) / 1e9;
         std.debug.print(
@@ -425,12 +441,29 @@ pub fn main(init: std.process.Init) !void {
             var nmark: usize = 0;
             for (plan.marked) |m| nmark += @intFromBool(m);
             std.debug.print("kdmp2png: adaptive plan: {d} rays ({d} px refined to depth {d}, {d} vacuum probes)\n", .{ plan.specs.len, nmark, adapt, plan.vacuum_rays });
-            try render.adaptive.renderPlan(cfg, allocator, &scene, &cam, plan.specs, img, topts, nthreads);
+            try render.adaptive.renderPlan(cfg, allocator, &scene, &cam, plan.specs, img, orders_buf, topts, nthreads);
         } else {
-            render.renderImage(cfg, &scene, &cam, img, topts, nthreads);
+            render.renderImage(cfg, &scene, &cam, img, orders_buf, topts, nthreads);
         }
         const dur = t0.durationTo(std.Io.Timestamp.now(io, .awake));
         secs = @as(f64, @floatFromInt(@as(i64, @intCast(dur.nanoseconds)))) / 1e9;
+    }
+
+    // ---- image-order split: flux fraction per order (raw, pre-display) ----
+    const npix = size * size;
+    if (orders_buf) |ob| {
+        var tot: f64 = 0;
+        for (img) |v| tot += v;
+        var frac: [render.n_orders]f64 = @splat(0);
+        for (0..render.n_orders) |n| {
+            var s_: f64 = 0;
+            for (ob[n * npix ..][0..npix]) |v| s_ += v;
+            frac[n] = if (tot > 0) s_ / tot else 0;
+        }
+        std.debug.print(
+            "kdmp2png: image orders ({s}): n0 {d:.4}  n1 {d:.4}  n2 {d:.4}  n3p {d:.4}  (n>=1: {d:.4} of total)\n",
+            .{ if (screen) "lensing-band area fractions" else "flux fractions by equatorial crossings", frac[0], frac[1], frac[2], frac[3], 1.0 - frac[0] },
+        );
     }
 
     // ---- FITS export: raw I_nu -> Jy/pixel, before any display processing ----
@@ -439,26 +472,34 @@ pub fn main(init: std.process.Init) !void {
         const d_cm = dist_kpc * 3.086e21;
         const pix_rad = fov * masscm / d_cm / @as(f64, @floatFromInt(size));
         const scale = pix_rad * pix_rad * 1.0e23; // I_nu [cgs] -> Jy/pixel
-        const jy = try allocator.alloc(f64, img.len);
-        defer allocator.free(jy);
-        var s_total: f64 = 0;
-        for (jy, img) |*o, v| {
-            o.* = v * scale;
-            s_total += o.*;
+        const fits_stem = if (std.mem.endsWith(u8, fpath, ".fits")) fpath[0 .. fpath.len - 5] else fpath;
+        // layer 0 = the full image; with --orders, one FITS per order follows
+        const nlayers: usize = if (orders_buf != null) 1 + render.n_orders else 1;
+        for (0..nlayers) |li| {
+            const src: []const f64 = if (li == 0) img else orders_buf.?[(li - 1) * npix ..][0..npix];
+            var pbuf: [1024]u8 = undefined;
+            const path: []const u8 = if (li == 0) fpath else try std.fmt.bufPrint(&pbuf, "{s}_{s}.fits", .{ fits_stem, render.order_names[li - 1] });
+            const jy = try allocator.alloc(f64, npix);
+            defer allocator.free(jy);
+            var s_total: f64 = 0;
+            for (jy, src) |*o, v| {
+                o.* = v * scale;
+                s_total += o.*;
+            }
+            const fbytes = try render.fits.encode(allocator, jy, size, size, .{
+                .cdelt_deg = pix_rad * 180.0 / std.math.pi,
+                .ra_deg = ra_deg,
+                .dec_deg = dec_deg,
+                .freq_hz = nu_obs,
+                .mjd = mjd,
+            });
+            defer allocator.free(fbytes);
+            std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = fbytes }) catch |err| {
+                std.debug.print("kdmp2png: cannot write '{s}': {s}\n", .{ path, @errorName(err) });
+                return err;
+            };
+            std.debug.print("kdmp2png: {s} written ({d}x{d}, {d:.3} uas/px, S_nu = {e:.3} Jy)\n", .{ path, size, size, pix_rad * 180.0 / std.math.pi * 3.6e9, s_total });
         }
-        const fbytes = try render.fits.encode(allocator, jy, size, size, .{
-            .cdelt_deg = pix_rad * 180.0 / std.math.pi,
-            .ra_deg = ra_deg,
-            .dec_deg = dec_deg,
-            .freq_hz = nu_obs,
-            .mjd = mjd,
-        });
-        defer allocator.free(fbytes);
-        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = fpath, .data = fbytes }) catch |err| {
-            std.debug.print("kdmp2png: cannot write '{s}': {s}\n", .{ fpath, @errorName(err) });
-            return err;
-        };
-        std.debug.print("kdmp2png: {s} written ({d}x{d}, {d:.3} uas/px, S_nu = {e:.3} Jy)\n", .{ fpath, size, size, pix_rad * 180.0 / std.math.pi * 3.6e9, s_total });
     }
 
     var max_i: f64 = 0;
@@ -549,6 +590,29 @@ pub fn main(init: std.process.Init) !void {
         "kdmp2png: {s} written ({d:.1}s render, {d:.1}% lit, I_max={e:.3}, wp={e:.3})\n",
         .{ opath, secs, 100.0 * @as(f64, @floatFromInt(lit)) / @as(f64, @floatFromInt(img.len)), max_i, wp },
     );
+
+    // ---- per-order PNGs: same blur / white point / gamma as the main image,
+    // so the layers are directly comparable in brightness ----
+    if (orders_buf) |ob| {
+        const png_stem = if (std.mem.endsWith(u8, opath, ".png")) opath[0 .. opath.len - 4] else opath;
+        for (0..render.n_orders) |n| {
+            const layer = try allocator.dupe(f64, ob[n * npix ..][0..npix]);
+            defer allocator.free(layer);
+            try image.gaussianBlur(allocator, layer, size, size, blur);
+            image.stretch(layer, wp, gamma);
+            const lrgb = try image.colorize(allocator, layer, null);
+            defer allocator.free(lrgb);
+            const lpng = try image.encodePng(allocator, @intCast(size), @intCast(size), lrgb);
+            defer allocator.free(lpng);
+            var pbuf: [1024]u8 = undefined;
+            const path = try std.fmt.bufPrint(&pbuf, "{s}_{s}.png", .{ png_stem, render.order_names[n] });
+            std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = lpng }) catch |err| {
+                std.debug.print("kdmp2png: cannot write '{s}': {s}\n", .{ path, @errorName(err) });
+                return err;
+            };
+        }
+        std.debug.print("kdmp2png: order layers written: {s}_{{n0,n1,n2,n3p}}.png (shared white point)\n", .{png_stem});
+    }
 }
 
 fn usageErr() error{BadArgs} {
@@ -559,7 +623,7 @@ fn usageErr() error{BadArgs} {
             "       [--ss N] [--sigma-cut S] [--floor-cut F] [--nu GHZ] [--fcol off|done12|F] [--dist KPC] [--screen]\n" ++
             "       [--gamma G] [--wp PCT] [--blur PX] [--eps E] [--tau T] [--max-steps N] [--threads N]\n" ++
             "       [--slow DIR] [--tobs T] [--stride N] [--rslow R] [--adapt D] [--adapt-dt M]\n" ++
-            "       [--fits PATH] [--ra DEG] [--dec DEG] [--mjd D]\n",
+            "       [--fits PATH] [--ra DEG] [--dec DEG] [--mjd D] [--orders]\n",
         .{},
     );
     return error.BadArgs;

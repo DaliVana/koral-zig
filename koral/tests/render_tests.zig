@@ -22,7 +22,15 @@
 //!    KS flight time Δt = Δr + 4M ln(...); consecutive photon-ring windings
 //!    delayed by the photon-orbit period 2π·3√3 M, and the adaptive
 //!    quadtree plan (exact pixel weights, capture-boundary marking,
-//!    antialiased shadow edge).
+//!    antialiased shadow edge),
+//!  * IMAGE-ORDER TAGS (equatorial crossings): the per-ray count against
+//!    the exact Schwarzschild orbital-plane geometry (conserved L = x × p
+//!    fixes the plane, the Binet quadrature the swept angle); the
+//!    lensing-band edges against the exact deflection and their e^{−π}
+//!    shrinkage (Gralla, Lupsasca & Marrone 2020); the per-order layers
+//!    partitioning the image on a synthetic thin disc, bit-identical
+//!    through the slow-light sweep; and the adaptive plan's integer
+//!    criterion marking every subring boundary.
 
 const std = @import("std");
 const render = @import("../render/render.zig");
@@ -848,7 +856,7 @@ test "render: supersampled rays — pixel center matches ray(), ss=2 averages cl
     const g = puffyGrid(8, 6, 1, mp, 1.85, 1000.0);
     const scene = render.Scene.init(g, mp, testConsts(), opacities.Channels.puffy, 5.0 / 3.0, &data, 1000.0, 1000.0);
     var img = [_]f64{-1} ** 64;
-    render.renderImage(cfg, &scene, &cam, &img, .{ .eps = 1.0, .max_steps = 20_000 }, 2);
+    render.renderImage(cfg, &scene, &cam, &img, null, .{ .eps = 1.0, .max_steps = 20_000 }, 2);
     for (img) |v| try std.testing.expectEqual(@as(f64, 0), v);
 }
 
@@ -1135,7 +1143,7 @@ test "sweep: static series through the full 3-phase sweep is bit-identical to di
 
     const opts = render.TraceOpts{};
     var out = [_]f64{-1} ** 36;
-    const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, specs, out[0..], opts, .{ .t_cam = 1030.0, .r_slow = 40.0 }, 3, false);
+    const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, specs, out[0..], null, opts, .{ .t_cam = 1030.0, .r_slow = 40.0 }, 3, false);
 
     // the sweep must actually have exercised its machinery
     try std.testing.expect(stats.entered > 0);
@@ -1209,7 +1217,7 @@ test "sweep: a time-localized flare arrives retarded by the (Shapiro-corrected) 
     const I = struct {
         fn at(alloc: std.mem.Allocator, sc: *const render.Scene, c: *const render.Camera, sr: *render.series.SliceSource, sp: []const render.sweep.RaySpec, t_cam: f64) !f64 {
             var out = [_]f64{0} ** 1;
-            _ = try render.sweep.renderSlow(cfg, alloc, sc, c, sr, sp, out[0..], .{}, .{ .t_cam = t_cam, .r_slow = 40.0 }, 1, false);
+            _ = try render.sweep.renderSlow(cfg, alloc, sc, c, sr, sp, out[0..], null, .{}, .{ .t_cam = t_cam, .r_slow = 40.0 }, 1, false);
             return out[0];
         }
     };
@@ -1347,10 +1355,13 @@ test "adaptive: quadtree plan conserves pixel weight, marks the capture boundary
     for (plan.specs) |sp| wsum[sp.pix] += sp.weight;
     for (wsum) |v| try std.testing.expectEqual(@as(f64, 1.0), v);
 
-    // the refined set is a band, not empty and not the whole frame
+    // the refined set is a band, not empty and not the whole frame (two
+    // rings at this fov: the critical curve with its subring edges and
+    // flight-time gradient, and the outer edge of the first lensing band,
+    // which the image-order criterion marks as well; 137 of 256 measured)
     var nmark: usize = 0;
     for (plan.marked) |m| nmark += @intFromBool(m);
-    try std.testing.expect(nmark > 4 and nmark < n * n / 2);
+    try std.testing.expect(nmark > 4 and nmark < 3 * n * n / 4);
 
     // the capture boundary (bisected independently along the middle row,
     // both directions) lies in a marked pixel; a marked pixel carries at
@@ -1389,7 +1400,7 @@ test "adaptive: quadtree plan conserves pixel weight, marks the capture boundary
     var img = [_]f64{0} ** (n * n);
     var o = render.TraceOpts{ .eps = 1.0, .max_steps = 12_000 };
     o.screen = true;
-    try render.adaptive.renderPlan(cfg, allocator, &scene, &cam, plan.specs, img[0..], o, 2);
+    try render.adaptive.renderPlan(cfg, allocator, &scene, &cam, plan.specs, img[0..], null, o, 2);
     var frac: usize = 0;
     for (img) |v| {
         try std.testing.expect(v >= 0.0 and v <= 1.0);
@@ -1508,7 +1519,7 @@ test "sweep: batched epochs (t_cam_of) reproduce per-epoch sweeps — a two-poin
     var want: [2]f64 = undefined;
     for ([_]f64{ t_bright, t_dark }, 0..) |tc, e| {
         var o1 = [_]f64{0} ** 1;
-        _ = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, base, o1[0..], .{}, .{ .t_cam = tc, .r_slow = 40.0 }, 1, false);
+        _ = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, base, o1[0..], null, .{}, .{ .t_cam = tc, .r_slow = 40.0 }, 1, false);
         want[e] = o1[0];
     }
     try std.testing.expect(want[0] > 0);
@@ -1524,7 +1535,7 @@ test "sweep: batched epochs (t_cam_of) reproduce per-epoch sweeps — a two-poin
     }
     const t_of = [_]f64{ t_bright, t_dark };
     var out = [_]f64{ -1, -1 };
-    const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, specs[0..], out[0..], .{}, .{ .t_cam = 0, .r_slow = 40.0, .t_cam_of = t_of[0..] }, 1, false);
+    const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, specs[0..], out[0..], null, .{}, .{ .t_cam = 0, .r_slow = 40.0, .t_cam_of = t_of[0..] }, 1, false);
     try std.testing.expectEqual(@as(usize, 2), stats.rays);
 
     // bit-identical to the per-epoch runs
@@ -1589,4 +1600,450 @@ test "verify: the Gold fluid four-velocity is unit-normalized in MKS2 across the
             }
         }
     }
+}
+
+// ---- image-order tags (equatorial crossings) --------------------------------
+
+const b_crit_schw = 3.0 * @sqrt(3.0);
+
+/// Aim a camera ray at an EXACT Schwarzschild impact parameter b: for a
+/// static observer at r the local angle from the outward radial is
+/// sin α = b·√(1 − 2/r)/r (Bakala et al. 2007, eqs. 22-23). The tetrad is
+/// exact, so the launched ray's conserved b = |L|/E matches to roundoff.
+const Ray = struct { x: [4]f64, k: [4]f64 };
+
+fn aimSchw(mp: metric.MetricParams, r_cam: f64, theta_o: f64, b: f64, phs: f64) Ray {
+    const alpha = std.math.asin(b * @sqrt(1.0 - 2.0 / r_cam) / r_cam);
+    const r = launch(mp, r_cam, theta_o, .{ @cos(alpha), @sin(alpha) * @cos(phs), @sin(alpha) * @sin(phs) });
+    return .{ .x = r.x, .k = r.k };
+}
+
+/// Orbital-plane geometry of one launched ray in Schwarzschild, from its
+/// EXACT conserved quantities at the camera. The three rotational Killing
+/// charges L = x × p (L_x = −cotθ k_φ, L_y = k_θ, L_z = k_φ at φ = 0) fix
+/// the plane; the position unit vector along the trace is
+/// n(ψ) = n_o cos ψ + d sin ψ with d the backward in-plane direction of
+/// travel, so equatorial crossings (n_z = 0) sit at swept angles
+/// ψ_k = ψ_1 + (k − 1)π, tan ψ_1 = −n_oz/d_z. Camera at FINITE radius: the
+/// comparison with the integrator needs no image-plane mapping at all.
+const OrbitPlane = struct {
+    b: f64,
+    noz: f64,
+    dy: f64,
+    dz: f64,
+
+    fn of(mp: metric.MetricParams, theta_o: f64, x: [4]f64, k: [4]f64) OrbitPlane {
+        const kc = kcovAt(mp, x, k);
+        const dthdx2 = forms.mks2DThetaDx2Metric(Dual3.constant(x[2]), mp.mksh0).v;
+        const e = -kc[0];
+        const k_th = kc[2] / dthdx2;
+        const k_ph = kc[3];
+        const lx = -@cos(theta_o) / @sin(theta_o) * k_ph;
+        const ly = k_th;
+        const lz = k_ph;
+        const ln = @sqrt(lx * lx + ly * ly + lz * lz);
+        const lhat = [3]f64{ lx / ln, ly / ln, lz / ln };
+        const n_o = [3]f64{ @sin(theta_o), 0, @cos(theta_o) };
+        // forward angular motion is along L̂ × n̂ ((x × p) × x = r² p_⊥);
+        // the backward trace runs the opposite way
+        const d = [3]f64{
+            -(lhat[1] * n_o[2] - lhat[2] * n_o[1]),
+            -(lhat[2] * n_o[0] - lhat[0] * n_o[2]),
+            -(lhat[0] * n_o[1] - lhat[1] * n_o[0]),
+        };
+        return .{ .b = ln / e, .noz = n_o[2], .dy = d[1], .dz = d[2] };
+    }
+
+    /// swept angle of the first equatorial crossing, in (0, π]
+    fn psi1(p: OrbitPlane) f64 {
+        var ps = std.math.atan2(-p.noz, p.dz);
+        if (ps <= 0) ps += pi;
+        return ps;
+    }
+
+    /// crossings a trace makes when it sweeps dpsi, and the angular margin
+    /// to the nearest threshold (small margin = ambiguous ray)
+    fn count(p: OrbitPlane, dpsi: f64) struct { n: u32, margin: f64 } {
+        var n: u32 = 0;
+        var psk = p.psi1();
+        while (psk < dpsi) : (psk += pi) n += 1;
+        return .{ .n = n, .margin = @min(psk - dpsi, if (n > 0) dpsi - (psk - pi) else std.math.inf(f64)) };
+    }
+};
+
+/// Swept angle of a Schwarzschild photon (M = 1) with impact parameter
+/// b > √27, from radius r_a inward through its turning point and out to
+/// r_e: Δψ = ∫ du/√(1/b² − u² + 2u³) over both legs, u = 1/r (the Binet
+/// equation; Bakala et al. 2007 eqs. 7, 10-11 with Λ = 0). The
+/// inverse-square-root turning-point singularity is removed exactly by
+/// u = u_t − s²: P(u_t − s²) = s²·[−P'(u_t) + ½P''(u_t)s² − 2s⁴] for the
+/// cubic P, so the integrand 2/√Q(s) is smooth and Simpson converges.
+fn sweptAngleSchw(b: f64, r_a: f64, r_e: f64) f64 {
+    var lo: f64 = 0;
+    var hi: f64 = 1.0 / 3.0;
+    for (0..200) |_| {
+        const mid = 0.5 * (lo + hi);
+        const p = 2.0 * mid * mid * mid - mid * mid + 1.0 / (b * b);
+        if (p > 0) lo = mid else hi = mid;
+    }
+    const ut = 0.5 * (lo + hi);
+    const p1 = 6.0 * ut * ut - 2.0 * ut;
+    const p2 = 12.0 * ut - 2.0;
+    const Leg = struct {
+        fn go(ua: f64, ut_: f64, p1_: f64, p2_: f64) f64 {
+            const smax = @sqrt(ut_ - ua);
+            const n: usize = 2000;
+            const h = smax / @as(f64, @floatFromInt(n));
+            var sum: f64 = 0;
+            for (0..n + 1) |i| {
+                const s = h * @as(f64, @floatFromInt(i));
+                const q = -p1_ + 0.5 * p2_ * s * s - 2.0 * s * s * s * s;
+                const w: f64 = if (i == 0 or i == n) 1.0 else if (i % 2 == 1) 4.0 else 2.0;
+                sum += w * 2.0 / @sqrt(q);
+            }
+            return sum * h / 3.0;
+        }
+    };
+    return Leg.go(1.0 / r_a, ut, p1, p2) + Leg.go(1.0 / r_e, ut, p1, p2);
+}
+
+fn schwVacuumScene(allocator: std.mem.Allocator, data: *render.DumpData, mp: metric.MetricParams, r_cam: f64, r_escape: f64) render.Scene {
+    _ = allocator;
+    const g = puffyGrid(64, 32, 1, mp, 1.85, 1000.0);
+    var scene = render.Scene.init(g, mp, testConsts(), opacities.Channels.puffy, 5.0 / 3.0, data, r_cam, 1000.0);
+    scene.r_escape = r_escape;
+    return scene;
+}
+
+test "orders: equatorial-crossing count matches the exact Schwarzschild orbital-plane geometry" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+    var data = try zeroDump(allocator, 64, 32, 1);
+    defer allocator.free(data.body);
+    const r_cam: f64 = 100.0;
+    const scene = schwVacuumScene(allocator, &data, mp, r_cam, 115.0);
+    const theta_o = pi / 3.0;
+    const opts = render.TraceOpts{ .eps = 0.2, .max_steps = 400_000, .screen = true };
+
+    var checked: usize = 0;
+    var skipped: usize = 0;
+    var max_n: u32 = 0;
+    var min_n: u32 = std.math.maxInt(u32);
+    // b from deep in the strong-deflection regime (b/b_c − 1 ≈ 7e-4, three
+    // half-orbits) out to weak bending; six azimuths around the screen
+    for ([_]f64{ 5.2, 5.23, 5.35, 5.6, 6.2, 7.5, 10.0, 14.0 }) |b_t| {
+        for (0..6) |ia| {
+            const phs = 2.0 * pi * (@as(f64, @floatFromInt(ia)) + 0.37) / 6.0;
+            const ray = aimSchw(mp, r_cam, theta_o, b_t, phs);
+            const op = OrbitPlane.of(mp, theta_o, ray.x, ray.k);
+            try std.testing.expectApproxEqRel(b_t, op.b, 1e-9);
+            // the backward trace's initial azimuthal motion is −sign(k^φ):
+            // pins the direction-of-travel sign used for d
+            if (@abs(ray.k[3]) > 1e-12) try std.testing.expect(op.dy * ray.k[3] < 0);
+
+            const res = render.traceRay(cfg, &scene, ray.x, ray.k, opts);
+            try std.testing.expect(!res.captured);
+            const r_end = @exp(res.x[1]) + mp.mksr0;
+            const dpsi = sweptAngleSchw(op.b, r_cam, r_end);
+            const an = op.count(dpsi);
+            if (an.margin < 0.03) {
+                skipped += 1;
+                continue;
+            }
+            try std.testing.expectEqual(an.n, res.ncross);
+            checked += 1;
+            max_n = @max(max_n, res.ncross);
+            min_n = @min(min_n, res.ncross);
+        }
+    }
+    try std.testing.expect(checked >= 40 and skipped <= 4);
+    // three half-orbits at b/b_c − 1 ≈ 7e-4; and a distant camera aimed
+    // at the hole always crosses the equator once on its way to the far
+    // sky, so the weak-bending rays sit at n = 1, never 0
+    try std.testing.expect(max_n >= 3 and min_n == 1);
+}
+
+test "orders: lensing-band edges sit where the exact deflection puts them and shrink by e^-pi (GLM 2020)" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+    var data = try zeroDump(allocator, 64, 32, 1);
+    defer allocator.free(data.body);
+    const r_cam: f64 = 100.0;
+    const r_esc: f64 = 115.0;
+    const scene = schwVacuumScene(allocator, &data, mp, r_cam, r_esc);
+    const theta_o = pi / 3.0;
+    const phs = 0.9;
+    const opts = render.TraceOpts{ .eps = 0.15, .max_steps = 400_000, .screen = true };
+
+    // at fixed screen azimuth the orbital plane is spanned by n_o and the
+    // transverse direction, independent of b: one ψ_1 serves every edge
+    const p_a = OrbitPlane.of(mp, theta_o, aimSchw(mp, r_cam, theta_o, 6.0, phs).x, aimSchw(mp, r_cam, theta_o, 6.0, phs).k);
+    const p_b = OrbitPlane.of(mp, theta_o, aimSchw(mp, r_cam, theta_o, 5.3, phs).x, aimSchw(mp, r_cam, theta_o, 5.3, phs).k);
+    try std.testing.expectApproxEqAbs(p_a.psi1(), p_b.psi1(), 1e-9);
+    const ps1 = p_a.psi1();
+
+    const Code = struct {
+        fn ncross(sc: *const render.Scene, mp_: metric.MetricParams, b: f64) u32 {
+            const ray = aimSchw(mp_, r_cam, theta_o, b, phs);
+            const res = render.traceRay(cfg, sc, ray.x, ray.k, opts);
+            return if (res.captured) std.math.maxInt(u32) else res.ncross;
+        }
+    };
+
+    // edge_k: the b where the count reaches k (n is monotone in b: Δψ grows
+    // as b → b_c). Code by bisection on the integer, theory by bisection on
+    // Δψ(b) = ψ_k with the same exit radius.
+    var edge_code: [5]f64 = undefined;
+    var edge_an: [5]f64 = undefined;
+    for (2..5) |k| {
+        const psk = ps1 + @as(f64, @floatFromInt(k - 1)) * pi;
+        var lo: f64 = b_crit_schw + 2.0e-5; // reaches ≥ k
+        var hi: f64 = 14.0; // fewer than k
+        try std.testing.expect(Code.ncross(&scene, mp, lo) >= k);
+        try std.testing.expect(Code.ncross(&scene, mp, hi) < k);
+        for (0..50) |_| {
+            const mid = 0.5 * (lo + hi);
+            if (Code.ncross(&scene, mp, mid) >= k) lo = mid else hi = mid;
+        }
+        edge_code[k] = 0.5 * (lo + hi);
+
+        var alo: f64 = b_crit_schw + 1.0e-7;
+        var ahi: f64 = 14.0;
+        for (0..80) |_| {
+            const mid = 0.5 * (alo + ahi);
+            if (sweptAngleSchw(mid, r_cam, r_esc) >= psk) alo = mid else ahi = mid;
+        }
+        edge_an[k] = 0.5 * (alo + ahi);
+    }
+    // the integrator puts the transitions where the exact deflection does:
+    // to 1% of the distance to the critical curve for the first two
+    // subrings, 10% for the third (b − b_c ≈ 2e-3 M there, where the
+    // 1e-5-level conservation of L/E starts to show)
+    for (2..4) |k| try std.testing.expect(@abs(edge_code[k] - edge_an[k]) < 0.01 * (edge_an[k] - b_crit_schw));
+    try std.testing.expect(@abs(edge_code[4] - edge_an[4]) < 0.1 * (edge_an[4] - b_crit_schw));
+
+    // Gralla, Lupsasca & Marrone 2020: successive lensing bands are
+    // demagnified by e^{−γ}, γ = π for a = 0, up to O(b − b_c) corrections
+    // (~15% at the 2→3 pair, < 1% at 3→4)
+    const r23 = (edge_an[3] - b_crit_schw) / (edge_an[2] - b_crit_schw);
+    const r34 = (edge_an[4] - b_crit_schw) / (edge_an[3] - b_crit_schw);
+    const em_pi = @exp(-pi);
+    try std.testing.expect(@abs(r23 / em_pi - 1.0) < 0.25);
+    try std.testing.expect(@abs(r34 / em_pi - 1.0) < 0.03);
+    // and the code resolves the same shrinkage
+    const r23c = (edge_code[3] - b_crit_schw) / (edge_code[2] - b_crit_schw);
+    try std.testing.expect(@abs(r23c / r23 - 1.0) < 0.03);
+}
+
+test "orders: per-order layers partition the image; thin-disc n>=1 light is the lensed ring; slow-light identity" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+    const consts = testConsts();
+    var data = try zeroDump(allocator, 64, 32, 1);
+    defer allocator.free(data.body);
+    const g = puffyGrid(64, 32, 1, mp, 1.85, 1000.0);
+    // optically thin equatorial disc, r ∈ [4, 12], two cells about θ = π/2
+    {
+        const nv = data.header.nv;
+        const uu = thermo.uFromTrho(&consts, 1.0e7, 1.0e-26, 5.0 / 3.0);
+        const ee = consts.lteEfromT(1.0e7);
+        for (0..32) |iy| {
+            if (@abs(g.yc(@intCast(iy)) - 0.5) > 0.04) continue;
+            for (0..64) |ix| {
+                const r = @exp(g.xc(@intCast(ix))) + mp.mksr0;
+                if (r < 4.0 or r > 12.0) continue;
+                const c = (iy * 64 + ix) * nv;
+                data.body[c + L.index(.rho)] = 1.0e-26;
+                data.body[c + L.index(.uu)] = uu;
+                data.body[c + L.index(.ee)] = ee;
+            }
+        }
+    }
+    var scene = render.Scene.init(g, mp, consts, opacities.Channels.puffy, 5.0 / 3.0, &data, 300.0, 1000.0);
+    scene.r_escape = 330.0;
+    const n = 12;
+    var cam = render.Camera{ .r = 300, .incl_deg = 60, .fov = 30, .width = n, .height = n, .ss = 2 };
+    cam.setup(mp);
+    // optically thin scene: near-critical rays would otherwise orbit out a
+    // large budget; 5000 steps is ~80 half-orbits at this eps
+    const opts = render.TraceOpts{ .eps = 0.5, .max_steps = 5_000 };
+
+    var img = [_]f64{0} ** (n * n);
+    var ord = [_]f64{0} ** (render.n_orders * n * n);
+    render.renderImage(cfg, &scene, &cam, img[0..], ord[0..], opts, 2);
+
+    // (1) exact partition: Σ_n layer_n = image, pixel by pixel
+    var tot: f64 = 0;
+    var tot_o: [render.n_orders]f64 = @splat(0);
+    for (0..n * n) |p| {
+        var s_: f64 = 0;
+        for (0..render.n_orders) |o| {
+            s_ += ord[o * n * n + p];
+            tot_o[o] += ord[o * n * n + p];
+        }
+        try std.testing.expect(@abs(s_ - img[p]) <= 1e-12 * @max(img[p], 1e-300));
+        tot += img[p];
+    }
+    try std.testing.expect(tot > 0 and tot_o[0] > 0 and tot_o[1] > 0);
+    // Booking on a disc of finite thickness: pass 1 (direct) splits 0/1 at
+    // the mid-plane, pass 2 (the first lensed image, ~10-20% of the flux
+    // for these geometries; Johnson et al. 2020) splits 1/2, so n ≥ 2
+    // holds the far half of the lensed image plus everything beyond —
+    // a small but non-zero fraction.
+    const lensed = (tot_o[2] + tot_o[3]) / tot;
+    try std.testing.expect(lensed > 0.005 and lensed < 0.25);
+    try std.testing.expect(tot_o[2] > 0);
+
+    // (2) geometry: n = 0 light reaches the outer direct image of the disc
+    // (r_disc = 12 M projects to ≳ 10 M on the sky) while every pixel with
+    // n ≥ 2 light hugs the critical curve b_c = √27; Chael, Johnson &
+    // Lupsasca 2021's decomposition puts the n ≥ 1 ring around b_c
+    const pix_m = cam.fov / @as(f64, n);
+    var rmax0: f64 = 0;
+    var i2max: f64 = 0;
+    for (0..n * n) |p| i2max = @max(i2max, ord[2 * n * n + p]);
+    for (0..n) |py| {
+        for (0..n) |px| {
+            const ax = (@as(f64, @floatFromInt(px)) + 0.5 - @as(f64, n) / 2.0) * pix_m;
+            const by = (@as(f64, n) / 2.0 - @as(f64, @floatFromInt(py)) - 0.5) * pix_m;
+            const rad = @sqrt(ax * ax + by * by);
+            const p = py * n + px;
+            if (ord[p] > 1e-3 * img[p] and img[p] > 0) rmax0 = @max(rmax0, rad);
+            if (ord[2 * n * n + p] > 1e-3 * i2max) {
+                try std.testing.expect(rad > b_crit_schw - 2.0 and rad < b_crit_schw + 4.0);
+            }
+        }
+    }
+    try std.testing.expect(rmax0 > 9.0);
+
+    // (3) slow light: the per-order reduce through the full 3-phase sweep
+    // over a static series is bit-identical to a direct per-spec reduce
+    var b = try zeroDump(allocator, 64, 32, 1);
+    defer allocator.free(b.body);
+    @memcpy(b.body, data.body);
+    const ts = [_]f64{ 0.0, 20.0, 40.0 };
+    const frames = [_]*const render.DumpData{ &data, &b, &data };
+    var src = render.series.SliceSource{ .ts = ts[0..], .frames = frames[0..] };
+    const specs = try render.sweep.uniformPlan(allocator, &cam);
+    defer allocator.free(specs);
+    var out = [_]f64{0} ** (n * n);
+    var out_o = [_]f64{0} ** (render.n_orders * n * n);
+    _ = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, specs, out[0..], out_o[0..], opts, .{ .t_cam = 340.0, .r_slow = 40.0 }, 3, false);
+    var want_o = [_]f64{0} ** (render.n_orders * n * n);
+    for (specs) |sp| {
+        const res = render.traceRay(cfg, &scene, cam.x0, cam.rayAt(sp.fx, sp.fy), opts);
+        for (0..render.n_orders) |o| want_o[o * n * n + sp.pix] += sp.weight * res.i_order[o];
+    }
+    for (want_o, out_o) |w, o| try std.testing.expectEqual(w, o);
+}
+
+test "adaptive: image-order disagreement marks every subring boundary; per-order screen layers are the lensing bands" {
+    const allocator = std.testing.allocator;
+    const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
+    var data = try zeroDump(allocator, 32, 24, 1);
+    defer allocator.free(data.body);
+    const g = puffyGrid(32, 24, 1, mp, 1.85, 500.0);
+    const r_cam: f64 = 100.0;
+    var scene = render.Scene.init(g, mp, testConsts(), opacities.Channels.puffy, 5.0 / 3.0, &data, r_cam, 500.0);
+    scene.r_escape = 115.0;
+    const n = 10;
+    var cam = render.Camera{ .r = r_cam, .incl_deg = 60, .fov = 16, .width = n, .height = n, .ss = 1 };
+    cam.setup(mp);
+    // 3000 steps is 60+ half-orbits on the shell at this eps: a ray that
+    // is still orbiting then is pinned, and lands in the n ≥ 3 bucket
+    // whatever its exact count, so a bigger budget buys nothing
+    var opts = render.TraceOpts{ .eps = 1.0, .max_steps = 3_000 };
+    opts.screen = true;
+
+    // the flight-time criterion switched off: only capture flips and
+    // order disagreements may mark
+    var plan = try render.adaptive.planRays(cfg, allocator, &scene, &cam, opts, .{ .depth = 4, .dt_thresh = 1.0e30, .probe_max_steps = 3_000 }, 2);
+    defer plan.deinit(allocator);
+
+    // (1) marked ⇔ some corner pair differs in fate or in crossing count
+    var corner_n: [(n + 1) * (n + 1)]u32 = undefined;
+    var corner_c: [(n + 1) * (n + 1)]bool = undefined;
+    for (0..n + 1) |cy| {
+        for (0..n + 1) |cx| {
+            const res = render.traceRay(cfg, &scene, cam.x0, cam.rayAt(@floatFromInt(cx), @floatFromInt(cy)), opts);
+            corner_n[cy * (n + 1) + cx] = res.ncross;
+            corner_c[cy * (n + 1) + cx] = res.captured;
+        }
+    }
+    var nmark: usize = 0;
+    for (0..n) |py| {
+        for (0..n) |px| {
+            const c0 = py * (n + 1) + px;
+            const ids = [4]usize{ c0, c0 + 1, c0 + n + 1, c0 + n + 2 };
+            var differ = false;
+            for (ids[1..]) |i| {
+                if (corner_n[i] != corner_n[ids[0]] or corner_c[i] != corner_c[ids[0]]) differ = true;
+            }
+            try std.testing.expectEqual(differ, plan.marked[py * n + px]);
+            nmark += @intFromBool(differ);
+        }
+    }
+    try std.testing.expect(nmark > 8 and nmark < n * n);
+
+    // (2) per-order screen render = image-plane area per order: the GLM
+    // lensing bands. In VACUUM every ray aimed near the hole crosses the
+    // equator once on its way to the far sky (n = 0 needs an emitter met
+    // before the first crossing), so band n = 1 is the bulk of the frame,
+    // n = 2 the first lensing band, the annulus between edge_2(φ_s) and
+    // edge_3(φ_s) where the exact swept angle reaches ψ_1 + π and ψ_1 + 2π
+    // (0.3–2 M wide, azimuth-dependent through ψ_1), and n ≥ 3 the
+    // remainder down to the critical curve, a geometric tail shrinking by
+    // e^{−π} per order. The quadtree's leaf areas must reproduce the
+    // analytic annuli: A_2 to 5%, the tail to 30% (≈ 0.035 M wide against
+    // a 16/10/16 ≈ 0.1 M leaf; at depth 5 both agree to 0.4% and 1.6%,
+    // measured, at twice the Debug-mode cost).
+    var img = [_]f64{0} ** (n * n);
+    var ord = [_]f64{0} ** (render.n_orders * n * n);
+    try render.adaptive.renderPlan(cfg, allocator, &scene, &cam, plan.specs, img[0..], ord[0..], opts, 2);
+    var area: [render.n_orders]f64 = @splat(0);
+    var escaped: f64 = 0;
+    for (0..n * n) |p| {
+        escaped += img[p];
+        for (0..render.n_orders) |o| area[o] += ord[o * n * n + p];
+    }
+    try std.testing.expectApproxEqAbs(escaped, area[0] + area[1] + area[2] + area[3], 1e-9);
+    try std.testing.expectEqual(@as(f64, 0.0), area[0]);
+    try std.testing.expect(area[1] > area[2] and area[2] > area[3] and area[3] > 0);
+
+    // analytic band areas from the exact deflection, in pixel²: a static
+    // camera sees b = r sin(angle)/√(1 − 2/r) and one pixel is fov/W in
+    // angle. The outer edge of the n = 2 band reaches ~8 M at the azimuths
+    // where ψ_1 is smallest and runs past the square frame, so each edge
+    // is clipped to the frame along its screen azimuth: the launch
+    // direction (sin α cos φ_s, sin α sin φ_s) is Camera.rayAt's
+    // (sin ay, −sin ax), i.e. screen offset ∝ (−sin φ_s, cos φ_s).
+    const theta_o = pi / 3.0;
+    const half_b = r_cam * @sin(0.5 * cam.fov / r_cam) / @sqrt(1.0 - 2.0 / r_cam);
+    var a2_an: f64 = 0;
+    var a3_an: f64 = 0;
+    const naz = 192;
+    for (0..naz) |j| {
+        const phs = 2.0 * pi * (@as(f64, @floatFromInt(j)) + 0.5) / @as(f64, naz);
+        const probe = aimSchw(mp, r_cam, theta_o, 6.0, phs);
+        const ps1 = OrbitPlane.of(mp, theta_o, probe.x, probe.k).psi1();
+        const r_frame = half_b / @max(@abs(@sin(phs)), @abs(@cos(phs)));
+        var e: [2]f64 = undefined;
+        for (0..2) |m| {
+            const target = ps1 + @as(f64, @floatFromInt(m + 1)) * pi;
+            var lo: f64 = b_crit_schw + 1.0e-7;
+            var hi: f64 = 14.0;
+            for (0..50) |_| {
+                const mid = 0.5 * (lo + hi);
+                if (sweptAngleSchw(mid, r_cam, scene.r_escape) >= target) lo = mid else hi = mid;
+            }
+            e[m] = @min(0.5 * (lo + hi), r_frame);
+        }
+        a2_an += 0.5 * (e[0] * e[0] - e[1] * e[1]) * (2.0 * pi / @as(f64, naz));
+        a3_an += 0.5 * (e[1] * e[1] - b_crit_schw * b_crit_schw) * (2.0 * pi / @as(f64, naz));
+    }
+    const px_b = (cam.fov / @as(f64, n)) / @sqrt(1.0 - 2.0 / r_cam);
+    a2_an /= px_b * px_b;
+    a3_an /= px_b * px_b;
+    try std.testing.expect(@abs(area[2] / a2_an - 1.0) < 0.05);
+    try std.testing.expect(@abs(area[3] / a3_an - 1.0) < 0.30);
 }
