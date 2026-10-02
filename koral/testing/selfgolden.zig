@@ -58,27 +58,27 @@ pub const Scalars = struct {
     n_radimp_failures: f64,
     n_radimp_iters: f64,
 
-    pub const count = @typeInfo(Scalars).@"struct".fields.len;
+    pub const count = @typeInfo(Scalars).@"struct".field_names.len;
 
     pub fn toArray(self: Scalars) [count]f64 {
         var out: [count]f64 = undefined;
-        inline for (@typeInfo(Scalars).@"struct".fields, 0..) |f, i| {
-            out[i] = @field(self, f.name);
+        inline for (@typeInfo(Scalars).@"struct".field_names, 0..) |f, i| {
+            out[i] = @field(self, f);
         }
         return out;
     }
 
     pub fn fromSlice(vals: []const f64) Scalars {
         var out: Scalars = undefined;
-        inline for (@typeInfo(Scalars).@"struct".fields, 0..) |f, i| {
-            @field(out, f.name) = vals[i];
+        inline for (@typeInfo(Scalars).@"struct".field_names, 0..) |f, i| {
+            @field(out, f) = vals[i];
         }
         return out;
     }
 
     pub fn name(i: usize) []const u8 {
-        inline for (@typeInfo(Scalars).@"struct".fields, 0..) |f, j| {
-            if (i == j) return f.name;
+        inline for (@typeInfo(Scalars).@"struct".field_names, 0..) |f, j| {
+            if (i == j) return f;
         }
         unreachable;
     }

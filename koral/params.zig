@@ -228,8 +228,9 @@ pub const Params = struct {
     /// heap-owned (parse dupes the defaults too), so this frees them all
     /// unconditionally: no literal-vs-heap guessing at the call site.
     pub fn deinit(self: *Params, allocator: std.mem.Allocator) void {
-        inline for (std.meta.fields(Params)) |f| {
-            if (f.type == []const u8) allocator.free(@field(self, f.name));
+        const si = @typeInfo(Params).@"struct";
+        inline for (si.field_names, si.field_types) |name, FT| {
+            if (FT == []const u8) allocator.free(@field(self, name));
         }
         self.* = undefined;
     }
@@ -244,12 +245,13 @@ pub const Params = struct {
         // so an OOM mid-loop never leaves a field pointing at a literal for the
         // errdefer to invalid-free.
         errdefer p.deinit(allocator);
-        inline for (std.meta.fields(Params)) |f| {
-            if (f.type == []const u8) @field(p, f.name) = "";
+        const si = @typeInfo(Params).@"struct";
+        inline for (si.field_names, si.field_types) |name, FT| {
+            if (FT == []const u8) @field(p, name) = "";
         }
-        inline for (std.meta.fields(Params)) |f| {
-            if (f.type == []const u8) {
-                @field(p, f.name) = try allocator.dupe(u8, comptime f.defaultValue().?);
+        inline for (si.field_names, si.field_types, si.field_attrs) |name, FT, attrs| {
+            if (FT == []const u8) {
+                @field(p, name) = try allocator.dupe(u8, comptime attrs.defaultValue(FT).?);
             }
         }
 
@@ -283,16 +285,17 @@ pub const Params = struct {
     }
 
     fn setField(allocator: std.mem.Allocator, p: *Params, key: []const u8, val: []const u8, lineno: usize) !void {
-        inline for (std.meta.fields(Params)) |f| {
-            if (std.mem.eql(u8, key, f.name)) {
-                const parsed = parseValue(f.type, allocator, val) catch {
+        const si = @typeInfo(Params).@"struct";
+        inline for (si.field_names, si.field_types) |name, FT| {
+            if (std.mem.eql(u8, key, name)) {
+                const parsed = parseValue(FT, allocator, val) catch {
                     std.log.warn("params: line {d}: bad value for {s}: '{s}'", .{ lineno, key, val });
                     return error.BadParamsValue;
                 };
                 // Repeated key: release the previous (always-owned) dupe before
                 // overwriting so the earlier value doesn't leak.
-                if (f.type == []const u8) allocator.free(@field(p, f.name));
-                @field(p, f.name) = parsed;
+                if (FT == []const u8) allocator.free(@field(p, name));
+                @field(p, name) = parsed;
                 return;
             }
         }

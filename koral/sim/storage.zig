@@ -16,7 +16,7 @@ pub const Flag = enum(usize) {
     rad_fixup, // RADFIXUPFLAG (M7)
     radimp_fixup, // RADIMPFIXUPFLAG (M9) — implicit solver failed here
 };
-pub const n_flags = @typeInfo(Flag).@"enum".fields.len;
+pub const n_flags = @typeInfo(Flag).@"enum".field_names.len;
 
 /// C: BIG (ko.h) — only ever compared against, value moot.
 pub const big: f64 = 1.0e50;
@@ -52,7 +52,7 @@ pub const Scal = enum(usize) {
     tstepden,
     cell_dt,
 };
-pub const n_scal = @typeInfo(Scal).@"enum".fields.len;
+pub const n_scal = @typeInfo(Scal).@"enum".field_names.len;
 pub const ahd_l = [3]Scal{ .ahdxl, .ahdyl, .ahdzl };
 pub const ahd_r = [3]Scal{ .ahdxr, .ahdyr, .ahdzr };
 pub const ahd_m = [3]Scal{ .ahdx, .ahdy, .ahdz };

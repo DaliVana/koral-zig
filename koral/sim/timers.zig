@@ -39,7 +39,7 @@ pub const Pass = enum {
     entropy, // update_entropy
 };
 
-pub const n_passes = @typeInfo(Pass).@"enum".fields.len;
+pub const n_passes = @typeInfo(Pass).@"enum".field_names.len;
 
 /// Monotonic wall clock in nanoseconds. Linux goes through the syscall
 /// wrapper (no libc needed); everywhere else through std.c; fine on

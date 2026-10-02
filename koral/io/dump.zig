@@ -243,7 +243,7 @@ fn writePrimMpi(
     _ = serializePrimBody(SimT, sim, body);
 
     var buf: [1024]u8 = undefined;
-    const pathz = try std.fmt.bufPrintZ(&buf, "{s}", .{path});
+    const pathz = try std.mem.printSentinel(&buf, "{s}", .{path}, 0);
     const total = bodyOffset(g.nx, g.ny, SimT.nv, g.nz);
     var f = try comm.fileCreate(pathz, total);
     comm.fileWriteAtAll(&f, bodyOffset(g.nx, g.ny, SimT.nv, @intCast(sim.core.decomp.tok)), body);
@@ -301,7 +301,7 @@ fn loadPrimMpi(
     path: []const u8,
 ) !DumpHeader {
     var pbuf: [1024]u8 = undefined;
-    const pathz = try std.fmt.bufPrintZ(&pbuf, "{s}", .{path});
+    const pathz = try std.mem.printSentinel(&pbuf, "{s}", .{path}, 0);
     const body64 = try allocator.alloc(f64, primBodySize(SimT, sim) / 8);
     defer allocator.free(body64);
     const body = std.mem.sliceAsBytes(body64);

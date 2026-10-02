@@ -55,7 +55,7 @@ fn writeSiloDump(comptime SimT: type, comptime name: []const u8, io: std.Io, out
     const dir = std.fmt.bufPrint(&dbuf, "{s}/silo", .{out_dir}) catch return;
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
     var buf: [1024]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&buf, "{s}/silo/" ++ name ++ "{d:0>4}.silo", .{ out_dir, idx }) catch return;
+    const path = std.mem.printSentinel(&buf, "{s}/silo/" ++ name ++ "{d:0>4}.silo", .{ out_dir, idx }, 0) catch return;
     const cycle: i32 = @intCast(@min(s.nstep, @as(u64, std.math.maxInt(i32))));
     silo.write(SimT, s, allocator, path, s.t, cycle, .{}) catch |err| {
         std.debug.print(name ++ ": cannot write {s}: {s}\n", .{ path, @errorName(err) });
@@ -257,7 +257,7 @@ pub fn run(comptime P: type, init: std.process.Init) !void {
         );
         if (comptime @hasDecl(P, "banner")) P.banner(SimT, phys, &p, st.grid_global);
     }
-    if (is_root and builtin.mode == .Debug) {
+    if (is_root and builtin.mode == .debug) {
         std.debug.print(
             name ++ ": *** WARNING: Debug build — expect a many-fold slowdown. " ++
                 "Rebuild with `-Doptimize=ReleaseFast` for production runs. ***\n",

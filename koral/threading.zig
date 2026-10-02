@@ -387,7 +387,7 @@ test "Team: dynamic tiles cover the range exactly once" {
     const team = try Team.init(allocator, 4, false);
     defer team.deinit();
 
-    var hits = [_]std.atomic.Value(u32){.init(0)} ** 103;
+    var hits: [103]std.atomic.Value(u32) = @splat(.init(0));
     const Ctx = struct { hits: []std.atomic.Value(u32) };
     var ctx = Ctx{ .hits = &hits };
     const W = struct {

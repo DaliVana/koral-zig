@@ -176,8 +176,8 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "scalar no-bisect", .ip = &ip_scalar_nb },
         .{ .name = "simd   no-bisect", .ip = &ip_simd_nb },
     };
-    var avg_ns = [_]f64{0} ** variants.len;
-    var best_ns = [_]f64{1e300} ** variants.len;
+    var avg_ns: [variants.len]f64 = @splat(0);
+    var best_ns: [variants.len]f64 = @splat(1e300);
 
     for (variants, 0..) |v, vi| {
         for (0..rounds + 1) |r| { // round 0 = warmup

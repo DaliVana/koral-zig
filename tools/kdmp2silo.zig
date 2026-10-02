@@ -51,7 +51,7 @@ fn convertOne(
     const base = std.fs.path.basename(kdmp_path);
     const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
     var pbuf: [1024]u8 = undefined;
-    const out_path = try std.fmt.bufPrintZ(&pbuf, "{s}/{s}.silo", .{ out_dir, stem });
+    const out_path = try std.mem.printSentinel(&pbuf, "{s}/{s}.silo", .{ out_dir, stem }, 0);
     const cycle: i32 = @intCast(@min(h.nstep, @as(u64, std.math.maxInt(i32))));
     silo.write(SimT, s, allocator, out_path, h.t, cycle, .{}) catch |err| {
         std.debug.print("kdmp2silo: cannot write {s}: {s}\n", .{ out_path, @errorName(err) });

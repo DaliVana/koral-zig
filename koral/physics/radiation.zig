@@ -160,7 +160,7 @@ pub fn pradFf2Lab(
     const rij_ud = relele.lowerSecond(rij_uu, geom);
 
     const gdetu = geom.gdet; // GDETIN == 1
-    var uu = [_]f64{0} ** L.count;
+    var uu: [L.count]f64 = @splat(0);
     uu[L.index(.ee)] = gdetu * rij_ud[0][0];
     uu[L.index(.fx)] = gdetu * rij_ud[0][1];
     uu[L.index(.fy)] = gdetu * rij_ud[0][2];

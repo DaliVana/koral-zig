@@ -114,8 +114,8 @@ pub fn extractLane(comptime S: type, v: anytype, lane: usize) S {
         },
         .@"struct" => |info| {
             var out: S = undefined;
-            inline for (info.fields) |fld| {
-                @field(out, fld.name) = extractLane(fld.type, @field(v, fld.name), lane);
+            inline for (info.field_names, info.field_types) |name, FT| {
+                @field(out, name) = extractLane(FT, @field(v, name), lane);
             }
             return out;
         },
