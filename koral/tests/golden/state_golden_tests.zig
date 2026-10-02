@@ -46,8 +46,8 @@ test "golden: conv_vels all 9 pairs vs C" {
     for (0..g.nrec) |ir| {
         const r = g.rec(ir);
         const geo = geomFromRecord(r.in[0..20], .ks, @splat(0));
-        const w1: relele.VelType = @enumFromInt(@as(u8, @intFromFloat(r.in[20])));
-        const w2: relele.VelType = @enumFromInt(@as(u8, @intFromFloat(r.in[21])));
+        const w1: relele.VelType = @fromBackingInt(@intCast(@as(u8, @intFromFloat(r.in[20]))));
+        const w2: relele.VelType = @fromBackingInt(@intCast(@as(u8, @intFromFloat(r.in[21]))));
         const uin = [4]f64{ 0, r.in[22], r.in[23], r.in[24] };
         const uout = try relele.convert(uin, w1, w2, &geo, .recompute_ut);
         for (0..4) |i| t.add(r.out[i], uout[i], ir);

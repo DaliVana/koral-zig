@@ -125,8 +125,8 @@ fn printHeartbeat(comptime SimT: type, s: *const SimT, dt: f64, step_wall_ns: u6
     if (s.core.decomp.ntz > 1) {
         var total_ns: u64 = 0;
         for (s.core.timers.ns) |v| total_ns += v;
-        const comm_ns = s.core.timers.ns[@intFromEnum(sim_mod.Pass.halo)] +
-            s.core.timers.ns[@intFromEnum(sim_mod.Pass.collect)];
+        const comm_ns = s.core.timers.ns[@backingInt(sim_mod.Pass.halo)] +
+            s.core.timers.ns[@backingInt(sim_mod.Pass.collect)];
         const mpi_pct: f64 = if (total_ns > 0)
             100.0 * @as(f64, @floatFromInt(comm_ns)) / @as(f64, @floatFromInt(total_ns))
         else

@@ -157,7 +157,6 @@ pub const Grid = struct {
             else => unreachable,
         };
     }
-
 };
 
 //

@@ -75,7 +75,7 @@ const futex = struct {
                         0,
                     );
                     if (status >= 0) return;
-                    switch (@as(std.c.E, @enumFromInt(-status))) {
+                    switch (@as(std.c.E, @fromBackingInt(@intCast(-status)))) {
                         .INTR, .CANCELED => continue,
                         else => return, // NOENT: nobody waiting
                     }

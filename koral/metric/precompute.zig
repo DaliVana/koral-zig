@@ -556,9 +556,16 @@ test "metric cache: threaded fills are bit-identical to serial" {
     // 3D with ghosts on all axes, and MKS2 + BL sidecar so all three sweeps
     // (centers incl. the Christoffel FD correction, faces, BL) are exercised.
     const g = Grid.init(.{
-        .nx = 12, .ny = 10, .nz = 6, .ng = 3,
-        .minx = 0.5, .maxx = 3.5, .miny = 0.001, .maxy = 0.999,
-        .minz = -0.7853981633974483, .maxz = 0.7853981633974483,
+        .nx = 12,
+        .ny = 10,
+        .nz = 6,
+        .ng = 3,
+        .minx = 0.5,
+        .maxx = 3.5,
+        .miny = 0.001,
+        .maxy = 0.999,
+        .minz = -0.7853981633974483,
+        .maxz = 0.7853981633974483,
     });
     const opts = MetricCache.InitOpts{
         .coords = .mks2,
@@ -573,8 +580,11 @@ test "metric cache: threaded fills are bit-identical to serial" {
     var team = try threading.Team.init(a, 4, false);
     defer team.deinit();
     var threaded = try MetricCache.init(a, g, .{
-        .coords = opts.coords, .out_coords = opts.out_coords, .mp = opts.mp,
-        .bl_cache = opts.bl_cache, .team = team,
+        .coords = opts.coords,
+        .out_coords = opts.out_coords,
+        .mp = opts.mp,
+        .bl_cache = opts.bl_cache,
+        .team = team,
     });
     defer threaded.deinit();
 

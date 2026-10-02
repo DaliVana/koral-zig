@@ -89,7 +89,7 @@ test "golden: solve_implicit_lab (full rung ladder) vs C" {
         // under the original bar.
         const z_entropy_ok = res.ok and res.whicheq == .entropy;
         const c_entropy_ok = c_ok and
-            @as(i32, @intFromFloat(r.out[2])) == @intFromEnum(implicit.WhichEq.entropy);
+            @as(i32, @intFromFloat(r.out[2])) == @backingInt(implicit.WhichEq.entropy);
         if (c_ok != res.ok and (z_entropy_ok or c_entropy_ok)) {
             n_entropy_flip += 1;
             continue;
@@ -103,9 +103,9 @@ test "golden: solve_implicit_lab (full rung ladder) vs C" {
             const c_prim: i32 = @intFromFloat(r.out[1]);
             const c_eq: i32 = @intFromFloat(r.out[2]);
             const c_frame: i32 = @intFromFloat(r.out[3]);
-            const same_rung = c_prim == @intFromEnum(res.whichprim) and
-                c_eq == @intFromEnum(res.whicheq) and
-                c_frame == @intFromEnum(res.whichframe);
+            const same_rung = c_prim == @backingInt(res.whichprim) and
+                c_eq == @backingInt(res.whicheq) and
+                c_frame == @backingInt(res.whichframe);
             if (!same_rung) continue;
             n_rung_agree += 1;
 

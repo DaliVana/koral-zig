@@ -239,7 +239,7 @@ pub fn Core(comptime cfg: config.Config) type {
         inline fn flagIdx(self: *const Self, f: Flag, ix: i64, iy: i64, iz: i64) usize {
             // layout-independent cell index — was `p.cellOffset/NV`, which
             // coupled flag indexing to the primitives Field's AoS layout.
-            return self.grid.cellIndex(ix, iy, iz) * storage.n_flags + @intFromEnum(f);
+            return self.grid.cellIndex(ix, iy, iz) * storage.n_flags + @backingInt(f);
         }
         pub inline fn getFlag(self: *const Self, f: Flag, ix: i64, iy: i64, iz: i64) i32 {
             return self.flags[self.flagIdx(f, ix, iy, iz)];
@@ -249,10 +249,10 @@ pub fn Core(comptime cfg: config.Config) type {
         }
 
         pub inline fn scGet(self: *const Self, s: Scal, ix: i64, iy: i64, iz: i64) f64 {
-            return self.scal.get(@intFromEnum(s), ix, iy, iz);
+            return self.scal.get(@backingInt(s), ix, iy, iz);
         }
         pub inline fn scSet(self: *Self, s: Scal, ix: i64, iy: i64, iz: i64, v: f64) void {
-            self.scal.set(@intFromEnum(s), ix, iy, iz, v);
+            self.scal.set(@backingInt(s), ix, iy, iz, v);
         }
 
         // ---- MPI seam (plan §5–§7) ----------------------------------------
