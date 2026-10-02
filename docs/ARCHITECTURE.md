@@ -31,7 +31,7 @@ PHYSICS.md is the authority on the physics itself.
 
 ## 1. Design constraints
 
-koral-zig is a Zig 0.16 reimplementation of the **KORAL** general-relativistic
+koral-zig is a Zig 0.17 reimplementation of the **KORAL** general-relativistic
 radiation-MHD C code, targeting the **PUFFY** radiative-MHD accretion torus: a disk
 around a black hole in modified Kerr-Schild (MKS2) coordinates, evolving ideal MHD
 coupled to M1-closure radiation with thermal Comptonization, radiative shear viscosity,
