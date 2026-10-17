@@ -237,13 +237,13 @@ pub const MetricCache = struct {
         };
     }
 
-    inline fn cellIndex(self: *const MetricCache, ix: i64, iy: i64, iz: i64) usize {
+    fn cellIndex(self: *const MetricCache, ix: i64, iy: i64, iz: i64) usize {
         return self.grid.cellIndex(ix, iy, iz);
     }
 
     /// Face `dim`-index f is the *left* face of cell f in that dimension;
     /// f ranges one past the last cell.
-    inline fn faceIndex(self: *const MetricCache, dim: usize, ix: i64, iy: i64, iz: i64) usize {
+    fn faceIndex(self: *const MetricCache, dim: usize, ix: i64, iy: i64, iz: i64) usize {
         const grid = &self.grid;
         const jx: usize = @intCast(ix + @as(i64, @intCast(grid.ngx)));
         const jy: usize = @intCast(iy + @as(i64, @intCast(grid.ngy)));
@@ -435,7 +435,7 @@ pub const MetricCache = struct {
 
     // ---- accessors -------------------------------------------------------
 
-    pub inline fn kr(self: *const MetricCache, i: usize, j: usize, k: usize, ix: i64, iy: i64, iz: i64) f64 {
+    pub fn kr(self: *const MetricCache, i: usize, j: usize, k: usize, ix: i64, iy: i64, iz: i64) f64 {
         return self.kris[self.cellIndex(ix, iy, iz) * 64 + i * 16 + j * 4 + k];
     }
 
@@ -443,7 +443,7 @@ pub const MetricCache = struct {
     /// at a cell center; fetched once so the metric-source and shear loops
     /// index it directly instead of recomputing cellIndex on every one of the
     /// 64/128 kr() calls per cell. Bit-identical to kr(i,j,k,ix,iy,iz).
-    pub inline fn krBlock(self: *const MetricCache, ix: i64, iy: i64, iz: i64) *const [64]f64 {
+    pub fn krBlock(self: *const MetricCache, ix: i64, iy: i64, iz: i64) *const [64]f64 {
         return self.kris[self.cellIndex(ix, iy, iz) * 64 ..][0..64];
     }
 
@@ -556,9 +556,16 @@ test "metric cache: threaded fills are bit-identical to serial" {
     // 3D with ghosts on all axes, and MKS2 + BL sidecar so all three sweeps
     // (centers incl. the Christoffel FD correction, faces, BL) are exercised.
     const g = Grid.init(.{
-        .nx = 12, .ny = 10, .nz = 6, .ng = 3,
-        .minx = 0.5, .maxx = 3.5, .miny = 0.001, .maxy = 0.999,
-        .minz = -0.7853981633974483, .maxz = 0.7853981633974483,
+        .nx = 12,
+        .ny = 10,
+        .nz = 6,
+        .ng = 3,
+        .minx = 0.5,
+        .maxx = 3.5,
+        .miny = 0.001,
+        .maxy = 0.999,
+        .minz = -0.7853981633974483,
+        .maxz = 0.7853981633974483,
     });
     const opts = MetricCache.InitOpts{
         .coords = .mks2,
@@ -573,8 +580,11 @@ test "metric cache: threaded fills are bit-identical to serial" {
     var team = try threading.Team.init(a, 4, false);
     defer team.deinit();
     var threaded = try MetricCache.init(a, g, .{
-        .coords = opts.coords, .out_coords = opts.out_coords, .mp = opts.mp,
-        .bl_cache = opts.bl_cache, .team = team,
+        .coords = opts.coords,
+        .out_coords = opts.out_coords,
+        .mp = opts.mp,
+        .bl_cache = opts.bl_cache,
+        .team = team,
     });
     defer threaded.deinit();
 

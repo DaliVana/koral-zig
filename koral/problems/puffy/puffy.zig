@@ -446,7 +446,7 @@ pub fn prepInitCellWith(
     var uint = dv.uu;
     var ell = dv.ell;
 
-    var pp = [_]f64{0} ** L.count;
+    var pp: [L.count]f64 = @splat(0);
 
     if (rho < 0.0) { // outside the donut
         setHdAtmosphere(cfg, &pp, geom, atm, phys);
@@ -458,7 +458,7 @@ pub fn prepInitCellWith(
     // inside the donut
     pp[L.index(.entr)] = 1.0;
 
-    var ppback = [_]f64{0} ** L.count;
+    var ppback: [L.count]f64 = @splat(0);
     setHdAtmosphere(cfg, &ppback, geom, atm, phys);
     if (has_rad) setRadAtmosphere(cfg, &ppback, geom, atm);
 

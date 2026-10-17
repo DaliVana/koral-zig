@@ -27,7 +27,7 @@ fn probeMpi(
     if (inc_opt) |d| try inc_dirs.append(b.allocator, d);
 
     if (lib_dirs.items.len == 0 or (family_opt == null and inc_dirs.items.len == 0)) {
-        const mpicc_found = b.findProgram(&.{"mpicc"}, &.{}) catch {
+        const mpicc_found = b.findProgram(.{ .names = &.{"mpicc"} }) orelse {
             // Say which half is actually missing. `-Dmpi-lib` alone still
             // lands here (the ABI family is undetectable without mpi.h or an
             // explicit family), and reporting it as "no -Dmpi-lib given"
@@ -116,6 +116,13 @@ fn linkMpi(m: *std.Build.Module, mc: MpiConfig) void {
     m.linkSystemLibrary("mpi", .{ .use_pkg_config = .no });
 }
 
+/// Absolute path of `sub` under the build root (0.17 dropped `b.pathFromRoot`;
+/// `b.root` is a `Cache.Path` whose `root_dir.path` is the configurer's
+/// absolute build root).
+fn rootPath(b: *std.Build, sub: []const u8) []const u8 {
+    return b.root.joinString(b.allocator, sub) catch @panic("OOM");
+}
+
 pub fn build(b: *std.Build) !void {
     const io = b.graph.io;
     const target = b.standardTargetOptions(.{});
@@ -154,12 +161,12 @@ pub fn build(b: *std.Build) !void {
     build_opts.addOption([]const u8, "mpi_family", if (mpi_cfg) |mc| mc.family else "");
     build_opts.addOption(bool, "slow_tests", slow_tests);
     build_opts.addOption(bool, "silo", enable_silo);
-    build_opts.addOption([]const u8, "golden_dir", b.pathFromRoot("tests/golden"));
+    build_opts.addOption([]const u8, "golden_dir", rootPath(b, "tests/golden"));
     // Zig-generated regression baselines (tests/selfgolden), kept in a separate
     // tree from the C-oracle goldens so the provenance of a failure is never
     // ambiguous: tests/golden says "does this match KORAL C", tests/selfgolden
     // says "did our own numbers move".
-    build_opts.addOption([]const u8, "selfgolden_dir", b.pathFromRoot("tests/selfgolden"));
+    build_opts.addOption([]const u8, "selfgolden_dir", rootPath(b, "tests/selfgolden"));
 
     const koral = b.addModule("koral", .{
         .root_source_file = b.path("koral/koral.zig"),
@@ -189,7 +196,12 @@ pub fn build(b: *std.Build) !void {
     // `@import` in koral.zig, plus the one off-naming carrier
     // `testing/tubes.zig`. Fail the build loudly otherwise.
     {
-        const koral_src = try b.build_root.handle.readFileAlloc(io, "koral/koral.zig", b.allocator, .limited(1 << 20));
+        // The configure phase is cached in 0.17: declare what this guard
+        // reads so adding/removing a test file re-runs it.
+        b.dependOnFileContents(b.path("koral/koral.zig"));
+        b.dependOnDirectoryContents(b.path("koral/tests"));
+        b.dependOnDirectoryContents(b.path("koral/tests/golden"));
+        const koral_src = try b.root.root_dir.handle.readFileAlloc(io, rootPath(b, "koral/koral.zig"), b.allocator, .limited(1 << 20));
         var any_missing = false;
         const warn = struct {
             fn header(first: *bool) void {
@@ -198,7 +210,7 @@ pub fn build(b: *std.Build) !void {
             }
         };
         for ([_][]const u8{ "tests", "tests/golden" }) |sub| {
-            var tdir = try b.build_root.handle.openDir(io, b.fmt("koral/{s}", .{sub}), .{ .iterate = true });
+            var tdir = try b.root.openDir(io, b.fmt("koral/{s}", .{sub}), .{ .iterate = true });
             defer tdir.close(io);
             var tit = tdir.iterate();
             while (try tit.next(io)) |entry| {
@@ -244,8 +256,8 @@ pub fn build(b: *std.Build) !void {
         }),
     });
     const run_bench = b.addRunArtifact(bench);
-    run_bench.addArg(b.pathFromRoot("tests/golden/rad/rad_implicit.kgld"));
-    if (b.args) |args| run_bench.addArgs(args);
+    run_bench.addArg(rootPath(b, "tests/golden/rad/rad_implicit.kgld"));
+    run_bench.addPassthruArgs();
     b.step("bench-implicit", "time the implicit solver: scalar vs SIMD Jacobian")
         .dependOn(&run_bench.step);
 
@@ -269,7 +281,7 @@ pub fn build(b: *std.Build) !void {
         }),
     });
     const run_gen_self = b.addRunArtifact(gen_self);
-    run_gen_self.addArg(b.pathFromRoot("tests/selfgolden"));
+    run_gen_self.addArg(rootPath(b, "tests/selfgolden"));
     b.step("update-self-goldens", "regenerate tests/selfgolden/** from this build")
         .dependOn(&run_gen_self.step);
 
@@ -287,7 +299,7 @@ pub fn build(b: *std.Build) !void {
     });
     b.installArtifact(res2kdmp);
     const run_res2kdmp = b.addRunArtifact(res2kdmp);
-    if (b.args) |args| run_res2kdmp.addArgs(args);
+    run_res2kdmp.addPassthruArgs();
     b.step("res2kdmp", "convert a C restart (res####.head/.dat) to a KDMP checkpoint")
         .dependOn(&run_res2kdmp.step);
 
@@ -306,7 +318,7 @@ pub fn build(b: *std.Build) !void {
     });
     b.installArtifact(kdmp2silo);
     const run_kdmp2silo = b.addRunArtifact(kdmp2silo);
-    if (b.args) |args| run_kdmp2silo.addArgs(args);
+    run_kdmp2silo.addPassthruArgs();
     b.step("kdmp2silo", "convert KDMP checkpoints to .silo for VisIt (needs -Dsilo)")
         .dependOn(&run_kdmp2silo.step);
 
@@ -323,7 +335,7 @@ pub fn build(b: *std.Build) !void {
     });
     b.installArtifact(qmri);
     const run_qmri = b.addRunArtifact(qmri);
-    if (b.args) |args| run_qmri.addArgs(args);
+    run_qmri.addPassthruArgs();
     b.step("qmri", "MRI quality factors of KDMP snapshots")
         .dependOn(&run_qmri.step);
 
@@ -342,7 +354,7 @@ pub fn build(b: *std.Build) !void {
     });
     b.installArtifact(kdmp2png);
     const run_kdmp2png = b.addRunArtifact(kdmp2png);
-    if (b.args) |args| run_kdmp2png.addArgs(args);
+    run_kdmp2png.addPassthruArgs();
     b.step("kdmp2png", "GRRT-render a KDMP checkpoint to PNG")
         .dependOn(&run_kdmp2png.step);
 
@@ -360,7 +372,7 @@ pub fn build(b: *std.Build) !void {
     });
     b.installArtifact(kdmp2lc);
     const run_kdmp2lc = b.addRunArtifact(kdmp2lc);
-    if (b.args) |args| run_kdmp2lc.addArgs(args);
+    run_kdmp2lc.addPassthruArgs();
     b.step("kdmp2lc", "slow-light flux light curve of a KDMP series")
         .dependOn(&run_kdmp2lc.step);
 
@@ -378,7 +390,7 @@ pub fn build(b: *std.Build) !void {
     });
     b.installArtifact(goldtest);
     const run_goldtest = b.addRunArtifact(goldtest);
-    if (b.args) |args| run_goldtest.addArgs(args);
+    run_goldtest.addPassthruArgs();
     b.step("goldtest", "run the Gold et al. 2020 EHT GRRT verification tests")
         .dependOn(&run_goldtest.step);
 
@@ -405,11 +417,15 @@ pub fn build(b: *std.Build) !void {
     // One executable per koral/problems/<name>/main.zig. A subdirectory
     // without a main.zig (koral/problems/common/, the shared torus /
     // atmosphere / bc library) is not a problem and is skipped.
-    var dir = try b.build_root.handle.openDir(io, "koral/problems", .{ .iterate = true });
+    b.dependOnDirectoryContents(b.path("koral/problems"));
+    var dir = try b.root.openDir(io, "koral/problems", .{ .iterate = true });
     defer dir.close(io);
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
         if (entry.kind != .directory) continue;
+        // (A declared file dependency must exist, so track the subdirectory's
+        // entries rather than the possibly-absent main.zig itself.)
+        b.dependOnDirectoryContents(b.path(b.fmt("koral/problems/{s}", .{entry.name})));
         dir.access(io, b.fmt("{s}/main.zig", .{entry.name}), .{}) catch continue;
         const exe = b.addExecutable(.{
             .name = entry.name,
@@ -432,7 +448,7 @@ pub fn build(b: *std.Build) !void {
         b.step(entry.name, b.fmt("build {s}", .{entry.name})).dependOn(&install.step);
 
         const run = b.addRunArtifact(exe);
-        if (b.args) |args| run.addArgs(args);
+        run.addPassthruArgs();
         b.step(b.fmt("run-{s}", .{entry.name}), b.fmt("build & run {s}", .{entry.name}))
             .dependOn(&run.step);
     }

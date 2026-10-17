@@ -46,28 +46,28 @@ pub fn Field(comptime NV: usize) type {
         /// `inline`: O(NV × cells × passes)/step leaf on every hot loop; the
         /// win is Debug/ReleaseSafe (ReleaseFast already inlines it). No FP
         /// change → golden-safe (P2 #10).
-        pub inline fn cellOffset(self: *const Self, ix: i64, iy: i64, iz: i64) usize {
+        pub fn cellOffset(self: *const Self, ix: i64, iy: i64, iz: i64) usize {
             return self.grid.cellIndex(ix, iy, iz) * NV;
         }
 
-        pub inline fn get(self: *const Self, iv: usize, ix: i64, iy: i64, iz: i64) f64 {
+        pub fn get(self: *const Self, iv: usize, ix: i64, iy: i64, iz: i64) f64 {
             std.debug.assert(iv < NV);
             return self.data[self.cellOffset(ix, iy, iz) + iv];
         }
 
-        pub inline fn set(self: *Self, iv: usize, ix: i64, iy: i64, iz: i64, v: f64) void {
+        pub fn set(self: *Self, iv: usize, ix: i64, iy: i64, iz: i64, v: f64) void {
             std.debug.assert(iv < NV);
             self.data[self.cellOffset(ix, iy, iz) + iv] = v;
         }
 
         /// Copy one cell's variables into a stack buffer.
-        pub inline fn load(self: *const Self, ix: i64, iy: i64, iz: i64, out: *[NV]f64) void {
+        pub fn load(self: *const Self, ix: i64, iy: i64, iz: i64, out: *[NV]f64) void {
             const off = self.cellOffset(ix, iy, iz);
             @memcpy(out, self.data[off..][0..NV]);
         }
 
         /// Write one cell's variables from a stack buffer.
-        pub inline fn store(self: *Self, ix: i64, iy: i64, iz: i64, pp: *const [NV]f64) void {
+        pub fn store(self: *Self, ix: i64, iy: i64, iz: i64, pp: *const [NV]f64) void {
             const off = self.cellOffset(ix, iy, iz);
             @memcpy(self.data[off..][0..NV], pp);
         }

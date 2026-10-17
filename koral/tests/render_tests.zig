@@ -220,7 +220,7 @@ test "render: Schwarzschild photon capture threshold b_crit = sqrt(27) M" {
 
 test "render: LTE source function j/chi equals the Planck function B(T)" {
     const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
-    var body = [_]f64{0} ** L.count;
+    var body: [L.count]f64 = @splat(0);
     var data = render.DumpData{
         .header = .{ .nx = 1, .ny = 1, .nz = 1, .nv = @intCast(L.count), .t = 0, .nstep = 0, .out_idx = 0 },
         .body = &body,
@@ -235,7 +235,7 @@ test "render: LTE source function j/chi equals the Planck function B(T)" {
     const rho = 1.0e-6;
     const uu = thermo.uFromTrho(&consts, tK, rho, 5.0 / 3.0);
 
-    var pp = [_]f64{0} ** L.count;
+    var pp: [L.count]f64 = @splat(0);
     pp[L.index(.rho)] = rho;
     pp[L.index(.uu)] = uu;
     pp[L.index(.ee)] = consts.lteEfromT(tK);
@@ -257,7 +257,7 @@ test "render: LTE source function j/chi equals the Planck function B(T)" {
 
 test "render: fluid-frame flux gives a dipole boost along the flux direction" {
     const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
-    var body = [_]f64{0} ** L.count;
+    var body: [L.count]f64 = @splat(0);
     var data = render.DumpData{
         .header = .{ .nx = 1, .ny = 1, .nz = 1, .nv = @intCast(L.count), .t = 0, .nstep = 0, .out_idx = 0 },
         .body = &body,
@@ -272,7 +272,7 @@ test "render: fluid-frame flux gives a dipole boost along the flux direction" {
 
     // gas at rest, radiation frame moving radially outward → F̂ along +x1
     const tK = 1.0e7;
-    var pp = [_]f64{0} ** L.count;
+    var pp: [L.count]f64 = @splat(0);
     pp[L.index(.rho)] = 1.0e-6;
     pp[L.index(.uu)] = thermo.uFromTrho(&consts, tK, 1.0e-6, 5.0 / 3.0);
     pp[L.index(.ee)] = consts.lteEfromT(tK);
@@ -312,7 +312,7 @@ test "render: fluid-frame flux gives a dipole boost along the flux direction" {
 
 test "render: scattering=false (AGN preset) zeroes kappa_es everywhere it enters" {
     const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
-    var body = [_]f64{0} ** L.count;
+    var body: [L.count]f64 = @splat(0);
     var data = render.DumpData{
         .header = .{ .nx = 1, .ny = 1, .nz = 1, .nv = @intCast(L.count), .t = 0, .nstep = 0, .out_idx = 0 },
         .body = &body,
@@ -325,7 +325,7 @@ test "render: scattering=false (AGN preset) zeroes kappa_es everywhere it enters
     const cd = metric.compute(.mks2, mp, x);
     const geom = render.geomFromCoordData(x, &cd);
     const tK = 1.0e7;
-    var pp = [_]f64{0} ** L.count;
+    var pp: [L.count]f64 = @splat(0);
     pp[L.index(.rho)] = 1.0e-6;
     pp[L.index(.uu)] = thermo.uFromTrho(&consts, tK, 1.0e-6, 5.0 / 3.0);
     pp[L.index(.ee)] = consts.lteEfromT(tK);
@@ -344,7 +344,7 @@ test "render: scattering=false (AGN preset) zeroes kappa_es everywhere it enters
 
 test "render: sigma-cut and floor-cut mask emission but keep extinction" {
     const mp = metric.MetricParams{ .a = 0.0, .mksr0 = 0.1, .mksh0 = 0.9 };
-    var body = [_]f64{0} ** L.count;
+    var body: [L.count]f64 = @splat(0);
     var data = render.DumpData{
         .header = .{ .nx = 1, .ny = 1, .nz = 1, .nv = @intCast(L.count), .t = 0, .nstep = 0, .out_idx = 0 },
         .body = &body,
@@ -358,7 +358,7 @@ test "render: sigma-cut and floor-cut mask emission but keep extinction" {
     const geom = render.geomFromCoordData(x, &cd);
 
     const tK = 1.0e7;
-    var pp = [_]f64{0} ** L.count;
+    var pp: [L.count]f64 = @splat(0);
     pp[L.index(.rho)] = 1.0e-6;
     pp[L.index(.uu)] = thermo.uFromTrho(&consts, tK, 1.0e-6, 5.0 / 3.0);
     pp[L.index(.ee)] = consts.lteEfromT(tK);
@@ -855,7 +855,7 @@ test "render: supersampled rays — pixel center matches ray(), ss=2 averages cl
     defer allocator.free(data.body);
     const g = puffyGrid(8, 6, 1, mp, 1.85, 1000.0);
     const scene = render.Scene.init(g, mp, testConsts(), opacities.Channels.puffy, 5.0 / 3.0, &data, 1000.0, 1000.0);
-    var img = [_]f64{-1} ** 64;
+    var img: [64]f64 = @splat(-1);
     render.renderImage(cfg, &scene, &cam, &img, null, .{ .eps = 1.0, .max_steps = 20_000 }, 2);
     for (img) |v| try std.testing.expectEqual(@as(f64, 0), v);
 }
@@ -918,7 +918,7 @@ test "image: afmhot endpoints and monotonicity" {
 test "image: gaussian blur preserves total flux of an interior impulse" {
     const allocator = std.testing.allocator;
     const w = 32;
-    var img = [_]f64{0} ** (w * w);
+    var img: [w * w]f64 = @splat(0);
     img[16 * w + 16] = 1.0;
     try image.gaussianBlur(allocator, &img, w, w, 2.0);
     var sum: f64 = 0;
@@ -1142,7 +1142,7 @@ test "sweep: static series through the full 3-phase sweep is bit-identical to di
     var src = render.series.SliceSource{ .ts = ts[0..], .frames = frames[0..] };
 
     const opts = render.TraceOpts{};
-    var out = [_]f64{-1} ** 36;
+    var out: [36]f64 = @splat(-1);
     const stats = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, specs, out[0..], null, opts, .{ .t_cam = 1030.0, .r_slow = 40.0 }, 3, false);
 
     // the sweep must actually have exercised its machinery
@@ -1152,7 +1152,7 @@ test "sweep: static series through the full 3-phase sweep is bit-identical to di
     try std.testing.expect(stats.past_start > 0);
 
     // reference: plain fast-light tracing of the same plan
-    var want = [_]f64{0} ** 36;
+    var want: [36]f64 = @splat(0);
     for (specs) |sp| {
         const res = render.traceRay(cfg, &scene, cam.x0, cam.rayAt(sp.fx, sp.fy), opts);
         want[sp.pix] += sp.weight * res.intensity;
@@ -1216,7 +1216,7 @@ test "sweep: a time-localized flare arrives retarded by the (Shapiro-corrected) 
 
     const I = struct {
         fn at(alloc: std.mem.Allocator, sc: *const render.Scene, c: *const render.Camera, sr: *render.series.SliceSource, sp: []const render.sweep.RaySpec, t_cam: f64) !f64 {
-            var out = [_]f64{0} ** 1;
+            var out: [1]f64 = @splat(0);
             _ = try render.sweep.renderSlow(cfg, alloc, sc, c, sr, sp, out[0..], null, .{}, .{ .t_cam = t_cam, .r_slow = 40.0 }, 1, false);
             return out[0];
         }
@@ -1351,7 +1351,7 @@ test "adaptive: quadtree plan conserves pixel weight, marks the capture boundary
     try std.testing.expect(plan.vacuum_rays > (n + 1) * (n + 1));
 
     // Σ weight per pixel is EXACTLY 1 (powers of 1/4)
-    var wsum = [_]f64{0} ** (n * n);
+    var wsum: [n * n]f64 = @splat(0);
     for (plan.specs) |sp| wsum[sp.pix] += sp.weight;
     for (wsum) |v| try std.testing.expectEqual(@as(f64, 1.0), v);
 
@@ -1397,7 +1397,7 @@ test "adaptive: quadtree plan conserves pixel weight, marks the capture boundary
     }
 
     // planned screen render: fractional shadow-edge coverage, exact 0/1 core
-    var img = [_]f64{0} ** (n * n);
+    var img: [n * n]f64 = @splat(0);
     var o = render.TraceOpts{ .eps = 1.0, .max_steps = 12_000 };
     o.screen = true;
     try render.adaptive.renderPlan(cfg, allocator, &scene, &cam, plan.specs, img[0..], null, o, 2);
@@ -1518,7 +1518,7 @@ test "sweep: batched epochs (t_cam_of) reproduce per-epoch sweeps — a two-poin
     // reference: two independent single-epoch sweeps
     var want: [2]f64 = undefined;
     for ([_]f64{ t_bright, t_dark }, 0..) |tc, e| {
-        var o1 = [_]f64{0} ** 1;
+        var o1: [1]f64 = @splat(0);
         _ = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, base, o1[0..], null, .{}, .{ .t_cam = tc, .r_slow = 40.0 }, 1, false);
         want[e] = o1[0];
     }
@@ -1868,8 +1868,8 @@ test "orders: per-order layers partition the image; thin-disc n>=1 light is the 
     // large budget; 5000 steps is ~80 half-orbits at this eps
     const opts = render.TraceOpts{ .eps = 0.5, .max_steps = 5_000 };
 
-    var img = [_]f64{0} ** (n * n);
-    var ord = [_]f64{0} ** (render.n_orders * n * n);
+    var img: [n * n]f64 = @splat(0);
+    var ord: [render.n_orders * n * n]f64 = @splat(0);
     render.renderImage(cfg, &scene, &cam, img[0..], ord[0..], opts, 2);
 
     // (1) exact partition: Σ_n layer_n = image, pixel by pixel
@@ -1926,10 +1926,10 @@ test "orders: per-order layers partition the image; thin-disc n>=1 light is the 
     var src = render.series.SliceSource{ .ts = ts[0..], .frames = frames[0..] };
     const specs = try render.sweep.uniformPlan(allocator, &cam);
     defer allocator.free(specs);
-    var out = [_]f64{0} ** (n * n);
-    var out_o = [_]f64{0} ** (render.n_orders * n * n);
+    var out: [n * n]f64 = @splat(0);
+    var out_o: [render.n_orders * n * n]f64 = @splat(0);
     _ = try render.sweep.renderSlow(cfg, allocator, &scene, &cam, &src, specs, out[0..], out_o[0..], opts, .{ .t_cam = 340.0, .r_slow = 40.0 }, 3, false);
-    var want_o = [_]f64{0} ** (render.n_orders * n * n);
+    var want_o: [render.n_orders * n * n]f64 = @splat(0);
     for (specs) |sp| {
         const res = render.traceRay(cfg, &scene, cam.x0, cam.rayAt(sp.fx, sp.fy), opts);
         for (0..render.n_orders) |o| want_o[o * n * n + sp.pix] += sp.weight * res.i_order[o];
@@ -1997,8 +1997,8 @@ test "adaptive: image-order disagreement marks every subring boundary; per-order
     // analytic annuli: A_2 to 5%, the tail to 30% (≈ 0.035 M wide against
     // a 16/10/16 ≈ 0.1 M leaf; at depth 5 both agree to 0.4% and 1.6%,
     // measured, at twice the Debug-mode cost).
-    var img = [_]f64{0} ** (n * n);
-    var ord = [_]f64{0} ** (render.n_orders * n * n);
+    var img: [n * n]f64 = @splat(0);
+    var ord: [render.n_orders * n * n]f64 = @splat(0);
     try render.adaptive.renderPlan(cfg, allocator, &scene, &cam, plan.specs, img[0..], ord[0..], opts, 2);
     var area: [render.n_orders]f64 = @splat(0);
     var escaped: f64 = 0;

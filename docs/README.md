@@ -1,6 +1,6 @@
 # koral-zig documentation
 
-koral-zig ports [KORAL](https://github.com/achael/koral_lite) to Zig 0.16. The
+koral-zig ports [KORAL](https://github.com/achael/koral_lite) to Zig 0.17. The
 reference case is a 2D PUFFY torus around a 10 M☉ Schwarzschild black hole. The
 repository also ships 3D, Sgr A*, and 10⁹ M☉ AGN presets. Runtime parameters
 change the mass, spin, grid, and selected microphysics without changing the

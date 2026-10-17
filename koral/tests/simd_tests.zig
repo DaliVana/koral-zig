@@ -63,8 +63,8 @@ fn expectAggBits(comptime S: type, want: S, got: S) !void {
             for (0..info.len) |i| try expectAggBits(info.child, want[i], got[i]);
         },
         .@"struct" => |info| {
-            inline for (info.fields) |fld| {
-                try expectAggBits(fld.type, @field(want, fld.name), @field(got, fld.name));
+            inline for (info.field_names, info.field_types) |name, FT| {
+                try expectAggBits(FT, @field(want, name), @field(got, name));
             }
         },
         else => try std.testing.expectEqual(want, got),

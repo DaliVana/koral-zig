@@ -5,7 +5,7 @@ general-relativistic radiation-magnetohydrodynamics (GR-RMHD) code. This port
 focuses on the PUFFY radiation-supported torus around a 10 M☉ Schwarzschild black
 hole from Lančová et al. (2019).
 
-![Zig 0.16.0](https://img.shields.io/badge/Zig-0.16.0-f7a41d)
+![Zig 0.17.0](https://img.shields.io/badge/Zig-0.17.0-f7a41d)
 ![status](https://img.shields.io/badge/status-2D%20%26%203D%20validated-brightgreen)
 ![license](https://img.shields.io/badge/license-GPLv3-blue)
 
@@ -34,40 +34,41 @@ code, understanding its structure, and checking the physics.
 
 ## Quick start
 
-### 1. Install Zig 0.16.0
+### 1. Install Zig 0.17.0
 
-koral-zig requires **exactly Zig 0.16.0** (it uses the 0.16 `std.Io` API; earlier
-releases will not compile it). Pick one:
+koral-zig requires **Zig 0.17.0** (`build.zig.zon` pins that minimum). It uses
+0.17-only builtins (`@splat` into arrays, `@backingInt`) and the 0.17 build
+system, so Zig 0.16 and earlier will not compile it. Pick one:
 
 **Official binary.** This is the safest way to pin the required version.
-Download the `0.16.0` archive for your OS/arch from
+Download the `0.17.0` archive for your OS/arch from
 **[ziglang.org/download](https://ziglang.org/download/)**, unpack it, and put the
 folder on your `PATH`. For example, on Apple Silicon macOS:
 
 ```sh
 # grab the exact filename shown on the download page for your platform
-curl -LO https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz
-tar xf zig-aarch64-macos-0.16.0.tar.xz
-export PATH="$PWD/zig-aarch64-macos-0.16.0:$PATH"   # add to your shell profile to persist
+curl -LO https://ziglang.org/download/0.17.0/zig-aarch64-macos-0.17.0.tar.xz
+tar xf zig-aarch64-macos-0.17.0.tar.xz
+export PATH="$PWD/zig-aarch64-macos-0.17.0:$PATH"   # add to your shell profile to persist
 ```
 
-Linux (`zig-x86_64-linux-0.16.0.tar.xz`) and Windows (`zig-x86_64-windows-0.16.0.zip`)
+Linux (`zig-x86_64-linux-0.17.0.tar.xz`) and Windows (`zig-x86_64-windows-0.17.0.zip`)
 work the same way.
 
 **Version manager.** Use this if you switch between Zig versions:
 
 ```sh
 # zvm, https://github.com/tristanisham/zvm
-zvm install 0.16.0 && zvm use 0.16.0
+zvm install 0.17.0 && zvm use 0.17.0
 ```
 
 **Package manager.** A command such as `brew install zig` works only when the
-package is Zig 0.16.0.
+package is Zig 0.17.0.
 
 Verify:
 
 ```sh
-zig version      # must print 0.16.0
+zig version      # must print 0.17.0
 ```
 
 ### 2. Get the code

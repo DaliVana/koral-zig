@@ -39,7 +39,7 @@ pub const Pass = enum {
     entropy, // update_entropy
 };
 
-pub const n_passes = @typeInfo(Pass).@"enum".fields.len;
+pub const n_passes = @typeInfo(Pass).@"enum".field_names.len;
 
 /// Monotonic wall clock in nanoseconds. Linux goes through the syscall
 /// wrapper (no libc needed); everywhere else through std.c; fine on
@@ -79,19 +79,19 @@ pub const PassTimers = struct {
 
     fn beginAt(self: *PassTimers, pass: Pass, now: u64) void {
         if (self.depth > 0) {
-            self.ns[@intFromEnum(self.stack[self.depth - 1])] += now - self.mark;
+            self.ns[@backingInt(self.stack[self.depth - 1])] += now - self.mark;
         }
         std.debug.assert(self.depth < self.stack.len);
         self.stack[self.depth] = pass;
         self.depth += 1;
-        self.calls[@intFromEnum(pass)] += 1;
+        self.calls[@backingInt(pass)] += 1;
         self.mark = now;
     }
 
     fn endAt(self: *PassTimers, now: u64) void {
         std.debug.assert(self.depth > 0);
         self.depth -= 1;
-        self.ns[@intFromEnum(self.stack[self.depth])] += now - self.mark;
+        self.ns[@backingInt(self.stack[self.depth])] += now - self.mark;
         self.mark = now;
     }
 
@@ -107,7 +107,7 @@ pub const PassTimers = struct {
     /// `.step` self-time remainder last as "(other)".
     pub fn printReport(self: *const PassTimers) void {
         std.debug.assert(self.depth == 0);
-        const steps = self.calls[@intFromEnum(Pass.step)];
+        const steps = self.calls[@backingInt(Pass.step)];
         if (steps == 0) return;
         const fsteps: f64 = @floatFromInt(steps);
 
@@ -123,7 +123,7 @@ pub const PassTimers = struct {
         for (1..n_passes + 1) |k| {
             const i = k % n_passes;
             if (self.calls[i] == 0) continue;
-            const name = if (i == 0) "(other)" else @tagName(@as(Pass, @enumFromInt(i)));
+            const name = if (i == 0) "(other)" else @tagName(@as(Pass, @fromBackingInt(@intCast(i))));
             const p_ns: f64 = @floatFromInt(self.ns[i]);
             std.debug.print(
                 "  {s:<10} {d:8.2} ms/step {d:5.1}%  x{d:.1}/step\n",
@@ -149,26 +149,26 @@ test "self-time attribution across nested passes" {
     t.beginAt(.stage, 175); // step self += 5
     t.endAt(195); // stage self += 20
     t.endAt(200); // step self += 5
-    try std.testing.expectEqual(@as(u64, 20), t.ns[@intFromEnum(Pass.step)]);
-    try std.testing.expectEqual(@as(u64, 30), t.ns[@intFromEnum(Pass.u2p)]);
-    try std.testing.expectEqual(@as(u64, 30), t.ns[@intFromEnum(Pass.fixup)]);
-    try std.testing.expectEqual(@as(u64, 20), t.ns[@intFromEnum(Pass.stage)]);
+    try std.testing.expectEqual(@as(u64, 20), t.ns[@backingInt(Pass.step)]);
+    try std.testing.expectEqual(@as(u64, 30), t.ns[@backingInt(Pass.u2p)]);
+    try std.testing.expectEqual(@as(u64, 30), t.ns[@backingInt(Pass.fixup)]);
+    try std.testing.expectEqual(@as(u64, 20), t.ns[@backingInt(Pass.stage)]);
     // buckets sum exactly to the step wall time
     var total: u64 = 0;
     for (t.ns) |v| total += v;
     try std.testing.expectEqual(@as(u64, 100), total);
-    try std.testing.expectEqual(@as(u64, 1), t.calls[@intFromEnum(Pass.step)]);
-    try std.testing.expectEqual(@as(u64, 1), t.calls[@intFromEnum(Pass.u2p)]);
+    try std.testing.expectEqual(@as(u64, 1), t.calls[@backingInt(Pass.step)]);
+    try std.testing.expectEqual(@as(u64, 1), t.calls[@backingInt(Pass.u2p)]);
     try std.testing.expectEqual(@as(usize, 0), t.depth);
 
     // a second step accumulates on top; reset() zeroes
     t.beginAt(.step, 300);
     t.endAt(340);
-    try std.testing.expectEqual(@as(u64, 60), t.ns[@intFromEnum(Pass.step)]);
-    try std.testing.expectEqual(@as(u64, 2), t.calls[@intFromEnum(Pass.step)]);
+    try std.testing.expectEqual(@as(u64, 60), t.ns[@backingInt(Pass.step)]);
+    try std.testing.expectEqual(@as(u64, 2), t.calls[@backingInt(Pass.step)]);
     t.reset();
-    try std.testing.expectEqual(@as(u64, 0), t.ns[@intFromEnum(Pass.step)]);
-    try std.testing.expectEqual(@as(u64, 0), t.calls[@intFromEnum(Pass.u2p)]);
+    try std.testing.expectEqual(@as(u64, 0), t.ns[@backingInt(Pass.step)]);
+    try std.testing.expectEqual(@as(u64, 0), t.calls[@backingInt(Pass.u2p)]);
 }
 
 test "top-level passes outside a step count standalone" {
@@ -179,8 +179,8 @@ test "top-level passes outside a step count standalone" {
     t.endAt(1100);
     t.beginAt(.wavespeeds, 5000); // 3900 ns gap at depth 0 — uncounted
     t.endAt(5500);
-    try std.testing.expectEqual(@as(u64, 100), t.ns[@intFromEnum(Pass.bc)]);
-    try std.testing.expectEqual(@as(u64, 500), t.ns[@intFromEnum(Pass.wavespeeds)]);
+    try std.testing.expectEqual(@as(u64, 100), t.ns[@backingInt(Pass.bc)]);
+    try std.testing.expectEqual(@as(u64, 500), t.ns[@backingInt(Pass.wavespeeds)]);
     var total: u64 = 0;
     for (t.ns) |v| total += v;
     try std.testing.expectEqual(@as(u64, 600), total);

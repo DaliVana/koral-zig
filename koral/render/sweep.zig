@@ -122,7 +122,7 @@ pub const Stats = struct {
 
 const EnterSlow = struct {
     r_slow: f64,
-    pub inline fn pause(self: EnterSlow, _: *const render.Scene, _: *const render.RayState, r: f64) bool {
+    pub fn pause(self: EnterSlow, _: *const render.Scene, _: *const render.RayState, r: f64) bool {
         return r < self.r_slow;
     }
 };
@@ -130,14 +130,14 @@ const EnterSlow = struct {
 const SweepPause = struct {
     r_slow: f64,
     t_lo: f64,
-    pub inline fn pause(self: SweepPause, _: *const render.Scene, st: *const render.RayState, r: f64) bool {
+    pub fn pause(self: SweepPause, _: *const render.Scene, st: *const render.RayState, r: f64) bool {
         return st.x[0] < self.t_lo or r > self.r_slow;
     }
 };
 
 const ExitSlow = struct {
     r_slow: f64,
-    pub inline fn pause(self: ExitSlow, _: *const render.Scene, _: *const render.RayState, r: f64) bool {
+    pub fn pause(self: ExitSlow, _: *const render.Scene, _: *const render.RayState, r: f64) bool {
         return r > self.r_slow;
     }
 };

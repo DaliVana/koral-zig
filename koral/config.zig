@@ -100,7 +100,7 @@ pub const Config = struct {
             // Modules must appear in the canonical (C) order.
             var last: ?usize = null;
             for (self.modules) |m| {
-                const ord = @intFromEnum(m);
+                const ord = @backingInt(m);
                 if (last) |l| {
                     if (ord <= l) @compileError(
                         "koral.Config: modules must be listed in canonical order " ++

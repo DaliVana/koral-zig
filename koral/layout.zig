@@ -66,7 +66,7 @@ pub fn VarLayout(comptime cfg: Config) type {
         var relel0: ?usize = null;
         for (cfg.modules) |m| {
             for (moduleTags(cfg, m)) |t| {
-                offsets[@intFromEnum(t)] = n;
+                offsets[@backingInt(t)] = n;
                 tags_buf = tags_buf ++ &[_]VarTag{t};
                 n += 1;
             }
@@ -88,13 +88,13 @@ pub fn VarLayout(comptime cfg: Config) type {
         /// Comptime index lookup: `index(.b1)` == C's B1. Compile error if the
         /// active module set does not provide the variable.
         pub fn index(comptime tag: VarTag) usize {
-            return comptime built.offsets[@intFromEnum(tag)] orelse
+            return comptime built.offsets[@backingInt(tag)] orelse
                 @compileError("variable ." ++ @tagName(tag) ++ " is not present in this Config");
         }
 
         /// True if the active module set carries this variable.
         pub fn hasVar(comptime tag: VarTag) bool {
-            return comptime built.offsets[@intFromEnum(tag)] != null;
+            return comptime built.offsets[@backingInt(tag)] != null;
         }
 
         /// Index of nonthermal electron bin i (C: NEREL(i)).
