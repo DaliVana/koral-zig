@@ -107,7 +107,7 @@ pub const Grid = struct {
     /// MetricCache.cellIndex, and the per-cell flag index all route through
     /// here so an AoSoA relayout has one place to change. `inline`: hit
     /// O(cells × passes)/step; no FP → golden-safe.
-    pub inline fn cellIndex(g: Grid, ix: i64, iy: i64, iz: i64) usize {
+    pub fn cellIndex(g: Grid, ix: i64, iy: i64, iz: i64) usize {
         const jx: usize = @intCast(ix + @as(i64, @intCast(g.ngx)));
         const jy: usize = @intCast(iy + @as(i64, @intCast(g.ngy)));
         const jz: usize = @intCast(iz + @as(i64, @intCast(g.ngz)));
@@ -124,24 +124,24 @@ pub const Grid = struct {
     // O(cells × passes)/step in the sweep and metric loops; `inline` so
     // Debug/ReleaseSafe do not pay a call per access. No FP change → golden-safe
     // (P2 #10).
-    pub inline fn xc(g: Grid, ix: i64) f64 {
+    pub fn xc(g: Grid, ix: i64) f64 {
         return 0.5 * (g.xl(ix) + g.xl(ix + 1));
     }
-    pub inline fn yc(g: Grid, iy: i64) f64 {
+    pub fn yc(g: Grid, iy: i64) f64 {
         return 0.5 * (g.yl(iy) + g.yl(iy + 1));
     }
-    pub inline fn zc(g: Grid, iz: i64) f64 {
+    pub fn zc(g: Grid, iz: i64) f64 {
         return 0.5 * (g.zl(iz) + g.zl(iz + 1));
     }
 
     /// Left-face internal coordinate of cell ix (C: get_xb).
-    pub inline fn xl(g: Grid, ix: i64) f64 {
+    pub fn xl(g: Grid, ix: i64) f64 {
         return g.minx + @as(f64, @floatFromInt(ix)) * g.dx;
     }
-    pub inline fn yl(g: Grid, iy: i64) f64 {
+    pub fn yl(g: Grid, iy: i64) f64 {
         return g.miny + @as(f64, @floatFromInt(iy)) * g.dy;
     }
-    pub inline fn zl(g: Grid, iz: i64) f64 {
+    pub fn zl(g: Grid, iz: i64) f64 {
         return g.minz + @as(f64, @floatFromInt(iz + g.izoff)) * g.dz;
     }
 
@@ -149,7 +149,7 @@ pub const Grid = struct {
     /// (finite.c:2457). For irrational bounds this can differ from the
     /// nominal spacing by an ulp *per cell*, and the C evolution uses this
     /// per-cell value everywhere, so step-level diffing requires it.
-    pub inline fn cellSize(g: Grid, i: i64, dim: usize) f64 {
+    pub fn cellSize(g: Grid, i: i64, dim: usize) f64 {
         return switch (dim) {
             0 => g.xl(i + 1) - g.xl(i),
             1 => g.yl(i + 1) - g.yl(i),

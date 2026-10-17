@@ -45,7 +45,7 @@ pub const WindowSampler = struct {
     n_below: u64 = 0,
     n_above: u64 = 0,
 
-    pub inline fn sample(self: *WindowSampler, comptime c: config.Config, s: *const render.Scene, x: [4]f64, pp: *[layout.VarLayout(c).count]f64) bool {
+    pub fn sample(self: *WindowSampler, comptime c: config.Config, s: *const render.Scene, x: [4]f64, pp: *[layout.VarLayout(c).count]f64) bool {
         const L = layout.VarLayout(c);
         // degenerate window (single frame): plain snapshot sampling
         if (self.lo == self.hi or !(self.t_hi > self.t_lo))

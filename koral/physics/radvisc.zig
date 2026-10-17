@@ -151,7 +151,7 @@ pub const ViscCoeffIn = struct {
 
 /// C: calc_rad_visccoeff (rad.c:4508) with RADVISCMFPSPH + RADVISCNUDAMP;
 /// the pure limiter chain.
-pub inline fn viscCoeff(in: ViscCoeffIn) f64 {
+pub fn viscCoeff(in: ViscCoeffIn) f64 {
     var mfp = 1.0 / in.chi;
 
     // RADVISCMFPSPH: mfp capped by the spherical (BL) radius, killed inside
@@ -174,7 +174,7 @@ pub inline fn viscCoeff(in: ViscCoeffIn) f64 {
 
 /// C: calc_Rij_visc (rad.c:4670); R^ij_visc = −2 ν Ê σ^ij (σ^ij both
 /// indices raised), returned lowered to R^i_j (indices_2221).
-pub inline fn rijVisc(nu: f64, erad: f64, shear: *const [4][4]f64, geom: *const Geometry) [4][4]f64 {
+pub fn rijVisc(nu: f64, erad: f64, shear: *const [4][4]f64, geom: *const Geometry) [4][4]f64 {
     var rvisc: [4][4]f64 = undefined;
     for (0..4) |i| {
         for (0..4) |j| {

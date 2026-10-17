@@ -121,7 +121,7 @@ pub const DumpData = struct {
         d.* = undefined;
     }
 
-    pub inline fn cell(d: *const DumpData, ix: usize, iy: usize, iz: usize) []const f64 {
+    pub fn cell(d: *const DumpData, ix: usize, iy: usize, iz: usize) []const f64 {
         const nv = d.header.nv;
         const idx = ((iz * d.header.ny + iy) * d.header.nx + ix) * nv;
         return d.body[idx..][0..nv];
@@ -258,7 +258,7 @@ pub fn geomFromCoordData(x: [4]f64, cd: *const metric.CoordData) Geometry {
     };
 }
 
-inline fn dotg(gcov: [4][4]f64, u: [4]f64, v: [4]f64) f64 {
+fn dotg(gcov: [4][4]f64, u: [4]f64, v: [4]f64) f64 {
     var s: f64 = 0;
     for (0..4) |i| {
         for (0..4) |j| s += gcov[i][j] * u[i] * v[j];
@@ -530,7 +530,7 @@ pub const n_orders = 4;
 /// file-name / column suffixes of the buckets, in order
 pub const order_names = [n_orders][]const u8{ "n0", "n1", "n2", "n3p" };
 
-pub inline fn orderBucket(ncross: u32) usize {
+pub fn orderBucket(ncross: u32) usize {
     return @min(ncross, n_orders - 1);
 }
 
@@ -742,14 +742,14 @@ pub fn orderSplit(st: *const RayState, opts: TraceOpts) [n_orders]f64 {
 
 /// Never pause: run the ray to a terminal status (the fast-light behavior).
 pub const NeverPause = struct {
-    pub inline fn pause(_: NeverPause, _: *const Scene, _: *const RayState, _: f64) bool {
+    pub fn pause(_: NeverPause, _: *const Scene, _: *const RayState, _: f64) bool {
         return false;
     }
 };
 
 /// The fast-light sampler: the Scene's single snapshot, no time axis.
 pub const SnapshotSampler = struct {
-    pub inline fn sample(_: SnapshotSampler, comptime c: config.Config, s: *const Scene, x: [4]f64, pp: *[layout.VarLayout(c).count]f64) bool {
+    pub fn sample(_: SnapshotSampler, comptime c: config.Config, s: *const Scene, x: [4]f64, pp: *[layout.VarLayout(c).count]f64) bool {
         return sampleData(c, &s.grid, s.data, x, pp);
     }
 };

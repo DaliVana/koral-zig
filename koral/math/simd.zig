@@ -17,7 +17,7 @@
 const std = @import("std");
 
 /// Number of lanes (1 for the scalar instantiation).
-pub inline fn lanes(comptime T: type) comptime_int {
+pub fn lanes(comptime T: type) comptime_int {
     return if (T == f64) 1 else @typeInfo(T).vector.len;
 }
 
@@ -27,23 +27,23 @@ pub fn Mask(comptime T: type) type {
 }
 
 /// Broadcast a scalar to all lanes (identity for T == f64).
-pub inline fn splat(comptime T: type, x: anytype) T {
+pub fn splat(comptime T: type, x: anytype) T {
     return if (comptime T == f64) x else @splat(x);
 }
 
 /// `if (cond) a else b`, per lane. Both sides are evaluated at the call
 /// site: use only where the discarded side is side-effect-free.
-pub inline fn select(comptime T: type, cond: Mask(T), a: T, b: T) T {
+pub fn select(comptime T: type, cond: Mask(T), a: T, b: T) T {
     return if (comptime T == f64) (if (cond) a else b) else @select(f64, cond, a, b);
 }
 
 /// std.math.isFinite per lane (|x| < inf: false for NaN and ±inf).
-pub inline fn isFinite(comptime T: type, x: T) Mask(T) {
+pub fn isFinite(comptime T: type, x: T) Mask(T) {
     return @abs(x) < splat(T, std.math.inf(f64));
 }
 
 /// std.math.pow(f64, x, y) per lane (y uniform across lanes).
-pub inline fn pow(comptime T: type, x: T, y: f64) T {
+pub fn pow(comptime T: type, x: T, y: f64) T {
     if (comptime T == f64) return std.math.pow(f64, x, y);
     var r: T = undefined;
     inline for (0..lanes(T)) |k| r[k] = std.math.pow(f64, x[k], y);
@@ -51,7 +51,7 @@ pub inline fn pow(comptime T: type, x: T, y: f64) T {
 }
 
 /// std.math.cbrt per lane.
-pub inline fn cbrt(comptime T: type, x: T) T {
+pub fn cbrt(comptime T: type, x: T) T {
     if (comptime T == f64) return std.math.cbrt(x);
     var r: T = undefined;
     inline for (0..lanes(T)) |k| r[k] = std.math.cbrt(x[k]);
@@ -59,7 +59,7 @@ pub inline fn cbrt(comptime T: type, x: T) T {
 }
 
 /// std.math.log1p per lane.
-pub inline fn log1p(comptime T: type, x: T) T {
+pub fn log1p(comptime T: type, x: T) T {
     if (comptime T == f64) return std.math.log1p(x);
     var r: T = undefined;
     inline for (0..lanes(T)) |k| r[k] = std.math.log1p(x[k]);
@@ -68,7 +68,7 @@ pub inline fn log1p(comptime T: type, x: T) T {
 
 /// @log per lane (kept per-lane rather than the vector builtin so the
 /// libm dispatch is literally the scalar one).
-pub inline fn log(comptime T: type, x: T) T {
+pub fn log(comptime T: type, x: T) T {
     if (comptime T == f64) return @log(x);
     var r: T = undefined;
     inline for (0..lanes(T)) |k| r[k] = @log(x[k]);
@@ -76,7 +76,7 @@ pub inline fn log(comptime T: type, x: T) T {
 }
 
 /// @exp per lane (same rationale as `log`).
-pub inline fn exp(comptime T: type, x: T) T {
+pub fn exp(comptime T: type, x: T) T {
     if (comptime T == f64) return @exp(x);
     var r: T = undefined;
     inline for (0..lanes(T)) |k| r[k] = @exp(x[k]);

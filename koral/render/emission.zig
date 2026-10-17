@@ -134,7 +134,7 @@ pub fn besselK0(x: f64) f64 {
 }
 
 /// A&S 9.8.6 polynomial in u = 2/x: e^x √x K₀(x) for x ≥ 2.
-inline fn k0AsymPoly(u: f64) f64 {
+fn k0AsymPoly(u: f64) f64 {
     return 1.25331414 + u * (-0.07832358 + u * (0.02189568 + u * (-0.01062446 + u * (0.00587872 + u * (-0.00251540 + u * 0.00053208)))));
 }
 

@@ -288,7 +288,7 @@ pub fn planRays(
     return .{ .specs = specs, .marked = marked, .vacuum_rays = nprobe };
 }
 
-inline fn pixelCorners(corners: []const Corner, w: usize, px: usize, py: usize) [4]Corner {
+fn pixelCorners(corners: []const Corner, w: usize, px: usize, py: usize) [4]Corner {
     return .{
         corners[py * (w + 1) + px],
         corners[py * (w + 1) + px + 1],

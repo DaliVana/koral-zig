@@ -219,7 +219,7 @@ pub fn Sim(comptime cfg: config.Config) type {
         pub fn nzi(self: *const Self) i64 {
             return self.core.nzi();
         }
-        pub inline fn getFlag(self: *const Self, f: Flag, ix: i64, iy: i64, iz: i64) i32 {
+        pub fn getFlag(self: *const Self, f: Flag, ix: i64, iy: i64, iz: i64) i32 {
             return self.core.getFlag(f, ix, iy, iz);
         }
         pub fn isPhysicalBoundary(self: *const Self, face: BcFace) bool {

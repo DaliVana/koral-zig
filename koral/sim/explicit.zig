@@ -230,7 +230,7 @@ fn sweepBand(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize, c0_lo: i
 
 /// The ±2 sweep-direction cell sizes at slot i (C: get_size_x). Function
 /// of (i,dim) only, so it lifts out of the cross loops.
-inline fn dx5At(comptime CoreT: type, self: *const CoreT, comptime dim: usize, i: i64) [5]f64 {
+fn dx5At(comptime CoreT: type, self: *const CoreT, comptime dim: usize, i: i64) [5]f64 {
     return .{
         self.grid.cellSize(i - 2, dim),
         self.grid.cellSize(i - 1, dim),
@@ -244,7 +244,7 @@ inline fn dx5At(comptime CoreT: type, self: *const CoreT, comptime dim: usize, i
 /// at (i along dim, c0=cross[0], c1=cross[1]); dx5 is the sweep-direction
 /// stencil spacing. `inline` so the body stays fused into sweepBand's
 /// loops (Debug too). All writes land in this cell's own face slots.
-inline fn sweepFace(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize, i: i64, c0: i64, c1: i64, dx5: [5]f64) Error!void {
+fn sweepFace(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize, i: i64, c0: i64, c1: i64, dx5: [5]f64) Error!void {
     const self = c.core;
     const cfg = CoreT.Cfg;
     const L = CoreT.Layout;
@@ -405,7 +405,7 @@ fn fluxesBand(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize, c0_lo: 
 /// Combine the one-sided fluxes at the single face (i along dim,
 /// c0=cross[0], c1=cross[1]) into flb[dim] via LAXF/HLL. `inline` to stay
 /// fused into fluxesBand's loops; writes only this face's own flb slot.
-inline fn fluxFace(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize, i: i64, c0: i64, c1: i64) Error!void {
+fn fluxFace(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize, i: i64, c0: i64, c1: i64) Error!void {
     const self = c.core;
     const cfg = CoreT.Cfg;
     const L = CoreT.Layout;

@@ -109,7 +109,7 @@ pub fn gdetAt(coords: Coords, mp: MetricParams, x: [4]f64) f64 {
 }
 
 /// ∂_m g_ab from the dual derivatives (∂_t = 0).
-inline fn dpart(g: [4][4]Dual3, a: usize, b: usize, m: usize) f64 {
+fn dpart(g: [4][4]Dual3, a: usize, b: usize, m: usize) f64 {
     return if (m == 0) 0.0 else g[a][b].d[m - 1];
 }
 

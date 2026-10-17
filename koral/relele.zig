@@ -65,15 +65,15 @@ pub const Error = error{
     NanInFlux,
 };
 
-pub inline fn dot(a: [4]f64, b: [4]f64) f64 {
+pub fn dot(a: [4]f64, b: [4]f64) f64 {
     return dotG(f64, a, b);
 }
 
-pub inline fn dotG(comptime T: type, a: [4]T, b: [4]T) T {
+pub fn dotG(comptime T: type, a: [4]T, b: [4]T) T {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
 }
 
-pub inline fn kron(i: usize, j: usize) f64 {
+pub fn kron(i: usize, j: usize) f64 {
     return if (i == j) 1.0 else 0.0;
 }
 

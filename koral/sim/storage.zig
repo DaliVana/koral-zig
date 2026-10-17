@@ -109,7 +109,7 @@ pub fn FaceStore(comptime NV: usize) type {
         // `inline` on these leaf accessors: called O(NV × faces × passes)/step
         // on the hot path; Debug/ReleaseSafe do not inline otherwise. No FP
         // change → golden-safe (P2 #10).
-        inline fn offset(self: *const Self, ix: i64, iy: i64, iz: i64) usize {
+        fn offset(self: *const Self, ix: i64, iy: i64, iz: i64) usize {
             const jx: usize = @intCast(ix + self.ngx);
             const jy: usize = @intCast(iy + self.ngy);
             const jz: usize = @intCast(iz + self.ngz);
@@ -117,17 +117,17 @@ pub fn FaceStore(comptime NV: usize) type {
             return ((jz * self.ny_s + jy) * self.nx_s + jx) * NV;
         }
 
-        pub inline fn get(self: *const Self, iv: usize, ix: i64, iy: i64, iz: i64) f64 {
+        pub fn get(self: *const Self, iv: usize, ix: i64, iy: i64, iz: i64) f64 {
             return self.data[self.offset(ix, iy, iz) + iv];
         }
-        pub inline fn set(self: *Self, iv: usize, ix: i64, iy: i64, iz: i64, v: f64) void {
+        pub fn set(self: *Self, iv: usize, ix: i64, iy: i64, iz: i64, v: f64) void {
             self.data[self.offset(ix, iy, iz) + iv] = v;
         }
-        pub inline fn load(self: *const Self, ix: i64, iy: i64, iz: i64, out: *[NV]f64) void {
+        pub fn load(self: *const Self, ix: i64, iy: i64, iz: i64, out: *[NV]f64) void {
             const off = self.offset(ix, iy, iz);
             @memcpy(out, self.data[off..][0..NV]);
         }
-        pub inline fn store(self: *Self, ix: i64, iy: i64, iz: i64, pp: *const [NV]f64) void {
+        pub fn store(self: *Self, ix: i64, iy: i64, iz: i64, pp: *const [NV]f64) void {
             const off = self.offset(ix, iy, iz);
             @memcpy(self.data[off..][0..NV], pp);
         }
