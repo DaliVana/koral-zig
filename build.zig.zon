@@ -2,7 +2,7 @@
     .name = .koral,
     .version = "0.0.1",
     .fingerprint = 0x24129dbf897076e5,
-    .minimum_zig_version = "0.17.0-dev.2384+ac77c23af",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // The Silo (.silo) export wrapper: builds LLNL Silo 4.12 from source
         // (PDB driver, no HDF5) and exposes a `silo` module. Marked lazy so a

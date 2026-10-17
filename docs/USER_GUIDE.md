@@ -26,8 +26,7 @@ Read `ARCHITECTURE.md` for control flow and `PHYSICS.md` for the equations.
 
 ### To build and run problems
 
-- **Zig 0.17** (`0.17.0-dev.2384+ac77c23af` or newer; until 0.17.0 is tagged
-  this is the `master` dev toolchain). The code uses the `std.Io` API (e.g.
+- **Zig 0.17.0.** The code uses the `std.Io` API (e.g.
   `std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(1 << 20))` in
   `koral/params.zig`), the `pub fn main(init: std.process.Init) !void` entry
   signature, and 0.17-only builtins/reflection. Older Zig releases will not
