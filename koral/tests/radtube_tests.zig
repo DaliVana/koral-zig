@@ -30,6 +30,7 @@
 //! is excluded. See the note in the slow set.
 
 const std = @import("std");
+const figdata = @import("../testing/figdata.zig");
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const grid_mod = @import("../grid.zig");
@@ -89,7 +90,7 @@ const Metrics = struct {
     ode: f64, // L1(∂x R^{xν} + G^ν) / L1(G^ν)
 };
 
-fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64) !Metrics {
+fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64, fig: *figdata.Table) !Metrics {
     // choices.h's default UURHORATIOMAX = 1e2 would chop the Γ = 2 tubes'
     // downstream u/ρ ≈ 290 — the tubes need wide hydro ratio floors
     var floors = invert.FloorParams.cdefault;
@@ -141,6 +142,32 @@ fn runTube(a: std.mem.Allocator, tube: *const tubes.Tube, nx: usize, t_end: f64)
 
     tp = s.t + 0.05 * t_end;
     while (s.t < tp and steps < 80000) : (steps += 1) try s.step(0.2 / s.core.tstepdenmax);
+
+    // figure data: the stationary profile, radiation moments in the gas frame
+    fig.block("tube {s} nx {d}", .{ tube.name, nx });
+    fig.meta("states", "left rho {e} p {e} ux {e} E {e}; right rho {e} p {e} ux {e} E {e}", .{
+        tube.left.rho,  tube.left.p,  tube.left.ux,  tube.left.erad,
+        tube.right.rho, tube.right.p, tube.right.ux, tube.right.erad,
+    });
+    ix = 0;
+    while (ix < s.nxi()) : (ix += 1) {
+        var pp: [NV]f64 = undefined;
+        s.core.p.load(ix, 0, 0, &pp);
+        // 1D Minkowski: relative Lorentz factor G of the radiation frame in
+        // the gas frame, Ehat = Ebar (4 G^2 - 1) / 3, Fhat = (4/3) Ebar G^2 beta_rel
+        const ug = pp[L.index(.vx)];
+        const ur = pp[L.index(.fx)];
+        const gg = @sqrt(1.0 + ug * ug);
+        const gr = @sqrt(1.0 + ur * ur);
+        const grel = gg * gr - ug * ur;
+        const ubrel = gg * ur - gr * ug; // gamma beta of the radiation frame seen by the gas
+        const ebar = pp[L.index(.ee)];
+        fig.row(&.{
+            g.xc(ix),                      pp[L.index(.rho)],
+            (tube.gam - 1.0) * pp[L.index(.uu)], ug,
+            ebar * (4.0 * grel * grel - 1.0) / 3.0, 4.0 / 3.0 * ebar * grel * ubrel,
+        });
+    }
 
     // per-variable scales for normalization
     var scale: [NV]f64 = @splat(1e-30);
@@ -327,8 +354,12 @@ test "radiative shock tube battery (tubes 3a, 4a)" {
     // Run both tubes first, assert at the end — a failed 3a gate must not
     // hide 4a (the more expensive tube, and the only default-suite
     // ODE-residual gate). Mirrors the slow set below.
-    const m3a = try runTube(a, &tubes.tubes[2], 192, 60.0);
-    const m4a = try runTube(a, &tubes.tubes[4], 128, 300.0);
+    var fig = figdata.Table.init("k13_radtubes_fast");
+    defer fig.finish();
+    fig.meta("source", "Sadowski et al. 2013, section 4.3, Figures 3-7 (Farris et al. 2008 radiative shock tubes), stationary state", .{});
+    fig.meta("columns", "x rho p u^x Ehat Fhat   (radiation moments in the gas frame)", .{});
+    const m3a = try runTube(a, &tubes.tubes[2], 192, 60.0, &fig);
+    const m4a = try runTube(a, &tubes.tubes[4], 128, 300.0, &fig);
 
     var ok = true;
     // tube 3a: highly relativistic wave (γ ≈ 10). "Smooth" analytically,
@@ -373,6 +404,10 @@ test "radiative shock tube battery, slow set (tubes 1, 2, 3b, 4b, hi-res)" {
         flux: f64,
         ode: f64, // 0 = not gated
     };
+    var fig = figdata.Table.init("k13_radtubes_slow");
+    defer fig.finish();
+    fig.meta("source", "Sadowski et al. 2013, section 4.3, Figures 3-7 (Farris et al. 2008 radiative shock tubes), stationary state", .{});
+    fig.meta("columns", "x rho p u^x Ehat Fhat   (radiation moments in the gas frame)", .{});
     const cases = [_]Case{
         // tube 2: contact residue of the rounded right state flushes at
         // v ≈ 0.08; the fx precursor foot still deepens slowly at t = 700
@@ -404,7 +439,7 @@ test "radiative shock tube battery, slow set (tubes 1, 2, 3b, 4b, hi-res)" {
 
     var ms: [cases.len]Metrics = undefined;
     for (&cases, 0..) |*c, i| {
-        ms[i] = try runTube(a, &tubes.tubes[c.tube], c.nx, c.t_end);
+        ms[i] = try runTube(a, &tubes.tubes[c.tube], c.nx, c.t_end, &fig);
     }
     var ok = true;
     for (&cases, 0..) |*c, i| {

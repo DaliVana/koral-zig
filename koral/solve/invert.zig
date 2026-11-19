@@ -71,6 +71,14 @@ pub const FloorParams = struct {
     /// flow outside. Set by the problem to x1(r_horizon) (monotone r ⇒ a
     /// coordinate-local compare); −inf (default) keeps the branch dead.
     horizon_x1: f64 = -std.math.inf(f64),
+    /// C: U2PCONV, the relative-residual exit of the 1-D Newton inversion.
+    /// The residual is normalized by W ~ rho h gamma^2, and the solver starts
+    /// from the previous step's primitives, so a state that moved by less
+    /// than this per step is returned UNCHANGED. Invisible in production
+    /// (1e-10 of the enthalpy), but it is a noise floor for linear-wave
+    /// tests whose whole signal is a 1e-6 perturbation advanced in steps of
+    /// 1e-2 of a period (paper2014_waves_tests.zig). Default = C's value.
+    u2pconv: f64 = u2pconv,
 
     /// The bare choices.h defaults (what a define.h without floor overrides
     /// gets); used by the M5/M6 oracle problems, whose define.h sets only
@@ -240,6 +248,19 @@ pub fn u2pSolverW(
     etype: Etype,
     pgamma: f64,
 ) i32 {
+    return u2pSolverWConv(cfg, uu, pp, geom, etype, pgamma, u2pconv);
+}
+
+/// `u2pSolverW` with an explicit Newton exit tolerance (FloorParams.u2pconv).
+pub fn u2pSolverWConv(
+    comptime cfg: config.Config,
+    uu: [layout.VarLayout(cfg).count]f64,
+    pp: *[layout.VarLayout(cfg).count]f64,
+    geom: *const Geometry,
+    etype: Etype,
+    pgamma: f64,
+    conv: f64,
+) i32 {
     const L = layout.VarLayout(cfg);
     const gg = &geom.gg;
     const gdetu_inv = 1.0 / geom.gdet; // GDETIN == 1
@@ -308,7 +329,6 @@ pub fn u2pSolverW(
     // dropped. Keep the 7-slot shape to match C's conserved vector; 0 is never
     // observed (P2 #7).
     const cons = [7]f64{ Qn, Qt2, D, QdotBsq, Bsq, Sc, 0 };
-    const conv = u2pconv;
 
     // make sure the initial W gives v² < 1
     var i_increase: usize = 0;
@@ -443,12 +463,12 @@ pub fn u2pMhd(
         ret = -2;
     }
 
-    var u2pret = u2pSolverW(cfg, uu, &ppmhd, geom, .hot, pgamma);
+    var u2pret = u2pSolverWConv(cfg, uu, &ppmhd, geom, .hot, pgamma, floors.u2pconv);
 
     if (u2pret < 0) { // ALLOWENTROPYU2P == 1
         ret = -1;
         entropy_used = true;
-        u2pret = u2pSolverW(cfg, uu, &ppmhd, geom, .entropy, pgamma);
+        u2pret = u2pSolverWConv(cfg, uu, &ppmhd, geom, .entropy, pgamma, floors.u2pconv);
         if (u2pret < 0) ret = -2;
     }
 
@@ -675,8 +695,8 @@ pub fn checkFloorsMhd(
                     var uu = uu_entry;
                     for (0..nmhd) |iv| uu[iv] += duu[iv];
 
-                    var rettemp = u2pSolverW(cfg, uu, pp, geom, .hot, pgamma);
-                    if (rettemp < 0) rettemp = u2pSolverW(cfg, uu, pp, geom, .entropy, pgamma);
+                    var rettemp = u2pSolverWConv(cfg, uu, pp, geom, .hot, pgamma, floors.u2pconv);
+                    if (rettemp < 0) rettemp = u2pSolverWConv(cfg, uu, pp, geom, .entropy, pgamma, floors.u2pconv);
                     if (rettemp < 0) {
                         // fluid-frame backup, isentropic (pp[UU] *= f, not fuu)
                         pp.* = pporg;

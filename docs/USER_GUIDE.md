@@ -112,6 +112,7 @@ before using either AGN-oriented preset.
 | `-Doptimize=Debug\|ReleaseSafe\|ReleaseFast\|ReleaseSmall` | Standard Zig optimize mode. Debug builds enable the many `std.debug.assert` bounds checks in `Field.cellOffset` etc. |
 | `-Dtarget=...` | Standard Zig cross-compile target. |
 | `-Dmpi=true` | Link the system MPI and swap the comm seam to the real backend (`koral/comm/mpi/`). `build.zig` probes `mpicc` for the lib dirs and detects the ABI family (MPICH vs Open MPI) from `mpi.h`; overrides: `-Dmpi-family=mpich\|ompi`, `-Dmpi-lib=<dir>`, `-Dmpi-include=<dir>`. See "Running under MPI" below. |
+| `-Dfig-dir=<dir>` | Make the reproduction tests dump the data behind the paper figures into `<dir>` (relative to the repo root), for `tools/paperfig.py`. See "Paper figures" in §5. |
 | `-Dsilo=true` | Build the optional `.silo` field export (`koral/io/silo.zig`, §4). The build compiles LLNL Silo 4.12 from source with the PDB driver and no HDF5, then links it statically through `silo-zig`. A system Silo or VisIt installation is not required. The dependency remains untouched without this flag. |
 | `-Dslow-tests=true` | Enables the slow test bodies (convergence studies, soaks, the full-grid PUFFY t=0 keystone, the t = 10 repeat of the KS Bondi gates). See §5. |
 | `-Dtest-filter=<substr>` | Passed to `addTest` `.filters`; restrict the single test artifact to tests whose name contains the substring. Repeatable. |
@@ -545,6 +546,49 @@ The tests do not claim direct reproduction of results that require unavailable
 features or inputs: MP5, the Eddington-closure comparison, the removed original
 problem directories, or numerical data behind the published figures.
 
+The rest of the KORAL 2013 and 2014 test suites has one file per problem. Each
+file's header states the setup, what the paper leaves open, what was measured,
+and what does not reproduce.
+
+| File | Paper section | Status |
+|---|---|---|
+| `paper2013_pulse_tests.zig` | 2013 §4.4, thin 3D pulse (and the thick one above) | reproduced |
+| `paper2013_shadow_tests.zig` | 2013 §4.5, single-beam shadow | reproduced against `exp(-tau)`; the two-beam variant is unstable here and has no test |
+| `paper2013_atmosphere_tests.zig` | 2013 §4.6, static atmosphere | 1e-4 at short times; per-cent drift over the paper's run time |
+| `paper2013_beam_tests.zig` | 2013 §4.7, light beam near a black hole | reproduced against photon geodesics |
+| `paper2013_radbondi_tests.zig` | 2013 §4.8, radiative Bondi | harness only: not a reproduction on affordable grids |
+| `paper2014_waves_tests.zig` | 2014 §4.1, nine radiation-modified linear waves | reproduced, second order |
+| `paper2014_magtubes_tests.zig` | 2014 §4.2, Ryu & Jones tubes 2a and 5a | reproduced against the MHD jump conditions |
+| `paper2014_orszag_tests.zig` | 2014 §4.3, Orszag-Tang vortex | exact symmetries and conservation at 256² |
+
+Most of these are behind `-Dslow-tests`, and are meant to be run in a release
+build: `zig build test -Doptimize=ReleaseFast -Dslow-tests -Dtest-filter="Sadowski"`.
+
+### Paper figures
+
+The tests assert; `-Dfig-dir` makes them also write the numbers they asserted
+on, and `tools/paperfig.py` draws them (the `goldtest` / `goldfig.py` pattern
+of the renderer, applied to the test suite):
+
+```sh
+zig build test -Doptimize=ReleaseFast -Dslow-tests -Dfig-dir=dumps/figdata
+python3 tools/paperfig.py dumps/figdata --out docs/figures   # needs numpy + matplotlib
+```
+
+Each test that owns a figure builds a `figdata.Table` (`koral/testing/figdata.zig`)
+and writes `DIR/<name>.dat`: `# key = value` header lines, `# block = <label>`
+separators, and whitespace-separated rows. Without `-Dfig-dir` every call is a
+no-op. With it, the test step is never served from the build cache, and a few
+convergence tests run one or two extra resolutions so the plot has more than
+two points. `paperfig.py` makes one figure per test problem (`fig_<name>.png`
+and `.pdf`), skips those whose dump is missing and says which, and takes
+`--only NAME ...` to redraw a subset. A default (non-slow) run writes only the
+`*_fast` dumps, enough for the shock tube, thick pulse, radiative tubes 3a/4a,
+waves at 16-64 cells, magnetic tubes, short atmosphere, Bondi and Alfvén figures.
+
+To give a new test a figure: dump in the test, add a `fig_<name>` function to
+`tools/paperfig.py`, and register it in its `FIGURES` table.
+
 ### Reading the results
 
 `zig build test` compiles *one* test artifact from `koral/koral.zig`'s `test {}`
@@ -590,7 +634,10 @@ data:
   `radiation_tests.zig`, `opacity_tests.zig`, `implicit_tests.zig`,
   `state_tests.zig`, `flux_tests.zig`, `polaraxis_tests.zig`,
   `radstep_tests.zig`, `radtube_tests.zig`, `paper2013_hydro_tests.zig`,
-  `paper2013_pulse_tests.zig`, `dynamo_tests.zig`,
+  `paper2013_pulse_tests.zig`, `paper2013_shadow_tests.zig`,
+  `paper2013_atmosphere_tests.zig`, `paper2013_beam_tests.zig`,
+  `paper2013_radbondi_tests.zig`, `paper2014_waves_tests.zig`,
+  `paper2014_magtubes_tests.zig`, `paper2014_orszag_tests.zig`, `dynamo_tests.zig`,
   `radvisc_tests.zig`, `scalars_tests.zig`, `threading_tests.zig`,
   `puffy_tests.zig`, `sim_tests.zig` (`Sim.init` validation and initializer invariants),
   `restart_tests.zig` (KDMP round-trip), `simd_tests.zig` (scalar ↔ SIMD
@@ -616,8 +663,9 @@ state bit-for-bit, force C's recorded dt sequence, diff the whole domain each st
   `-Dslow-tests`), `visc_golden_tests.zig`, `dynamo_golden_tests.zig`.
 
 Support files: `koral/testing/golden.zig` (`Golden`/`Kstp`/`Kini`/`DevTracker`
-readers) and `koral/testing/tubes.zig` (the Farris/Sadowski radiative shock-tube
-battery + the paper→KORAL unit bridge).
+readers), `koral/testing/tubes.zig` (the Farris/Sadowski radiative shock-tube
+battery + the paper→KORAL unit bridge) and `koral/testing/figdata.zig` (the
+figure-data dumps behind `-Dfig-dir`).
 
 > **Expected non-zero floors.** Some goldens gate at `1e-8` because C's MKS2
 > metric exports mix truncated `Pi` with exact π. The

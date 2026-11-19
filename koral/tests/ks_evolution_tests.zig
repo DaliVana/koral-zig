@@ -27,6 +27,7 @@
 //!    (corner averaging of a θ-only A_φ, center √−g = r² sin θ).
 
 const std = @import("std");
+const figdata = @import("../testing/figdata.zig");
 const config = @import("../config.zig");
 const grid_mod = @import("../grid.zig");
 const sim_mod = @import("../sim.zig");
@@ -290,11 +291,23 @@ fn Harness(comptime cfg: config.Config) type {
 /// Default-suite run length; the slow set repeats at t = 10 (the 1D gate's).
 const tend_fast: f64 = 3.0;
 
-fn gateHydro(tend: f64) !void {
+fn gateHydro(tend: f64, comptime figname: []const u8) !void {
     const a = std.testing.allocator;
     const H = Harness(cfg_hd);
     const c = try H.run(a, 32, 16, tend, null);
     const f = try H.run(a, 64, 32, tend, null);
+    {
+        var fig = figdata.Table.init(figname);
+        defer fig.finish();
+        fig.meta("source", "2D axisymmetric Michel accretion through the polar axis, Kerr-Schild, t = {d}", .{tend});
+        fig.meta("columns", "NX L1(rho drift) max theta non-uniformity", .{});
+        fig.row(&.{ 32, c.drift, c.theta_nonuni });
+        fig.row(&.{ 64, f.drift, f.theta_nonuni });
+        if (figdata.enabled()) {
+            const x = try H.run(a, 128, 64, tend, null);
+            fig.row(&.{ 128, x.drift, x.theta_nonuni });
+        }
+    }
     const order = std.math.log2(c.drift / f.drift);
     std.debug.print("bondi2d t={d}: drift 32x16 {e:.3} 64x32 {e:.3} order {d:.2}; theta-nonuni {e:.3} {e:.3}\n", .{ tend, c.drift, f.drift, order, c.theta_nonuni, f.theta_nonuni });
     try expect(f.drift < 2e-2);
@@ -305,14 +318,26 @@ fn gateHydro(tend: f64) !void {
 }
 
 test "KS 2D: axisymmetric Bondi/Michel through the polar axis is stationary, θ-uniform to roundoff, ~2nd order" {
-    try gateHydro(tend_fast);
+    try gateHydro(tend_fast, "bondi_2d_fast");
 }
 
-fn gateMhd(tend: f64) !void {
+fn gateMhd(tend: f64, comptime figname: []const u8) !void {
     const a = std.testing.allocator;
     const H = Harness(cfg_mhd);
     const c = try H.run(a, 32, 16, tend, 10.0);
     const f = try H.run(a, 64, 32, tend, 10.0);
+    {
+        var fig = figdata.Table.init(figname);
+        defer fig.finish();
+        fig.meta("source", "magnetised Bondi (split monopole, beta = 10 at the sonic point), Kerr-Schild, t = {d}", .{tend});
+        fig.meta("columns", "NX L1(rho drift) max|dB^r/B^r| max(B^theta,B^phi)/B^r divB_initial divB_final", .{});
+        fig.row(&.{ 32, c.drift, c.db_r, c.db_t, c.divb0, c.divb1 });
+        fig.row(&.{ 64, f.drift, f.db_r, f.db_t, f.divb0, f.divb1 });
+        if (figdata.enabled()) {
+            const x = try H.run(a, 128, 64, tend, 10.0);
+            fig.row(&.{ 128, x.drift, x.db_r, x.db_t, x.divb0, x.divb1 });
+        }
+    }
     const order = std.math.log2(c.drift / f.drift);
     std.debug.print("magbondi t={d}: drift 32x16 {e:.3} 64x32 {e:.3} order {d:.2}; dB^r {e:.3} {e:.3}; B^t,B^p/B^r {e:.3} {e:.3}; mono {e:.3}; divB {e:.3}->{e:.3}\n", .{ tend, c.drift, f.drift, order, c.db_r, f.db_r, c.db_t, f.db_t, f.mono_err, f.divb0, f.divb1 });
     // discrete curl of A_φ = B0 (1 − cos θ) is an exact monopole
@@ -330,11 +355,11 @@ fn gateMhd(tend: f64) !void {
 }
 
 test "KS 2D: magnetized Bondi (split monopole) — exact monopole, divB machine zero, flow and B stationary to truncation" {
-    try gateMhd(tend_fast);
+    try gateMhd(tend_fast, "bondi_mag_fast");
 }
 
 test "KS 2D slow: both gates at t = 10" {
     if (!@import("build_options").slow_tests) return error.SkipZigTest;
-    try gateHydro(10.0);
-    try gateMhd(10.0);
+    try gateHydro(10.0, "bondi_2d");
+    try gateMhd(10.0, "bondi_mag");
 }

@@ -14,6 +14,7 @@
 //! monopole in ks_evolution_tests.zig.
 
 const std = @import("std");
+const figdata = @import("../testing/figdata.zig");
 const config = @import("../config.zig");
 const grid_mod = @import("../grid.zig");
 const sim_mod = @import("../sim.zig");
@@ -322,6 +323,19 @@ test "M6: CP Alfvén wave — phase order ≥ 1.9, amplitude preserved" {
     const r32 = try runAlfven(a, 32);
     const r64 = try runAlfven(a, 64);
     const r128 = try runAlfven(a, 128);
+    {
+        var fig = figdata.Table.init("alfven_wave");
+        defer fig.finish();
+        fig.meta("source", "circularly polarised Alfven wave (Del Zanna et al. 2007), one period", .{});
+        fig.meta("columns", "NX |phase error| amplitude/exact", .{});
+        fig.row(&.{ 32, @abs(r32.phase), r32.amp_ratio });
+        fig.row(&.{ 64, @abs(r64.phase), r64.amp_ratio });
+        fig.row(&.{ 128, @abs(r128.phase), r128.amp_ratio });
+        if (figdata.enabled()) {
+            const r256 = try runAlfven(a, 256);
+            fig.row(&.{ 256, @abs(r256.phase), r256.amp_ratio });
+        }
+    }
     const p1 = std.math.log2(@abs(r32.phase) / @abs(r64.phase));
     const p2 = std.math.log2(@abs(r64.phase) / @abs(r128.phase));
     std.debug.print("alfven phase: {e:.3} {e:.3} {e:.3}; orders {d:.2} {d:.2}; amp {d:.4} {d:.4} {d:.4}\n", .{ r32.phase, r64.phase, r128.phase, p1, p2, r32.amp_ratio, r64.amp_ratio, r128.amp_ratio });

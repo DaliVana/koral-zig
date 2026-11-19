@@ -14,6 +14,7 @@
 //! The C diff of the same pipeline is golden_puffy_test.zig (keystone).
 
 const std = @import("std");
+const figdata = @import("../testing/figdata.zig");
 const build_options = @import("build_options");
 const config = @import("../config.zig");
 const grid_mod = @import("../grid.zig");
@@ -539,7 +540,7 @@ fn torusDrift(s: *SimH, p0: []const f64) f64 {
     return num / den;
 }
 
-fn runHydroTorus(a: std.mem.Allocator, n: usize, t_end: f64) !f64 {
+fn runHydroTorus(a: std.mem.Allocator, n: usize, t_end: f64, fig: *figdata.Table) !f64 {
     var s = try SimH.init(a, puffy.makeGrid(n, n), .{
         .phys = .{ .coords = .mks2, .mp = puffy.mp, .gam = puffy.lt.gamma },
         .num = .{ .polaraxis = .{ .ncells = 2 } },
@@ -568,14 +569,36 @@ fn runHydroTorus(a: std.mem.Allocator, n: usize, t_end: f64) !f64 {
     var steps: usize = 0;
     while (s.t < t_end and steps < 20000) : (steps += 1) try s.step(null);
     const drift = torusDrift(&s, p0);
+    fig.block("map {d}x{d} t = {d}", .{ n, n, s.t });
+    fig.meta("shape", "{d} {d}", .{ n, n });
+    {
+        var iy: i64 = 0;
+        while (iy < s.nyi()) : (iy += 1) {
+            var ix: i64 = 0;
+            while (ix < s.nxi()) : (ix += 1) {
+                const gbl = puffy.fillGeometryBL(&s.core.grid, .mks2, ix, iy, 0);
+                const idx: usize = @intCast((iy * s.nxi() + ix) * SimH.nv + @as(i64, @intCast(LH.index(.rho))));
+                fig.row(&.{ gbl.xxvec[1], gbl.xxvec[2], p0[idx], s.core.p.get(LH.index(.rho), ix, iy, 0) });
+            }
+        }
+    }
     std.debug.print("hydro torus {d}x{d}: t={d:.2} steps={d} L1 rho drift={e:.4}\n", .{ n, n, s.t, steps, drift });
     return drift;
 }
 
 test "puffy hydro limotorus: stationary, drift converges with resolution" {
     const a = std.testing.allocator;
-    const d40 = try runHydroTorus(a, 40, 10.0);
-    const d80 = try runHydroTorus(a, 80, 10.0);
+    var fig = figdata.Table.init("torus_hydro");
+    defer fig.finish();
+    fig.meta("source", "hydro-only equilibrium torus (the PUFFY limotorus at Gamma = 4/3) on the MKS2 grid, t = 10; cf. Sadowski et al. 2013 section 4.2", .{});
+    fig.meta("columns", "map blocks: r theta rho_initial rho(t); convergence block: N L1(rho drift)", .{});
+    const d40 = try runHydroTorus(a, 40, 10.0, &fig);
+    const d80 = try runHydroTorus(a, 80, 10.0, &fig);
+    if (figdata.enabled()) {
+        const d160 = try runHydroTorus(a, 160, 10.0, &fig);
+        fig.block("convergence", .{});
+        for ([_][2]f64{ .{ 40, d40 }, .{ 80, d80 }, .{ 160, d160 } }) |r| fig.row(&r);
+    }
     const order = std.math.log2(d40 / d80);
     std.debug.print("hydro torus drift order: {d:.2}\n", .{order});
     // measured: 8.1e-5 @ 40², 1.85e-5 @ 80² → order 2.13

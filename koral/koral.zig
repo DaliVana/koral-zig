@@ -194,6 +194,7 @@ test {
     _ = problems.common.bcs;
     _ = problems.common.perturb;
     _ = @import("testing/tubes.zig");
+    _ = @import("testing/figdata.zig");
 
     // theory gates — koral/tests/
     _ = @import("tests/dynamo_tests.zig");
@@ -205,8 +206,15 @@ test {
     _ = @import("tests/mhd_evolution_tests.zig");
     _ = @import("tests/mpi_abi_tests.zig");
     _ = @import("tests/opacity_tests.zig");
+    _ = @import("tests/paper2013_atmosphere_tests.zig");
+    _ = @import("tests/paper2013_beam_tests.zig");
     _ = @import("tests/paper2013_hydro_tests.zig");
     _ = @import("tests/paper2013_pulse_tests.zig");
+    _ = @import("tests/paper2013_radbondi_tests.zig");
+    _ = @import("tests/paper2013_shadow_tests.zig");
+    _ = @import("tests/paper2014_magtubes_tests.zig");
+    _ = @import("tests/paper2014_orszag_tests.zig");
+    _ = @import("tests/paper2014_waves_tests.zig");
     _ = @import("tests/polaraxis_tests.zig");
     _ = @import("tests/puffy_tests.zig");
     _ = @import("tests/radiation_tests.zig");

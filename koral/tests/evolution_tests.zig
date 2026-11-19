@@ -14,6 +14,7 @@
 //! solver for the 2D (full-θ, polar band) and magnetized variants.
 
 const std = @import("std");
+const figdata = @import("../testing/figdata.zig");
 const config = @import("../config.zig");
 const layout = @import("../layout.zig");
 const grid_mod = @import("../grid.zig");
@@ -685,7 +686,7 @@ const BondiCtx = struct {
     }
 };
 
-fn runBondi(a: std.mem.Allocator, nx: usize, tend: f64) !f64 {
+fn runBondi(a: std.mem.Allocator, nx: usize, tend: f64, fig: *figdata.Table) !f64 {
     const g = Grid.init(.{
         .nx = nx,
         .ng = 3,
@@ -722,18 +723,32 @@ fn runBondi(a: std.mem.Allocator, nx: usize, tend: f64) !f64 {
 
     var l1: f64 = 0;
     var norm: f64 = 0;
+    fig.block("profile N = {d}", .{nx});
     ix = 0;
     while (ix < s.nxi()) : (ix += 1) {
         l1 += @abs(s.core.p.get(L.index(.rho), ix, 0, 0) - rho0[@intCast(ix)]);
         norm += @abs(rho0[@intCast(ix)]);
+        // columns: r, rho(t_end), rho exact (the Michel solution = initial state)
+        fig.row(&.{ s.core.grid.xc(ix), s.core.p.get(L.index(.rho), ix, 0, 0), rho0[@intCast(ix)] });
     }
     return l1 / norm;
 }
 
 test "M5: Bondi/Michel accretion is stationary (KS), drift ~2nd order in N" {
     const a = std.testing.allocator;
-    const d32 = try runBondi(a, 32, 10.0);
-    const d64 = try runBondi(a, 64, 10.0);
+    var fig = figdata.Table.init("bondi_1d");
+    defer fig.finish();
+    fig.meta("source", "Michel (1972) transonic accretion in Kerr-Schild, r in [1.5, 20], sonic radius 8, t = 10", .{});
+    fig.meta("columns", "profile blocks: r rho rho_exact; convergence block: N L1(rho drift)", .{});
+    const d32 = try runBondi(a, 32, 10.0, &fig);
+    const d64 = try runBondi(a, 64, 10.0, &fig);
+    if (figdata.enabled()) {
+        // two more points for the convergence plot
+        const d128 = try runBondi(a, 128, 10.0, &fig);
+        const d256 = try runBondi(a, 256, 10.0, &fig);
+        fig.block("convergence", .{});
+        for ([_][2]f64{ .{ 32, d32 }, .{ 64, d64 }, .{ 128, d128 }, .{ 256, d256 } }) |r| fig.row(&r);
+    }
     const order = std.math.log2(d32 / d64);
     std.debug.print("bondi drift: N=32 {e:.3} N=64 {e:.3} order {d:.2}\n", .{ d32, d64, order });
     // drift is dominated by the near-horizon cells (r∈[1.5,2], u^r>1, ~2

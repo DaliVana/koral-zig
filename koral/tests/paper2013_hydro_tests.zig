@@ -7,6 +7,7 @@
 //! test deliberately covers only the two like-for-like linear runs.
 
 const std = @import("std");
+const figdata = @import("../testing/figdata.zig");
 const config = @import("../config.zig");
 const grid_mod = @import("../grid.zig");
 const sim_mod = @import("../sim.zig");
@@ -147,7 +148,7 @@ const Result = struct {
     shock_error_cells: f64,
 };
 
-fn run(theta: f64) !Result {
+fn run(theta: f64, fig: *figdata.Table) !Result {
     const nx = 500;
     const t_end: f64 = 50.0;
     const grid = Grid.init(.{ .nx = nx, .ng = 2, .minx = -50.0, .maxx = 50.0 });
@@ -174,6 +175,7 @@ fn run(theta: f64) !Result {
     }
 
     const exact = Exact.init(left, right);
+    fig.block("theta = {d}", .{theta});
     var density_l1: f64 = 0.0;
     var velocity_l1: f64 = 0.0;
     var steepest: f64 = 0.0;
@@ -187,6 +189,11 @@ fn run(theta: f64) !Result {
         const exact_lorentz = 1.0 / @sqrt(1.0 - ex.v * ex.v);
         density_l1 += @abs(density - ex.rho * exact_lorentz);
         velocity_l1 += @abs(ux / lorentz - ex.v);
+        fig.row(&.{
+            grid.xc(ix),                                                density, ux / lorentz,
+            (gam - 1.0) * sim.core.p.get(L.index(.uu), ix, 0, 0),       ex.rho * exact_lorentz,
+            ex.v,                                                       ex.p,
+        });
 
         if (ix + 1 < sim.nxi() and grid.xc(ix) > exact.vstar * t_end) {
             const ux_next = sim.core.p.get(L.index(.vx), ix + 1, 0, 0);
@@ -207,8 +214,12 @@ fn run(theta: f64) !Result {
 }
 
 test "Sadowski 2013 section 4.1: 500-cell relativistic shock matches Figure 1" {
-    const theta1 = try run(1.0);
-    const theta2 = try run(2.0);
+    var fig = figdata.Table.init("k13_shocktube");
+    defer fig.finish();
+    fig.meta("source", "Sadowski et al. 2013, section 4.1, Figure 1; t = 50, 500 cells", .{});
+    fig.meta("columns", "x D v p D_exact v_exact p_exact   (D = rho u^t)", .{});
+    const theta1 = try run(1.0, &fig);
+    const theta2 = try run(2.0, &fig);
     std.debug.print(
         "paper 2013 hydro: theta=1 D-L1={e:.3} v-L1={e:.3}; theta=2 D-L1={e:.3} v-L1={e:.3}; shock errors={d:.2}/{d:.2} cells\n",
         .{ theta1.density_l1, theta1.velocity_l1, theta2.density_l1, theta2.velocity_l1, theta1.shock_error_cells, theta2.shock_error_cells },

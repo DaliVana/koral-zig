@@ -133,6 +133,11 @@ pub fn build(b: *std.Build) !void {
     const mpi_include_opt = b.option([]const u8, "mpi-include", "directory containing mpi.h — family detection only, never compiled against");
     const mpi_cfg: ?MpiConfig = if (use_mpi) try probeMpi(b, mpi_family_opt, mpi_lib_opt, mpi_include_opt) else null;
     const slow_tests = b.option(bool, "slow-tests", "run slow tests (convergence studies, soaks)") orelse false;
+    // `-Dfig-dir=DIR`: the reproduction tests also dump the data behind the
+    // paper figures into DIR (koral/testing/figdata.zig; plotted by
+    // tools/paperfig.py). A relative DIR is taken from the build root.
+    const fig_dir_opt = b.option([]const u8, "fig-dir", "dump paper-figure data from the tests into this directory") orelse "";
+    const fig_dir: []const u8 = if (fig_dir_opt.len == 0 or std.fs.path.isAbsolute(fig_dir_opt)) fig_dir_opt else rootPath(b, fig_dir_opt);
 
     // `-Dsilo` builds LLNL Silo 4.12 from source (PDB driver, no HDF5) via the
     // silo-zig package and links it into the problem executables so they can
@@ -160,6 +165,7 @@ pub fn build(b: *std.Build) !void {
     build_opts.addOption(bool, "mpi", use_mpi);
     build_opts.addOption([]const u8, "mpi_family", if (mpi_cfg) |mc| mc.family else "");
     build_opts.addOption(bool, "slow_tests", slow_tests);
+    build_opts.addOption([]const u8, "fig_dir", fig_dir);
     build_opts.addOption(bool, "silo", enable_silo);
     build_opts.addOption([]const u8, "golden_dir", rootPath(b, "tests/golden"));
     // Zig-generated regression baselines (tests/selfgolden), kept in a separate
@@ -185,6 +191,8 @@ pub fn build(b: *std.Build) !void {
     ) orelse &.{};
     const koral_tests = b.addTest(.{ .root_module = koral, .filters = test_filters });
     const run_koral_tests = b.addRunArtifact(koral_tests);
+    // the dumps are the point of a -Dfig-dir run: never serve it from cache
+    if (fig_dir.len > 0) run_koral_tests.has_side_effects = true;
     const test_step = b.step("test", "run koral library tests");
     test_step.dependOn(&run_koral_tests.step);
 

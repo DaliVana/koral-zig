@@ -250,7 +250,7 @@ fn checkStepGolden(a: std.mem.Allocator, comptime relpath: []const u8) !void {
     // Print the whole trajectory before asserting (M10 pattern) so one step's
     // failure never hides the rest.
     const vnames = [_][]const u8{ "rho", "uu", "vx", "vy", "vz", "entr", "b1", "b2", "b3", "ee", "fx", "fy", "fz" };
-    std.debug.print("golden [puffy64]: full-pipeline forced-dt step vs C\n", .{});
+    std.debug.print("golden [" ++ relpath ++ "]: full-pipeline forced-dt step vs C\n", .{});
     for (1..k.nrec) |i| std.debug.print(
         "  step {d}: max dev {e:.3} ({s})  interior {e:.3}  cells>1e-3 {d:.4}  flags {d:.5}\n",
         .{ i, per_step[i], vnames[worst_iv_step[i]], interior_step[i], over_frac[i], flag_frac[i] },
@@ -278,4 +278,95 @@ fn checkStepGolden(a: std.mem.Allocator, comptime relpath: []const u8) !void {
     }
     // startup step (tiny dt): the whole grid still tracks tightly
     try std.testing.expect(per_step[1] <= 1e-4);
+}
+
+// ---- (C) sensitivity control: Zig vs Zig with a seeded perturbation ---------
+//
+// (B) leaves a question a reader will ask: is the Zig-vs-C spread after step 1
+// (2.7e-8 → 1e-3 → 1e-1 in the worst cell) conditioning, or a port error that
+// happens to keep the flag maps intact? The control removes C from the
+// picture. Two copies of the SAME Zig code start from C's post-init state; one
+// has every non-magnetic slot scaled by 1 + eps·h, h ∈ [−1, 1] hashed per
+// slot (B is left alone so divB stays at machine zero). Both take C's dt
+// sequence. If the envelope that separates them matches the Zig-vs-C envelope
+// at eps ≈ the step-1 Zig-vs-C deviation, the C spread is what this problem
+// does to any seed of that size.
+fn seedHash(x: u64) f64 {
+    var z = x +% 0x9e3779b97f4a7c15;
+    z = (z ^ (z >> 30)) *% 0xbf58476d1ce4e5b9;
+    z = (z ^ (z >> 27)) *% 0x94d049bb133111eb;
+    z = z ^ (z >> 31);
+    return @as(f64, @floatFromInt(z >> 11)) / 9007199254740992.0 * 2.0 - 1.0;
+}
+
+fn loadSeeded(s: *SimP, k: anytype, eps: f64) !void {
+    const r0 = k.rec(0);
+    for (0..k.nz) |iz| for (0..k.ny) |iy| for (0..k.nx) |ix| {
+        for (0..k.nv) |iv| {
+            const is_b = iv >= 6 and iv <= 8;
+            const key: u64 = ((@as(u64, iz) * 4096 + iy) * 4096 + ix) * 64 + iv;
+            const f: f64 = if (is_b or eps == 0) 1.0 else 1.0 + eps * seedHash(key);
+            s.core.u.set(iv, @intCast(ix), @intCast(iy), @intCast(iz), r0.u[k.idx(iv, ix, iy, iz)] * f);
+            s.core.p.set(iv, @intCast(ix), @intCast(iy), @intCast(iz), r0.p[k.idx(iv, ix, iy, iz)] * f);
+        }
+    };
+    try s.setBc(0.0, true);
+    s.initTimestepGuess();
+}
+
+fn sensitivityControl(a: std.mem.Allocator, comptime relpath: []const u8, eps: f64) !void {
+    var k = try golden.readKstp(a, relpath);
+    defer k.deinit();
+    const g = puffy.makeGridNz(k.nx, k.ny, k.nz);
+    var sa = try SimP.init(a, g, puffyOptions());
+    defer sa.deinit();
+    var sb = try SimP.init(a, g, puffyOptions());
+    defer sb.deinit();
+    try loadSeeded(&sa, &k, 0);
+    try loadSeeded(&sb, &k, eps);
+
+    std.debug.print("control [{s}] eps {e:.1}: Zig vs seeded Zig\n", .{ relpath, eps });
+    for (1..k.nrec) |istep| {
+        const r = k.rec(istep);
+        try sa.step(r.dt);
+        try sb.step(r.dt);
+        var scale: [SimP.nv]f64 = @splat(1e-300);
+        for (0..k.nz) |iz| for (0..k.ny) |iy| for (0..k.nx) |ix| {
+            for (0..k.nv) |iv| scale[iv] = @max(scale[iv], @abs(sa.core.p.get(iv, @intCast(ix), @intCast(iy), @intCast(iz))));
+        };
+        var step_max: f64 = 0;
+        var n_over: usize = 0;
+        var n_flag: usize = 0;
+        var ncell: usize = 0;
+        for (0..k.nz) |iz| for (0..k.ny) |iy| for (0..k.nx) |ix| {
+            const zx: i64 = @intCast(ix);
+            const zy: i64 = @intCast(iy);
+            const zz: i64 = @intCast(iz);
+            ncell += 1;
+            if (sa.getFlag(.entropy, zx, zy, zz) != sb.getFlag(.entropy, zx, zy, zz) or
+                sa.getFlag(.hd_fixup, zx, zy, zz) != sb.getFlag(.hd_fixup, zx, zy, zz) or
+                sa.getFlag(.rad_fixup, zx, zy, zz) != sb.getFlag(.rad_fixup, zx, zy, zz) or
+                sa.getFlag(.radimp_fixup, zx, zy, zz) != sb.getFlag(.radimp_fixup, zx, zy, zz)) n_flag += 1;
+            var cell_max: f64 = 0;
+            for (0..k.nv) |iv| {
+                const d = @abs(sa.core.p.get(iv, zx, zy, zz) - sb.core.p.get(iv, zx, zy, zz)) / scale[iv];
+                cell_max = @max(cell_max, d);
+            }
+            step_max = @max(step_max, cell_max);
+            if (cell_max > 1e-3) n_over += 1;
+        };
+        std.debug.print("  step {d}: max dev {e:.3}  cells>1e-3 {d:.4}  flag mismatches {d}\n", .{
+            istep, step_max, @as(f64, @floatFromInt(n_over)) / @as(f64, @floatFromInt(ncell)), n_flag,
+        });
+    }
+}
+
+test "control: PUFFY 64×60 seeded Zig-vs-Zig divergence envelope" {
+    if (!build_options.slow_tests) return error.SkipZigTest;
+    for ([_]f64{ 1e-14, 1e-11, 1e-8 }) |eps| try sensitivityControl(std.testing.allocator, "step/puffy64.kstp.gz", eps);
+}
+
+test "control: PUFFY 32×30×4 seeded Zig-vs-Zig divergence envelope" {
+    if (!build_options.slow_tests) return error.SkipZigTest;
+    for ([_]f64{ 1e-14, 1e-11, 1e-8 }) |eps| try sensitivityControl(std.testing.allocator, "step/puffy3d.kstp.gz", eps);
 }
