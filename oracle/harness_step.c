@@ -115,6 +115,22 @@ int main(int argc, char **argv)
 #endif
 #endif
 
+#if (PROBLEM == 205)
+  /* calc_BfromA overwrites only the B rows of u: energy and momentum still
+   * carry the vector potential that sat in the B slots at init time. A real
+   * problem repairs that in PR_POSTINIT (PUFFY's beta normalisation ends in
+   * p2u everywhere); ZIGPOLE has no postinit, so do the same here, or the
+   * first inversion turns the stale magnetic energy into heat. */
+  for (ii = 0; ii < Nloop_0; ii++)
+  {
+    struct geometry geom;
+    ix = loop_0[ii][0]; iy = loop_0[ii][1]; iz = loop_0[ii][2];
+    fill_geometry(ix, iy, iz, &geom);
+    p2u(&get_u(p, 0, ix, iy, iz), &get_u(u, 0, ix, iy, iz), &geom);
+  }
+  set_bc(t, 1);
+#endif
+
   /* ---- solve_the_problem preamble (problem.c:59-82) ---- */
   set_gammagas(0);
   dt = -1.;

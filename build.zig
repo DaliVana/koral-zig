@@ -366,6 +366,40 @@ pub fn build(b: *std.Build) !void {
     b.step("kdmp2png", "GRRT-render a KDMP checkpoint to PNG")
         .dependOn(&run_kdmp2png.step);
 
+    // kdmp2ipole: export a KDMP snapshot as the arrays ipole's KORAL reader
+    // needs, for the GRRT code-to-code cross-check (tools/ipolecheck.py).
+    const kdmp2ipole = b.addExecutable(.{
+        .name = "kdmp2ipole",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/kdmp2ipole.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "koral", .module = koral }},
+        }),
+    });
+    b.installArtifact(kdmp2ipole);
+    const run_kdmp2ipole = b.addRunArtifact(kdmp2ipole);
+    run_kdmp2ipole.addPassthruArgs();
+    b.step("kdmp2ipole", "export a KDMP snapshot for imaging with ipole")
+        .dependOn(&run_kdmp2ipole.step);
+
+    // mhdtorus: evolve the PUFFY torus without radiation (a hot magnetised
+    // flow) and write the snapshot the ipole cross-check images.
+    const mhdtorus = b.addExecutable(.{
+        .name = "mhdtorus",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/mhdtorus.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "koral", .module = koral }},
+        }),
+    });
+    b.installArtifact(mhdtorus);
+    const run_mhdtorus = b.addRunArtifact(mhdtorus);
+    run_mhdtorus.addPassthruArgs();
+    b.step("mhdtorus", "evolve a non-radiative magnetised torus for the GRRT cross-check")
+        .dependOn(&run_mhdtorus.step);
+
     // kdmp2lc: slow-light light curve of a KDMP series — S_ν(t) + modulation
     // index (the EHT variability observable), all epochs batched into ONE
     // streaming sweep (tools/kdmp2lc.zig). Optional --frames movie PNGs.

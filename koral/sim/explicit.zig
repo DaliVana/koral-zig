@@ -24,6 +24,7 @@ const laxf_mod = @import("../fv/laxf.zig");
 const invert = @import("../solve/invert.zig");
 const p2u_mod = @import("../p2u.zig");
 const rijvisc_mod = @import("rijvisc.zig");
+const polaraxis = @import("polaraxis.zig");
 const threading = @import("../threading.zig");
 const storage = @import("storage.zig");
 const Grid = @import("../grid.zig").Grid;
@@ -265,19 +266,26 @@ fn sweepFace(comptime CoreT: type, c: *Ctx(CoreT), comptime dim: usize, i: i64, 
     var p0: [NV]f64 = undefined;
     var pp1: [NV]f64 = undefined;
     var pp2: [NV]f64 = @splat(0);
+    // The stencil rows along the sweep. Only the theta sweep next to a
+    // transmitting pole departs from i-2 .. i+2 (C: TRANSMITTING_YBC,
+    // finite.c:923-993; polaraxis.Band.stencilRows).
+    var rows = [5]i64{ i - 2, i - 1, i, i + 1, i + 2 };
+    if (comptime dim == 1) {
+        if (polaraxis.band(CoreT, self)) |b| rows = b.stencilRows(i);
+    }
     var cc = cell;
-    cc[dim] = i - 1;
+    cc[dim] = rows[1];
     self.p.load(cc[0], cc[1], cc[2], &pm1);
-    cc[dim] = i;
+    cc[dim] = rows[2];
     self.p.load(cc[0], cc[1], cc[2], &p0);
-    cc[dim] = i + 1;
+    cc[dim] = rows[3];
     self.p.load(cc[0], cc[1], cc[2], &pp1);
     // C guards the ±2 stencil with INT_ORDER>1 — with
     // linear reconstruction there are only 2 ghost cells.
     if (comptime base_order > 1) {
-        cc[dim] = i - 2;
+        cc[dim] = rows[0];
         self.p.load(cc[0], cc[1], cc[2], &pm2);
-        cc[dim] = i + 2;
+        cc[dim] = rows[4];
         self.p.load(cc[0], cc[1], cc[2], &pp2);
     }
 

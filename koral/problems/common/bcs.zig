@@ -20,6 +20,7 @@ const relele = @import("../../relele.zig");
 const frames = @import("../../frames.zig");
 const precompute = @import("../../metric/precompute.zig");
 const BcFace = @import("../../sim/bc.zig").BcFace;
+const polaraxis = @import("../../sim/polaraxis.zig");
 
 /// XBCHI outflow with r-rescaling and no-inflow (bc.c:23-121). Reads the
 /// last radial domain cell of the same (iy, iz) column.
@@ -124,4 +125,53 @@ pub fn polarReflect(comptime CoreT: type, core: *const CoreT, ix: i64, iy: i64, 
     if (comptime has_b) pp[L.index(.b2)] = -pp[L.index(.b2)];
     if (comptime has_rad) pp[L.index(.fy)] = -pp[L.index(.fy)];
     return pp;
+}
+
+/// YBC transmitting pole (C: TRANSMITTING_YBC; PROBLEMS/KATOTORUS_TILTED/
+/// bc.c:226-250 serially, mpi.c:1984-2062 between tiles). The ghost row
+/// holds the cell on the other side of the axis: the same mirrored theta
+/// index as the reflection, but half a turn away in phi, iz + NZ/2.
+///
+/// Signs. The ghost cell is used with the geometry of the near side (the
+/// metric is even in theta, so the code cannot tell the two sides apart),
+/// which means its vectors must be given in the basis of the near side.
+/// Across the axis both e_theta and e_phi point the opposite way (in the
+/// plane normal to the axis, e_theta is the outward radial direction and
+/// e_phi the tangent, and both reverse under a half turn), so the theta AND
+/// the phi components of v, B and F change sign; the radial ones and the
+/// scalars do not. Rigid rotation, v^phi = Omega on both sides, becomes
+/// -Omega in the ghost: that is the opposite linear velocity the gas on
+/// the far side really has, seen from here.
+///
+/// C's serial hook leaves the theta components unflipped while the B slots
+/// still carry a vector potential (ifinit); its MPI unpack flips all six
+/// always. This does the latter in both paths: a potential is a covector
+/// and reverses with the basis like any other, and the result then does
+/// not depend on the rank count.
+///
+/// Single-rank only: with a split phi ring the partner slab lives on
+/// another rank and `Core.exchangeHalos` delivers these rows instead
+/// (`Core.poleExchanged`), so this is never called there.
+pub fn polarTransmit(comptime CoreT: type, core: *const CoreT, ix: i64, iy: i64, iz: i64, face: BcFace) [CoreT.nv]f64 {
+    const ny: i64 = @intCast(core.grid.ny);
+    const nz: i64 = @intCast(core.grid.nz);
+    var pp: [CoreT.nv]f64 = undefined;
+    const iiy: i64 = switch (face) {
+        .ylo => -iy - 1, // upper axis
+        .yhi => ny - (iy - ny) - 1, // lower axis
+        else => unreachable,
+    };
+    const iiz = @mod(iz + @divExact(nz, 2), nz);
+    core.p.load(ix, iiy, iiz, &pp);
+    polaraxis.flipAcrossPole(CoreT, &pp);
+    return pp;
+}
+
+/// The polar-face fill a spherical problem wants: reflection, or
+/// transmission when the run asks for it (`num.polaraxis.transmitting`).
+pub fn polarAxis(comptime CoreT: type, core: *const CoreT, ix: i64, iy: i64, iz: i64, face: BcFace) [CoreT.nv]f64 {
+    if (core.num.polaraxis) |pa| {
+        if (pa.transmitting) return polarTransmit(CoreT, core, ix, iy, iz, face);
+    }
+    return polarReflect(CoreT, core, ix, iy, iz, face);
 }

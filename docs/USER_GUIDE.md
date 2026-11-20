@@ -132,10 +132,14 @@ cores per node.
 zig build puffy -Dmpi -Doptimize=ReleaseFast
 mpiexec -n 4 zig-out/bin/puffy koral/problems/puffy/puffy3d.toml
 
-# The validation ladder (gates 2-6; gate 1 is in `zig build test`)
+# The validation ladder (gates 2-7; gate 1 is in `zig build test`)
 zig build mpi-gates -Dmpi -Doptimize=ReleaseSafe
 for n in 1 2 3 4; do mpiexec -n $n zig-out/bin/mpi-gates || break; done
 ```
+
+Gate 7 covers the transmitting polar axis (`transmitting_ybc`), whose ghost rows come from
+the rank half a ring away; it runs at 1, 2 and 4 ranks and is skipped at 3, because that
+exchange needs an even ring.
 
 I/O under MPI (P4b, plan §8):
 
@@ -304,6 +308,9 @@ run without a recompile; see `docs/PUFFY_AGN_DIVERGENCES.md`)
 | `alpharadvisc`, `maxradviscvel` | Radiative-viscosity ν = α·mfp coefficient and velocity-damping threshold (`ALPHARADVISC`/`MAXRADVISCVEL`; koral_lite_puffy: 0.1/0.3). |
 | `expectedhr` | Dynamo's assumed disk H/R before `CALCHRONTHEGO` has a measurement (`EXPECTEDHR`; koral_lite_puffy: 0.7). |
 | `dampradwavespeednearaxis` | Within N cells of each pole, keep the radiative wavespeed at the undamped 1/3 (`DAMPRADWAVESPEEDNEARAXIS`; AGN: 2). |
+| `transmitting_ybc` | `true` makes the polar axis transmitting instead of reflecting (`TRANSMITTING_YBC`): the θ ghost rows hold the cells across the axis (φ + π), and C's defaults under that macro apply (one overwritten row, B overwritten too). Requires `phiwedge = 6.283185307179586`, an even `nz`, and under MPI one rank or an even number. See ARCHITECTURE §9 for what it does and does not buy. |
+| `nccorrectpolar` | Number of θ rows next to each pole overwritten from their neighbour every step (`NCCORRECTPOLAR`; built-in 2, or 1 with `transmitting_ybc`). |
+| `phiwedge` | Azimuthal extent of a 3D grid in radians, centred on φ = 0 (`PHIWEDGE`; built-in π/2). |
 | `bremsstrahlung`, `kleinnishina` | Opacity-channel toggles. |
 | `synchrotron_bridge` | Replace the Terelfactor NR suppression with the Ramesh NR bridge (`USE_SYNCHROTRON_BRIDGE_FUNCTIONS`). |
 | `scattering` | `false` disables electron scattering *and* (∝ κ_es) Comptonization, matching C's AGN problem. |
@@ -633,6 +640,8 @@ data:
 - `metric_tests.zig`, `evolution_tests.zig`, `mhd_evolution_tests.zig`,
   `radiation_tests.zig`, `opacity_tests.zig`, `implicit_tests.zig`,
   `state_tests.zig`, `flux_tests.zig`, `polaraxis_tests.zig`,
+  `transmit_tests.zig` (the transmitting polar axis piece by piece, and a density
+  column carried across the axis),
   `radstep_tests.zig`, `radtube_tests.zig`, `paper2013_hydro_tests.zig`,
   `paper2013_pulse_tests.zig`, `paper2013_shadow_tests.zig`,
   `paper2013_atmosphere_tests.zig`, `paper2013_beam_tests.zig`,

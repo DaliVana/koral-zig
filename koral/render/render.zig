@@ -844,6 +844,7 @@ pub fn advanceRay(comptime cfg: config.Config, s: *const Scene, sampler: anytype
                             .chi_es_cgs = lst.chi_es / un.masscm,
                             .dip = dip,
                             .fcol = fcol,
+                            .freefree = s.channels.bremsstrahlung,
                         });
                         jl = if (lst.masked) 0.0 else em.j;
                         chil = em.chi;

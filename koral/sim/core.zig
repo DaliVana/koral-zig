@@ -74,6 +74,10 @@ pub fn Core(comptime cfg: config.Config) type {
         /// (their ghosts come from the exchange; sim/bc.zig gates on this).
         decomp: comm_mod.Decomp,
         comm: ?*comm_mod.Backend,
+        /// Pack/unpack storage of the cross-pole exchange (`exchangePole`):
+        /// four equal segments {send lo, recv lo, send hi, recv hi}. Empty
+        /// unless the pole transmits AND the phi ring is split.
+        pole_buf: []f64,
         /// P0 per-pass wall-clock instrumentation (sim/timers.zig); always
         /// accumulating: the driver prints/resets it at its output cadence.
         timers: timers_mod.PassTimers,
@@ -148,6 +152,9 @@ pub fn Core(comptime cfg: config.Config) type {
             // Core itself lives).
             if (a.comm) |c| try c.bindExchange(self.p.data, g, NV);
             errdefer if (a.comm) |c| c.unbindExchange();
+            self.pole_buf = &.{};
+            if (self.poleExchanged()) self.pole_buf = try allocator.alloc(f64, 4 * self.poleSegLen());
+            errdefer allocator.free(self.pole_buf);
 
             // C: set_grid's min-size scan (finite.c:1946-1961), including its
             // quirk of comparing dy/dz against *mdx*.
@@ -205,6 +212,7 @@ pub fn Core(comptime cfg: config.Config) type {
 
         pub fn deinit(self: *Self) void {
             if (self.comm) |c| c.unbindExchange();
+            self.allocator.free(self.pole_buf);
             self.p.deinit();
             self.u.deinit();
             self.scal.deinit();
@@ -273,6 +281,88 @@ pub fn Core(comptime cfg: config.Config) type {
                 self.timers.begin(.halo);
                 defer self.timers.end();
                 c.exchange();
+                if (self.poleExchanged()) self.exchangePole(c);
+            }
+        }
+
+        /// Are the theta ghost rows delivered by `exchangePole` rather than
+        /// by the boundary hook? True when the pole transmits and the phi
+        /// ring is split: the cell across the axis then lives on the rank
+        /// half a ring away (C: mpi_isitBC(YBC*) == 0 under pery == 2).
+        /// sim/bc.zig reduces the y-face fill to p2u when this holds.
+        pub fn poleExchanged(self: *const Self) bool {
+            const pa = self.num.polaraxis orelse return false;
+            return pa.transmitting and self.decomp.ntz > 1;
+        }
+
+        /// One pole message: NG theta rows, domain x, the whole ghost-extended
+        /// z span of the slab.
+        fn poleSegLen(self: *const Self) usize {
+            const g = &self.grid;
+            return g.nx * g.ngy * (g.nz + 2 * g.ngz) * NV;
+        }
+
+        /// The cross-pole half of the halo exchange (C: the TRANSMITTING_YBC
+        /// branches of mpi_senddata / mpi_savedata, mpi.c:88-172 and
+        /// 1984-2062). Each rank trades its NG rows next to each pole with
+        /// the rank half a ring away and stores what it receives, mirrored
+        /// in theta and with the theta and phi components flipped
+        /// (`polaraxis.flipAcrossPole`), in its own theta
+        /// ghost rows. The partner's slab is exactly this one turned by pi,
+        /// so local (ix, iz) indices line up one to one.
+        ///
+        /// Runs after the ring exchange and ships the z-ghost planes too, so
+        /// the y-ghost x z-ghost edges get true transmitted values (C does
+        /// the same with its corner messages). Domain x only: the x-ghost
+        /// columns are the boundary pass's business. Serial loops: the
+        /// message is O(nx ng nz), a rounding error next to a sweep.
+        fn exchangePole(self: *Self, c: *comm_mod.Backend) void {
+            const g = &self.grid;
+            const nx = self.nxi();
+            const ny = self.nyi();
+            const nz = self.nzi();
+            const ng: i64 = @intCast(g.ngy);
+            const ngz: i64 = @intCast(g.ngz);
+            const seg = self.poleSegLen();
+            const send_lo = self.pole_buf[0..seg];
+            const recv_lo = self.pole_buf[seg .. 2 * seg];
+            const send_hi = self.pole_buf[2 * seg .. 3 * seg];
+            const recv_hi = self.pole_buf[3 * seg .. 4 * seg];
+
+            // pack: row j counts away from the pole on both sides
+            var k: usize = 0;
+            var iz: i64 = -ngz;
+            while (iz < nz + ngz) : (iz += 1) {
+                var j: i64 = 0;
+                while (j < ng) : (j += 1) {
+                    var ix: i64 = 0;
+                    while (ix < nx) : (ix += 1) {
+                        self.p.load(ix, j, iz, send_lo[k..][0..NV]);
+                        self.p.load(ix, ny - 1 - j, iz, send_hi[k..][0..NV]);
+                        k += NV;
+                    }
+                }
+            }
+            c.sendrecvOpposite(send_lo, recv_lo, 0);
+            c.sendrecvOpposite(send_hi, recv_hi, 1);
+
+            // unpack: ghost row -1-j (ny+j) is the partner's row j (ny-1-j)
+            k = 0;
+            iz = -ngz;
+            while (iz < nz + ngz) : (iz += 1) {
+                var j: i64 = 0;
+                while (j < ng) : (j += 1) {
+                    var ix: i64 = 0;
+                    while (ix < nx) : (ix += 1) {
+                        var pp: [NV]f64 = recv_lo[k..][0..NV].*;
+                        polaraxis.flipAcrossPole(Self, &pp);
+                        self.p.store(ix, -1 - j, iz, &pp);
+                        pp = recv_hi[k..][0..NV].*;
+                        polaraxis.flipAcrossPole(Self, &pp);
+                        self.p.store(ix, ny + j, iz, &pp);
+                        k += NV;
+                    }
+                }
             }
         }
 

@@ -1,0 +1,37 @@
+# Setup of the GRRT cross-check against ipole (docs/RENDER.md, "Snapshot
+# cross-check against ipole"). Used three times with the same file:
+#
+#   mhdtorus   puffy_ipole.toml snap.kdmp --tmax 300 --scale S   make the snapshot
+#   kdmp2png   puffy_ipole.toml snap.kdmp ... --nu 230            image it here
+#   kdmp2ipole puffy_ipole.toml snap.kdmp snap.kipl               hand it to ipole
+#
+# The snapshot is a non-radiative (hydro + MHD) evolution of a hot torus
+# (tools/mhdtorus.zig); mhdtorus takes the grid, mass, spin, seed-field
+# strength and perturbation from here.
+# The two opacity switches make the renderer image thermal synchrotron
+# emission and self-absorption only, which is what ipole computes: no
+# electron scattering and no free-free.
+problem = "puffy"
+
+[physical]
+mass = 4.297e6      # Sagittarius A*
+bhspin = 0.9375
+gam = 1.3333333333333333   # the torus' polytropic index; also T(u, rho) when imaging
+maxbeta = 0.02      # seed field: max p_mag / p_gas
+perturb = 0.02
+
+[grid]
+nx = 128
+ny = 120
+nz = 1              # axisymmetric
+rmax = 200.0
+
+[run]
+tmax = 300.0
+tsteplim = 0.5
+nthreads = 8
+out_dir = "dumps/ipole"
+
+[opacities]
+scattering = false
+bremsstrahlung = false

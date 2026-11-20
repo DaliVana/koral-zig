@@ -15,8 +15,12 @@
 #   zigmhdtube (PROBLEM 202) -> harness_step             -> step/mhdtube64.kstp
 #   zigradtube (PROBLEM 203) -> harness_step             -> step/radtube64.kstp
 #   zigradpulse (PROBLEM 204) -> harness_step            -> step/radpulse64.kstp
+#   zigpole  (PROBLEM 205) -> harness_step               -> step/pole3d.kstp.gz
 #
 # Usage: tools/gen_golden.sh            (KORAL_LITE=<path> to override)
+#        ONLY=zigpole tools/gen_golden.sh   build and run that one variant,
+#                                           leave every other golden and the
+#                                           manifest alone
 
 set -euo pipefail
 
@@ -78,6 +82,12 @@ block = """
 #define PR_KAPPA "PROBLEMS/ZIGRADPULSE/kappa.c"
 #endif
 
+#if(PROBLEM==205)
+#define PR_DEFINE "PROBLEMS/ZIGPOLE/define.h"
+#define PR_BC "PROBLEMS/ZIGPOLE/bc.c"
+#define PR_INIT "PROBLEMS/ZIGPOLE/init.c"
+#endif
+
 """
 anchor = "/*********************/\n//including problem specific definitions from PROBLEMS/XXX/define.h"
 assert anchor in text, "problem.h anchor not found"
@@ -106,6 +116,29 @@ build_harness() {
   cc -o "$name" "$name.o" $(for o in $OBJS; do echo "$o.o"; done) \
      -L"$GSL_PREFIX/lib" -lgsl -lgslcblas -lm
 }
+
+# ---- transmitting polar axis (TRANSMITTING_YBC) ----------------------------
+# ZIGPOLE: 12x12x8 MKS2 shell, full 2 pi, hydro + MHD, non-axisymmetric.
+# 6 forced-dt RK2IMEX steps through the cross-pole ghost fill, the modified
+# theta stencils, the E_phi-only EMF adjustment and CORRECTMAGNFIELD.
+build_zigpole() {
+  prepare_variant zigpole 205
+  compile_objs zigpole
+  build_harness zigpole harness_step
+  mkdir -p "$ROOT/tests/golden/step"
+  cd "$BUILD/zigpole/src"
+  ./harness_step "$ROOT/tests/golden/step" pole3d.kstp 6
+  gzip -9 -f "$ROOT/tests/golden/step/pole3d.kstp"
+}
+
+if [ "${ONLY:-}" = "zigpole" ]; then
+  build_zigpole
+  echo "== done (zigpole only; manifest untouched)"
+  exit 0
+elif [ -n "${ONLY:-}" ]; then
+  echo "ONLY=$ONLY: unknown variant" >&2
+  exit 1
+fi
 
 # ---- PUFFY (147): metric/state/flux function goldens -----------------------
 prepare_variant puffy 147
@@ -237,12 +270,14 @@ cd "$BUILD/zigpuffy3d/src"
 ./harness_puffy_step "$ROOT/tests/golden/step" puffy3d.kstp 4
 gzip -9 -f "$ROOT/tests/golden/step/puffy3d.kstp"
 
+build_zigpole
+
 echo "== writing manifest"
 SHA="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 cat > "$ROOT/tests/golden/manifest.json" <<EOF
 {
   "koral_lite_sha": "$SHA",
-  "problem": [147, 200, 201, 202, 203, 204],
+  "problem": [147, 200, 201, 202, 203, 204, 205],
   "compiler": "$(cc --version | head -1)",
   "generated": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "files": {
@@ -274,6 +309,7 @@ cat > "$ROOT/tests/golden/manifest.json" <<EOF
     "step/mhdtube64.kstp": "ZIGMHDTUBE (202): 64x1 Balsara-1 (Gamma=2), 10 steps",
     "step/radtube64.kstp": "ZIGRADTUBE (203): 64x1 Farris tube 2, grey kappa=0.2rho, PUFFY implicit block, Dirichlet BC, 10 steps (4 flags)",
     "step/radpulse64.kstp": "ZIGRADPULSE (204): 64x1 optically thick LTE pulse, grey kappa=10rho, 10 steps (4 flags)",
+    "step/pole3d.kstp.gz": "ZIGPOLE (205): 12x12x8 MKS2 shell a=0.5, full 2pi, hydro+MHD, TRANSMITTING_YBC (NCCORRECTPOLAR 1, CORRECTMAGNFIELD), 6 steps",
     "init/puffy_t0_A.kini.gz": "PUFFY (147) t=0 keystone snapshot 0: A_phi in B slots after set_bc, full 384x360 + ghosts",
     "init/puffy_t0_p.kini.gz": "PUFFY (147) t=0 keystone snapshot 1: all 13 primitives after calc_BfromA + set_bc, full grid + ghosts",
     "init/puffy_t0_pfinal.kini.gz": "PUFFY (147) t=0 keystone snapshot 2: beta-normalized B slots (domain scaled, ghosts stale)",

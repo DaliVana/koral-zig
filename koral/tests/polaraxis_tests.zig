@@ -8,6 +8,8 @@
 //!                                        and skip both floor checks
 //!   op_implicit (finite.c:1427): polar cells skipped entirely
 //!   cell_fixup (finite.c:5042): polar cells never fixup targets
+//!   adjust_fluxcttoth_emfs (magn.c:388): corner EMFs zeroed on the polar
+//!                                        faces; shell magnetic flux conserved
 //!
 //! Pure-Zig pins of the transcription; the C-diff of the whole pipeline on
 //! a spherical grid arrives with the PUFFY t=0 + step goldens (M11/M13), and
@@ -24,6 +26,9 @@ const p2u_mod = @import("../p2u.zig");
 const hydro = @import("../physics/hydro.zig");
 const radforce = @import("../physics/radforce.zig");
 const invert_rad = @import("../solve/invert_rad.zig");
+const precompute = @import("../metric/precompute.zig");
+const relele = @import("../relele.zig");
+const mhd = @import("../physics/bfield.zig");
 const implicit = @import("../solve/implicit.zig");
 
 const cfg = config.puffy;
@@ -275,4 +280,124 @@ test "polaraxis.Band: the claimed rows are exactly the overwritten rows" {
         // initSmooth varies with iy, so every claimed row genuinely moves
         try std.testing.expectEqual(b.owns(iy), !untouched);
     }
+}
+
+// ---- adjust_fluxcttoth_emfs (magn.c:388) -----------------------------------
+
+const cfg_mhd = config.Config{
+    .modules = &.{ .hydro, .mhd },
+    .reconstruction = .ppm,
+    .flux = .laxf,
+    .timestepping = .rk2imex,
+    .coords = .mks2,
+};
+
+/// Radial magnetic flux through the shell of column `ix`: the theta sum of
+/// the conserved B^r (= sqrt(-g) B^r; the cells are uniform in the internal
+/// theta coordinate).
+fn shellFlux(comptime S: type, s: *const S, ix: i64) struct { net: f64, abs: f64 } {
+    var net: f64 = 0;
+    var abs: f64 = 0;
+    var iy: i64 = 0;
+    while (iy < s.nyi()) : (iy += 1) {
+        const v = s.core.u.get(S.Layout.index(.b1), ix, iy, 0);
+        net += v;
+        abs += @abs(v);
+    }
+    return .{ .net = net, .abs = abs };
+}
+
+test "flux-CT with the polar band: no magnetic flux crosses the axis, shell flux conserved to roundoff" {
+    // The x-face flux of B^r is identically zero in flux-CT and the y-face
+    // flux is the average of two corner E_phi, so d/dt sum_theta(gdet B^r)
+    // telescopes to the E_phi on the two polar faces. adjust_fluxcttoth_emfs
+    // zeroes those: the sum is then an invariant of the scheme, whatever the
+    // flow does. Without the zeroing it is not even approximately one on an
+    // MKS2 grid: the reflected ghost row sits at a different sin(theta) than
+    // its mirror cell, the two x-face B^theta fluxes that should cancel in
+    // the corner average do not, and the residual E_phi pumps flux through
+    // the axis (the seed of the funnel runaway, see polaraxis.zeroAxisEmfs).
+    //
+    // The state is deliberately not reflection-symmetric about either pole
+    // and carries B^theta and v^theta right up to the axis.
+    const puffy = @import("../problems/puffy/puffy.zig");
+    const S = sim_mod.Sim(cfg_mhd);
+    const LM = S.Layout;
+    const a = std.testing.allocator;
+    const g = Grid.init(.{
+        .nx = 12,
+        .ny = 24,
+        .ng = 3,
+        .minx = @log(4.0 - 0.1),
+        .maxx = @log(20.0 - 0.1),
+        .miny = 0.001,
+        .maxy = 1.0 - 0.001,
+    });
+    var s = try S.init(a, g, .{
+        // the MetricParams default mksh0 = 1 is the degenerate (all-equator) map
+        .phys = .{ .coords = .mks2, .mp = .{ .a = 0.5, .mksr0 = 0.1, .mksh0 = 0.9 }, .gam = 4.0 / 3.0 },
+        .num = .{ .polaraxis = .{ .ncells = 2 } },
+        .bc = .{
+            .x = .{ .specific = .{ .f = &puffy.Bc(S).calc } },
+            .y = .{ .specific = .{ .f = &puffy.Bc(S).calc } },
+        },
+    });
+    defer s.deinit();
+
+    var iy: i64 = 0;
+    while (iy < s.nyi()) : (iy += 1) {
+        var ix: i64 = 0;
+        while (ix < s.nxi()) : (ix += 1) {
+            const geom = s.core.cache.fillGeometry(ix, iy, 0);
+            const fy: f64 = @floatFromInt(iy);
+            const fx: f64 = @floatFromInt(ix);
+            var pp: [S.nv]f64 = @splat(0);
+            pp[LM.index(.rho)] = 1.0 + 0.02 * fy + 0.01 * fx;
+            pp[LM.index(.uu)] = 0.05 + 0.001 * fy;
+            pp[LM.index(.vx)] = -0.05;
+            pp[LM.index(.vy)] = 0.004 * @sin(0.37 * fy + 0.2 * fx);
+            pp[LM.index(.vz)] = 0.01;
+            pp[LM.index(.entr)] = hydro.sFromU(pp[LM.index(.rho)], pp[LM.index(.uu)], 4.0 / 3.0);
+            // monopole-like B^r with a theta gradient, plus a B^theta
+            // that vanishes on the axis like sin(theta) and a weak
+            // toroidal part; a weak field (plasma beta > 100 throughout)
+            const gb = precompute.geometryBLat(&g, .mks2, s.core.phys.mp, ix, iy, 0);
+            const st = @sin(gb.xxvec[2]);
+            pp[LM.index(.b1)] = 0.3 * st * (1.0 + 0.3 * @cos(gb.xxvec[2])) / geom.gdet;
+            pp[LM.index(.b2)] = 0.03 * st * st * @cos(0.21 * fy) / geom.gdet;
+            pp[LM.index(.b3)] = 1.0e-4 / gb.xxvec[1];
+            try s.initCell(ix, iy, 0, pp);
+        }
+    }
+    try s.finishInit();
+
+    var before: [12]f64 = undefined;
+    for (&before, 0..) |*b, ix| b.* = shellFlux(S, &s, @intCast(ix)).net;
+
+    const b0 = s.core.u.get(LM.index(.b1), 5, 0, 0);
+    for (0..20) |_| try s.step(null);
+    const moved = @abs(s.core.u.get(LM.index(.b1), 5, 0, 0) / b0 - 1.0);
+
+    var worst: f64 = 0;
+    for (before, 0..) |b, ix| {
+        const f = shellFlux(S, &s, @intCast(ix));
+        worst = @max(worst, @abs(f.net - b) / f.abs);
+    }
+    var beta_min: f64 = 1e300;
+    iy = 0;
+    while (iy < s.nyi()) : (iy += 1) {
+        var ix: i64 = 0;
+        while (ix < s.nxi()) : (ix += 1) {
+            const geom = s.core.cache.fillGeometry(ix, iy, 0);
+            var pp: [S.nv]f64 = undefined;
+            s.core.p.load(ix, iy, 0, &pp);
+            const u = try relele.uconUcovFromPrims(.{ pp[LM.index(.vx)], pp[LM.index(.vy)], pp[LM.index(.vz)] }, &geom);
+            const bf = mhd.bconBcovBsqFrom4vel(.{ pp[LM.index(.b1)], pp[LM.index(.b2)], pp[LM.index(.b3)] }, u.con, u.cov, &geom);
+            beta_min = @min(beta_min, 2.0 * (4.0 / 3.0 - 1.0) * pp[LM.index(.uu)] / bf.bsq);
+        }
+    }
+    std.debug.print("polar-axis EMF zeroing: min plasma beta {d:.2}; shell flux drift {e:.2} after 20 steps (first-row B^r moved by {e:.2})\n", .{ beta_min, worst, moved });
+    // the field in the first row did evolve; only the shell sum is pinned
+    try std.testing.expect(moved > 1.0e-6);
+    try std.testing.expect(worst < 1.0e-13);
 }

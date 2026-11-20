@@ -1,6 +1,6 @@
 {
   "koral_lite_sha": "87d73e5",
-  "problem": [147, 200, 201, 202, 203, 204],
+  "problem": [147, 200, 201, 202, 203, 204, 205],
   "compiler": "Apple clang version 21.0.0 (clang-2100.0.123.102)",
   "generated": "2026-07-06T19:11:32Z",
   "files": {
@@ -32,6 +32,7 @@
     "step/mhdtube64.kstp": "ZIGMHDTUBE (202): 64x1 Balsara-1 (Gamma=2), 10 steps",
     "step/radtube64.kstp": "ZIGRADTUBE (203): 64x1 Farris tube 2, grey kappa=0.2rho, PUFFY implicit block, Dirichlet BC, 10 steps (4 flags)",
     "step/radpulse64.kstp": "ZIGRADPULSE (204): 64x1 optically thick LTE pulse, grey kappa=10rho, 10 steps (4 flags)",
+    "step/pole3d.kstp.gz": "ZIGPOLE (205): 12x12x8 MKS2 shell a=0.5, full 2pi, hydro+MHD, TRANSMITTING_YBC (NCCORRECTPOLAR 1, CORRECTMAGNFIELD), 6 steps",
     "init/puffy_t0_A.kini.gz": "PUFFY (147) t=0 keystone snapshot 0: A_phi in B slots after set_bc, full 384x360 + ghosts",
     "init/puffy_t0_p.kini.gz": "PUFFY (147) t=0 keystone snapshot 1: all 13 primitives after calc_BfromA + set_bc, full grid + ghosts",
     "init/puffy_t0_pfinal.kini.gz": "PUFFY (147) t=0 keystone snapshot 2: beta-normalized B slots (domain scaled, ghosts stale)",

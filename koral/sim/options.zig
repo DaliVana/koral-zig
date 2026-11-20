@@ -53,7 +53,32 @@ pub const Fixups = struct {
 /// C: CORRECT_POLARAXIS + NCCORRECTPOLAR (PUFFY define.h:107; 2). Do_correct
 /// overwrites the most-polar `ncells` rows per side and u2p/implicit/fixups
 /// skip them. Only meaningful on spherical-like coordinates.
-pub const PolarAxis = struct { ncells: i64 = 2 };
+pub const PolarAxis = struct {
+    ncells: i64 = 2,
+    /// C: TRANSMITTING_YBC. The polar faces stop being a reflecting wall:
+    /// the theta ghost rows hold the cells on the other side of the axis
+    /// (phi + pi) and gas, field and radiation cross it. Four pieces, all
+    /// keyed on this flag (sim/polaraxis.zig has the map):
+    ///   * ghost fill from iz + NZ/2 with the theta and phi components
+    ///     flipped (problems/common/bcs.zig `polarTransmit`; between ranks
+    ///     the cross-pole exchange in sim/core.zig),
+    ///   * the theta reconstruction stencils next to each pole read the
+    ///     ghost row in place of the first (overwritten) row,
+    ///   * flux-CT zeroes only E_phi on the polar faces and keeps E_r,
+    ///   * C's defaults under the macro: NCCORRECTPOLAR 1 and
+    ///     CORRECTMAGNFIELD (`transmitting_default`).
+    /// Needs the full 2 pi in phi, an even number of phi cells and, under
+    /// MPI, one rank or an even number of them (`Options.validate`).
+    transmitting: bool = false,
+    /// C: CORRECTMAGNFIELD. The polar overwrite also rewrites B in the
+    /// corrected rows (B^r, B^phi copied, B^theta scaled like v^theta).
+    /// Off in PUFFY's reflecting build; on by default under
+    /// TRANSMITTING_YBC (choices.h:273-292).
+    correct_b: bool = false,
+
+    /// What `#define TRANSMITTING_YBC` alone gives in C (choices.h:273-292).
+    pub const transmitting_default: PolarAxis = .{ .ncells = 1, .transmitting = true, .correct_b = true };
+};
 
 /// Algorithm knobs that change no generated code.
 pub const Numerics = struct {
@@ -210,6 +235,37 @@ pub fn Options(comptime CoreT: type) type {
             if (dc.ntz > 1 and self.comm == null) return error.InvalidConfig;
             if (self.comm) |c| {
                 if (c.size() != dc.ntz) return error.InvalidConfig;
+            }
+            // (7) A transmitting pole pairs every cell with the one at
+            //     phi + pi. That cell must exist and be unique: the grid
+            //     spans the full 2 pi (on a wedge the cell NZ/2 away is not
+            //     the one across the axis; C checks only the parity), NZ is
+            //     even (misc.c:300), and under MPI the partner slab is one
+            //     whole rank, ntz/2 around the ring (C: tz = TK + NTZ/2).
+            if (self.num.polaraxis) |pa| {
+                if (pa.transmitting) {
+                    const gg = dc.global;
+                    if (gg.nz < 2 or gg.nz % 2 != 0) {
+                        std.log.warn("transmitting polar axis: nz = {d}, but it needs an even number of phi cells (3D)", .{gg.nz});
+                        return error.InvalidConfig;
+                    }
+                    const two_pi = 2.0 * std.math.pi;
+                    if (@abs((gg.maxz - gg.minz) - two_pi) > 1.0e-9 * two_pi) {
+                        std.log.warn("transmitting polar axis: the grid spans {d} rad in phi, but it needs the full 2 pi (phiwedge = 6.283185307179586)", .{gg.maxz - gg.minz});
+                        return error.InvalidConfig;
+                    }
+                    if (dc.ntz > 1 and dc.ntz % 2 != 0) {
+                        std.log.warn("transmitting polar axis: {d} ranks, but the cell across the axis must sit on one rank half a ring away: use 1 or an even number", .{dc.ntz});
+                        return error.InvalidConfig;
+                    }
+                    // C forces CORRECTMAGNFIELD under TRANSMITTING_YBC
+                    // (choices.h:281-285); there is no C behaviour to port
+                    // for a transmitting pole that leaves B in the corrected
+                    // rows to flux-CT, so the combination is not offered.
+                    if (comptime L.hasVar(.b1)) {
+                        if (!pa.correct_b) return error.InvalidConfig;
+                    }
+                }
             }
         }
     };

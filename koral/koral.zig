@@ -216,6 +216,7 @@ test {
     _ = @import("tests/paper2014_orszag_tests.zig");
     _ = @import("tests/paper2014_waves_tests.zig");
     _ = @import("tests/polaraxis_tests.zig");
+    _ = @import("tests/transmit_tests.zig");
     _ = @import("tests/puffy_tests.zig");
     _ = @import("tests/radiation_tests.zig");
     _ = @import("tests/radstep_tests.zig");

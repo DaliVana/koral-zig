@@ -122,6 +122,11 @@ pub const Physics = struct {
     reduceorderatbh: bool = false,
     reduceorderafterfixup: bool = false,
     dampradwavespeednearaxis: usize = 0,
+    /// C: CORRECT_POLARAXIS / NCCORRECTPOLAR 2 (define.h:107-109), or the
+    /// transmitting pole when the params ask for it.
+    polaraxis: options.PolarAxis = .{ .ncells = 2 },
+    /// C: PHIWEDGE (define.h:174), the azimuthal extent of a 3D grid.
+    phiwedge: f64 = std.math.pi / 2.0,
 
     pub fn fromParams(p: *const params_mod.Params) Physics {
         var s = Physics{};
@@ -159,6 +164,9 @@ pub const Physics = struct {
         s.reduceorderatbh = p.reduceorderatbh orelse false;
         s.reduceorderafterfixup = p.reduceorderafterfixup orelse false;
         s.dampradwavespeednearaxis = p.dampradwavespeednearaxis orelse 0;
+        if (p.transmitting_ybc orelse false) s.polaraxis = options.PolarAxis.transmitting_default;
+        if (p.nccorrectpolar) |n| s.polaraxis.ncells = @intCast(n);
+        if (p.phiwedge) |w| s.phiwedge = w;
         return s;
     }
 
@@ -176,8 +184,10 @@ pub const Physics = struct {
             .maxx = @log(self.rmax - self.mp.mksr0),
             .miny = 0.001,
             .maxy = 1.0 - 0.001,
-            .minz = -std.math.pi / 4.0,
-            .maxz = std.math.pi / 4.0,
+            // pi/2 by default: -(pi/2)/2 is exactly the -pi/4 this used to
+            // spell out (a division by two is exact)
+            .minz = -self.phiwedge / 2.0,
+            .maxz = self.phiwedge / 2.0,
         });
     }
 
@@ -219,7 +229,7 @@ pub const Physics = struct {
                 .reduceorderatbh = self.reduceorderatbh,
                 .reduceorderafterfixup = self.reduceorderafterfixup,
                 .dampradwavespeednearaxis = self.dampradwavespeednearaxis,
-                .polaraxis = .{ .ncells = 2 },
+                .polaraxis = self.polaraxis,
             },
             .bc = .{
                 .x = .{ .specific = .{ .f = &Bc(SimT).calc } },
@@ -650,7 +660,7 @@ pub fn Bc(comptime SimT: type) type {
             return switch (face) {
                 .xhi => try bcs.outflowRescaleXhi(SimT.CoreT, core, ix, iy, iz),
                 .xlo => bcs.copyXlo(SimT.CoreT, core, iy, iz),
-                .ylo, .yhi => bcs.polarReflect(SimT.CoreT, core, ix, iy, iz, face),
+                .ylo, .yhi => bcs.polarAxis(SimT.CoreT, core, ix, iy, iz, face),
                 .zlo, .zhi => unreachable,
             };
         }

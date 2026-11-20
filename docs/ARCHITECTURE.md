@@ -968,13 +968,61 @@ values the other three decline to compute. Both halves derive their row set from
 `polaraxis.band()`, which returns null (treatment inactive) unless `num.polaraxis`
 is set *and* the coords are spherical; `Options.validate` rejects the two
 configs that would make the contract unsatisfiable. The polar-axis EMF zeroing
-(`adjust_fluxcttoth_emfs`) belongs in this module when it is transcribed, even though C
-keeps it in `magn.c`.
+(`adjust_fluxcttoth_emfs`, `polaraxis.zeroAxisEmfs`) lives in this module too, even though
+C keeps it in `magn.c`: flux-CT calls it between its EMF pass and its flux rebuild, and it
+sets E_r and E_φ to zero on the corners of the two polar faces. With it the radial magnetic
+flux through every spherical shell is conserved to roundoff; without it the reflected ghost
+row (mirrored about the first face, which is not θ = 0) leaves a residual E_φ that pumps
+flux through the axis and, in a magnetised funnel, grows a checkerboard in B from the inner
+polar corner until the b²/ρ floor runs away.
+
+**Transmitting pole** (`num.polaraxis.transmitting`, C: `TRANSMITTING_YBC`). The polar faces
+stop being a reflecting wall: each θ ghost row holds the cell on the other side of the axis,
+half a turn away in φ, so gas, field and radiation cross it. The port has five pieces, all
+keyed on the one flag:
+
+| Piece | C | Here |
+|---|---|---|
+| Ghost fill from `iz + NZ/2`, θ and φ components of v, B, F flipped | `PROBLEMS/*/bc.c`, `mpi.c` unpack | `bcs.polarTransmit`, `polaraxis.flipAcrossPole` |
+| θ stencils next to a pole read ghost row −1 in place of row 0 | `finite.c:923-993` | `polaraxis.Band.stencilRows`, used by `explicit.sweepFace` |
+| Flux-CT zeroes E_φ only on the polar faces, keeps E_r | `magn.c:424-451` | `polaraxis.zeroAxisEmfs` |
+| The overwrite also rewrites B (`CORRECTMAGNFIELD`), one row (`NCCORRECTPOLAR 1`) | `choices.h:273-292`, `finite.c:5583` | `PolarAxis.transmitting_default`, `polaraxis.overwriteCell` |
+| Between ranks the rows come from the rank half a ring away | `mpi.c` (`pery == 2`) | `Core.exchangePole`, `Mpi.sendrecvOpposite`; `setBc` then only does p2u on those rows (`Core.poleExchanged`) |
+
+The φ flip is not a typo: the ghost is used with the near side's geometry (the metric is even
+in θ), so its vectors must be in the near side's basis, and both e_θ and e_φ point the
+opposite way across the axis. `Options.validate` requires the full 2π in φ (on a wedge the
+cell `NZ/2` away is not the one across the axis; C checks only that `NZ` is even), an even
+`NZ`, `CORRECTMAGNFIELD` (C forces it), and under MPI one rank or an even ring. Two properties
+of the scheme worth knowing before relying on it:
+
+* B in the first row on each side is a copy, not a flux-CT evolved field, so the discrete
+  shell-flux invariant of the reflecting pole does not carry over (C's comment at the
+  overwrite: "div B != 0 does not propagate in"), and the polar-face EMF treatment cannot
+  reach the evolved state at all.
+* With the thin excised cone every problem uses (θ_min ≈ 0.02), the transmitting pole is not
+  measurably more accurate than the reflecting one for flow across the axis: a density
+  column carried through the axis by a uniform wind scores the same L1 error with either
+  (0.267 against 0.270 at 32 angular cells), because a reflecting axis is a needle that the
+  flow passes around through the azimuthal faces. What does cost accuracy is the number of
+  overwritten rows (two, PUFFY's default, are 30 to 40 % worse than one). C's start-up note
+  says the same from the other side: "Recommended MINY >= 0.005. Diffusion around pole
+  dominates transmission otherwise." (`tests/transmit_tests.zig`.)
+
+Verification: the ZIGPOLE oracle problem (`oracle/problems/ZIGPOLE`, a 12×12×8
+non-axisymmetric magnetised MKS2 shell built with `#define TRANSMITTING_YBC`) agrees with
+this code to 8×10⁻¹³ over six steps (`step_golden_tests.zig`, "pole3d"). Broken on purpose,
+each sign flip, the half turn (dropped, or off by one cell), the stencil substitution (all of
+it, or a single slot) and the B overwrite move the first step of that comparison from 2×10⁻¹⁴
+to between 10⁻⁷ and 0.7. The E_r exemption is the exception: it cannot be tested this way,
+for the reason given above. `mpi-gates` gate 7 checks the exchange on stamped storage and
+that a hydro run is bit-identical to serial across 2 and 4 ranks.
 
 PUFFY's `SpecificBc` callback (`Bc(SimT).calc` in `puffy.zig`, dispatching on the face to the
 fragments in `koral/problems/common/bcs.zig`) implements: xhi outflow with radial rescaling and a
 no-inflow clamp; xlo plain copy (no inflow check because `RMIN = 1.85 < r_horizon = 2`, so
-material only leaves the grid); and ylo/yhi polar reflection with VY/B2/FY sign flips.
+material only leaves the grid); and ylo/yhi polar reflection with VY/B2/FY sign flips, or
+the transmitting fill when the run asks for it (`bcs.polarAxis` picks).
 The z faces are `unreachable` (TNZ=1).
 
 ---

@@ -25,7 +25,10 @@ pub const BcFace = enum { xlo, xhi, ylo, yhi, zlo, zhi };
 /// ("MPI4CORNERS") builds the 2D corner surfaces + diagonals
 /// (finite.c:3203-3403; serial, so mpi_isitBC ≡ 1).
 ///
-/// MPI (plan §5.2, φ-only decomposition; x/y faces are ALWAYS physical):
+/// MPI (plan §5.2, φ-only decomposition; x/y faces are physical, with one
+/// exception: under a transmitting pole on a split ring the theta ghost rows
+/// arrive through `Core.exchangePole`, and the y pass and the y half of the
+/// middle-corner pass reduce to p2u):
 /// when ntz>1 the z faces are interior. Mirroring C's gating exactly:
 ///  * z-ghost faces: p2u only, from the exchanged primitives
 ///    (finite.c:2862-2870, the `mpi_isitBC(BCtype)==0` branch);
@@ -45,9 +48,14 @@ pub fn setBc(comptime CoreT: type, core: *CoreT, bcopt: *const options.Bc(CoreT)
     if (g.ngx > 0) {
         try threading.parallelRangeErr(Ctx, &ctx, core.team, 0, core.nyi(), xFacesFn(CoreT));
     }
-    // y boundaries — banded over ix
+    // y boundaries — banded over ix. A transmitting pole on a split ring
+    // is not a boundary here: the cross-pole exchange already delivered the
+    // rows (C: mpi_isitBC(YBC*) == 0 under pery == 2), only p2u is left.
     if (g.ngy > 0) {
-        try threading.parallelRangeErr(Ctx, &ctx, core.team, 0, core.nxi(), yFacesFn(CoreT));
+        if (core.poleExchanged())
+            try threading.parallelRangeErr(Ctx, &ctx, core.team, 0, core.nxi(), yGhostP2uFn(CoreT))
+        else
+            try threading.parallelRangeErr(Ctx, &ctx, core.team, 0, core.nxi(), yFacesFn(CoreT));
     }
     // z boundaries — banded over ix; interior z faces get p2u-of-exchanged-p
     if (g.ngz > 0) {
@@ -150,6 +158,31 @@ fn zFacesBand(comptime CoreT: type, c: *BcCtx(CoreT), ix0: i64, ix1: i64) Error!
             }
         }
     }
+}
+
+/// The y-face pass when the cross-pole exchange owns the theta ghost rows
+/// (`Core.poleExchanged`): conserveds from the delivered primitives, same
+/// cell set as yFacesBand.
+fn yGhostP2uFn(comptime CoreT: type) fn (*BcCtx(CoreT), i64, i64) Error!void {
+    return struct {
+        fn w(c: *BcCtx(CoreT), ix0: i64, ix1: i64) Error!void {
+            const core = c.core;
+            const ny = core.nyi();
+            const nz = core.nzi();
+            const ngy: i64 = @intCast(core.grid.ngy);
+            var iz: i64 = 0;
+            while (iz < nz) : (iz += 1) {
+                var ix: i64 = ix0;
+                while (ix < ix1) : (ix += 1) {
+                    var i: i64 = 1;
+                    while (i <= ngy) : (i += 1) {
+                        try p2uCell(CoreT, core, ix, -i, iz);
+                        try p2uCell(CoreT, core, ix, ny - 1 + i, iz);
+                    }
+                }
+            }
+        }
+    }.w;
 }
 
 /// MPI z-interior variant of the z-face pass (C finite.c:2862-2870, the
@@ -618,6 +651,15 @@ fn midYBand(comptime CoreT: type, c: *BcCtx(CoreT), ix0: i64, ix1: i64) Error!vo
         while (i <= ng) : (i += 1) {
             var j: i64 = 1;
             while (j <= ng) : (j += 1) {
+                if (core.poleExchanged()) {
+                    // the cross-pole exchange shipped the z-ghost planes
+                    // too: these cells already hold the transmitted state
+                    try p2uCell(CoreT, core, ix, -i, -j);
+                    try p2uCell(CoreT, core, ix, -i, nz - 1 + j);
+                    try p2uCell(CoreT, core, ix, ny - 1 + i, -j);
+                    try p2uCell(CoreT, core, ix, ny - 1 + i, nz - 1 + j);
+                    continue;
+                }
                 try setBcCell(CoreT, core, c.bc, ix, -i, -j, c.t, c.ifinit, .ylo);
                 try setBcCell(CoreT, core, c.bc, ix, -i, nz - 1 + j, c.t, c.ifinit, .ylo);
                 try setBcCell(CoreT, core, c.bc, ix, ny - 1 + i, -j, c.t, c.ifinit, .yhi);

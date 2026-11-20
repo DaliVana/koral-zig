@@ -9,6 +9,9 @@
 //!   mpiexec -n 1 zig-out/bin/mpi-gates            # gate 2 (1-rank ≡ serial, bitwise)
 //!   mpiexec -n 2 zig-out/bin/mpi-gates            # gates 3-5 at 1×1×2
 //!   mpiexec -n 3 ... ; mpiexec -n 4 ...           # 1×1×3, 1×1×4
+//!   (gate 7, the transmitting polar axis, runs at 1, 2 and 4 ranks: the
+//!    cell across the axis lives on the rank half a ring away, so the ring
+//!    must be even)
 //!
 //! Exit 0 = all gates green on every rank (any failure exits nonzero, so a
 //! shell loop over -n 1..4 is the whole ladder).
@@ -784,6 +787,215 @@ fn gate6(allocator: std.mem.Allocator, io: std.Io, comm: *Comm, dc: koral.comm.D
     return g.finish();
 }
 
+// ---- gate 7: the transmitting polar axis across ranks ----------------------
+//
+// With `num.polaraxis.transmitting` the theta ghost rows hold the cells on
+// the other side of the axis, half a turn away in phi. On one rank that is a
+// local boundary fill (problems/common/bcs.zig polarTransmit); on a split
+// ring the partner slab is the rank ntz/2 away and `Core.exchangeHalos`
+// trades the rows (sim/core.zig exchangePole). Needs an even ring.
+//
+//  7a  the exchange alone, on stamped storage: every theta ghost slot over
+//      the whole ghost-extended z span must hold the partner's stamp, with
+//      the theta and phi components negated. Exact.
+//  7b  a non-axisymmetric MKS2 shell WITHOUT a magnetic field, one forced
+//      step, against the in-process serial run: BITWISE over the whole
+//      slab, the rows next to both poles and every phi seam included. Pure
+//      hydro never reads an edge or corner ghost (the sweeps are narrow), so
+//      nothing separates the two runs except where the theta ghost rows
+//      came from: the cross-pole exchange here, the local fill there.
+//  7c  the same shell magnetised. Flux-CT reads the y-ghost x z-ghost edge
+//      cells, which the serial run builds at its phi wrap with C's copy
+//      rule while the exchange delivers the true transmitted state; that
+//      difference is carried straight across the axis to the planes half a
+//      turn away, so there is no seam-immune zone near the poles and the
+//      comparison is at tolerance (measured ~1e-10 of field scale).
+
+const pole_nx = 24;
+const pole_ny = 20;
+const pole_nz = 32;
+
+fn poleGrid() Grid {
+    return Grid.init(.{
+        .nx = pole_nx,
+        .ny = pole_ny,
+        .nz = pole_nz,
+        .ng = 3,
+        .minx = @log(4.0 - 0.1),
+        .maxx = @log(40.0 - 0.1),
+        .miny = 0.005,
+        .maxy = 1.0 - 0.005,
+        .minz = -std.math.pi,
+        .maxz = std.math.pi,
+    });
+}
+
+/// The pole problem at one physics level (hydro, or hydro + MHD).
+fn Pole(comptime with_b: bool) type {
+    return struct {
+        const cfg = koral.Config{
+            .modules = if (with_b) &.{ .hydro, .mhd } else &.{.hydro},
+            .reconstruction = .ppm,
+            .flux = .laxf,
+            .timestepping = .rk2imex,
+            .coords = .mks2,
+        };
+        const SimT = koral.Sim(cfg);
+        const L = SimT.Layout;
+
+        fn bc(ctx: ?*const anyopaque, core: *const SimT.CoreT, ix: i64, iy: i64, iz: i64, t: f64, ifinit: bool, face: koral.sim.BcFace) koral.relele.Error![SimT.nv]f64 {
+            _ = ctx;
+            _ = t;
+            _ = ifinit;
+            return koral.problems.common.bcs.polarAxis(SimT.CoreT, core, ix, iy, iz, face);
+        }
+
+        fn opts(comm: ?*Comm, decomp: ?koral.comm.Decomp) SimT.Options {
+            return .{
+                .phys = .{ .coords = .mks2, .mp = .{ .a = 0.5, .mksr0 = 0.1, .mksh0 = 0.9 }, .gam = 5.0 / 3.0 },
+                .num = .{ .polaraxis = koral.sim.PolarAxis.transmitting_default },
+                .bc = .{ .x = .copy, .y = .{ .specific = .{ .f = &bc } }, .z = .periodic },
+                .comm = comm,
+                .decomp = decomp,
+            };
+        }
+
+        /// A smooth state with no symmetry in phi, from GLOBAL coordinates,
+        /// with velocity (and field) through both poles: the shape of the
+        /// ZIGPOLE oracle state.
+        fn initShell(s: *SimT) !void {
+            var iz: i64 = 0;
+            while (iz < s.nzi()) : (iz += 1) {
+                var iy: i64 = 0;
+                while (iy < s.nyi()) : (iy += 1) {
+                    var ix: i64 = 0;
+                    while (ix < s.nxi()) : (ix += 1) {
+                        const geom = s.core.cache.fillGeometry(ix, iy, iz);
+                        const r = @exp(s.core.grid.xc(ix)) + 0.1;
+                        const st = @sin(std.math.pi * s.core.grid.yc(iy)); // smooth, zero on both axes
+                        const ct = @cos(std.math.pi * s.core.grid.yc(iy));
+                        const ph = s.core.grid.zc(iz);
+                        var pp: [SimT.nv]f64 = @splat(0);
+                        pp[L.index(.rho)] = (1.0 + 0.3 * ct + 0.2 * st * @cos(ph - 0.7)) * std.math.pow(f64, r / 4.0, -1.5);
+                        pp[L.index(.uu)] = 0.02 * pp[L.index(.rho)] * (1.0 + 0.1 * st * @sin(ph + 0.2)) * (4.0 / r);
+                        pp[L.index(.vx)] = -0.2 * (1.0 + 0.2 * st * @cos(ph)) / (r - 0.1);
+                        pp[L.index(.vy)] = (0.004 * st * @sin(ph + 0.5) + 0.002 * st * ct) / r;
+                        pp[L.index(.vz)] = (0.02 + 0.01 * @cos(ph - 1.1)) / r;
+                        pp[L.index(.entr)] = hydro.sFromU(pp[L.index(.rho)], pp[L.index(.uu)], 5.0 / 3.0);
+                        if (comptime with_b) {
+                            pp[L.index(.b1)] = 0.05 * (0.3 + st) * (1.0 + 0.3 * @cos(ph + 0.4)) / geom.gdet;
+                            pp[L.index(.b2)] = 0.01 * st * @cos(ph - 0.2) / geom.gdet;
+                            pp[L.index(.b3)] = 0.002 * (1.0 + 0.3 * @sin(ph)) / geom.gdet;
+                        }
+                        try s.initCell(ix, iy, iz, pp);
+                    }
+                }
+            }
+            try s.finishInit();
+        }
+
+        /// 7b / 7c (and, at one rank, the comm-seam identity check).
+        fn shell(allocator: std.mem.Allocator, comm: *Comm, dc: koral.comm.Decomp, comptime name: []const u8) !bool {
+            var g = Gate{ .rank = comm.rank(), .name = name };
+            const grid = poleGrid();
+
+            var ref = try SimT.init(allocator, grid, opts(null, null));
+            defer ref.deinit();
+            try initShell(&ref);
+            // the row next to the upper pole before the step, to show below
+            // that "equal" is a statement about an evolved state
+            var rho0: [pole_nx]f64 = undefined;
+            for (&rho0, 0..) |*v, ix| v.* = ref.core.p.get(L.index(.rho), @intCast(ix), 1, pole_nz / 2);
+
+            var s = try SimT.init(allocator, dc.local, opts(comm, dc));
+            defer s.deinit();
+            try initShell(&s);
+
+            // One forced step of real size (the CFL guess of a fresh run is
+            // a startup crawl; the smallest cell here is the 0.04-wide one
+            // next to the pole at r = 4).
+            const dt: f64 = 0.01;
+            try ref.step(dt);
+            try s.step(dt);
+
+            var changed: f64 = 0;
+            for (rho0, 0..) |v, ix| changed = @max(changed, @abs(ref.core.p.get(L.index(.rho), @intCast(ix), 1, pole_nz / 2) / v - 1.0));
+            g.expect(changed > 1.0e-6, "the row next to the pole did not evolve (drho/rho {e})", .{changed});
+
+            if (comptime !with_b) {
+                // hydro (and any one-rank run): bitwise, everywhere
+                compareCentralBitwise(SimT, &g, &ref, &s, dc.tok, 0);
+            } else if (dc.ntz == 1) {
+                compareCentralBitwise(SimT, &g, &ref, &s, dc.tok, 0);
+            } else {
+                compareDomainTolerance(SimT, &g, &ref, &s, dc.tok, 8, 1e-6, 5e-2, 0.02, SimT.nv, 0);
+            }
+            return g.finish();
+        }
+
+        /// 7a: the exchange alone, on stamped storage.
+        fn roundtrip(allocator: std.mem.Allocator, comm: *Comm, dc: koral.comm.Decomp) !bool {
+            var g = Gate{ .rank = comm.rank(), .name = "gate7a pole-exchange" };
+            var s = try SimT.init(allocator, dc.local, opts(comm, dc));
+            defer s.deinit();
+            const lg = dc.local;
+            const tnz: i64 = @intCast(dc.global.nz);
+            const ng: i64 = @intCast(lg.ngy);
+            const ngz: i64 = @intCast(lg.ngz);
+            // exact-integer stamp of (global z, row, column, variable); +1
+            // so no stamp is zero and a sign flip is always visible
+            const stamp = struct {
+                fn at(gz: i64, iy: i64, ix: i64, iv: usize) f64 {
+                    return @floatFromInt(1 + gz * 1_000_000 + (iy + 10) * 10_000 + (ix + 10) * 100 + @as(i64, @intCast(iv)));
+                }
+            }.at;
+            var iz: i64 = -ngz;
+            while (iz < s.nzi() + ngz) : (iz += 1) {
+                const gz = @mod(lg.izoff + iz, tnz);
+                var iy: i64 = -ng;
+                while (iy < s.nyi() + ng) : (iy += 1) {
+                    var ix: i64 = 0;
+                    while (ix < s.nxi()) : (ix += 1) {
+                        for (0..SimT.nv) |iv| {
+                            const in_z = iz >= 0 and iz < s.nzi();
+                            const in_y = iy >= 0 and iy < s.nyi();
+                            // domain cells carry their stamp; every ghost starts poisoned
+                            s.core.p.set(iv, ix, iy, iz, if (in_z and in_y) stamp(gz, iy, ix, iv) else -7.0e30);
+                        }
+                    }
+                }
+            }
+            s.exchangeHalos();
+
+            const flips = [_]usize{ L.index(.vy), L.index(.vz), L.index(.b2), L.index(.b3) };
+            const ny = s.nyi();
+            iz = -ngz;
+            while (iz < s.nzi() + ngz) : (iz += 1) {
+                const gz_far = @mod(lg.izoff + iz + @divExact(tnz, 2), tnz);
+                var j: i64 = 0;
+                while (j < ng) : (j += 1) {
+                    var ix: i64 = 0;
+                    while (ix < s.nxi()) : (ix += 1) {
+                        for (0..SimT.nv) |iv| {
+                            var sign: f64 = 1.0;
+                            for (flips) |f| {
+                                if (f == iv) sign = -1.0;
+                            }
+                            const want_lo = sign * stamp(gz_far, j, ix, iv);
+                            const want_hi = sign * stamp(gz_far, ny - 1 - j, ix, iv);
+                            const got_lo = s.core.p.get(iv, ix, -1 - j, iz);
+                            const got_hi = s.core.p.get(iv, ix, ny + j, iz);
+                            if (got_lo != want_lo) g.expect(false, "upper ghost row {d} iz={d} ix={d} iv={d}: got {e} want {e}", .{ -1 - j, iz, ix, iv, got_lo, want_lo });
+                            if (got_hi != want_hi) g.expect(false, "lower ghost row {d} iz={d} ix={d} iv={d}: got {e} want {e}", .{ ny + j, iz, ix, iv, got_hi, want_hi });
+                        }
+                    }
+                }
+            }
+            return g.finish();
+        }
+    };
+}
+
 // ---- driver ----------------------------------------------------------------
 
 pub fn main(init: std.process.Init) !void {
@@ -812,6 +1024,13 @@ pub fn main(init: std.process.Init) !void {
             const dc = try koral.comm.decompose(minkGrid(), 1, 0);
             ok = try gate6(allocator, init.io, &comm, dc) and ok;
         }
+        // one rank: the transmitting pole is a local fill on both sides of
+        // the comparison; this pins that the comm seam changes nothing
+        {
+            const dcp = try koral.comm.decompose(poleGrid(), 1, 0);
+            ok = try Pole(false).shell(allocator, &comm, dcp, "gate7b pole hydro 1-rank≡serial") and ok;
+            ok = try Pole(true).shell(allocator, &comm, dcp, "gate7c pole mhd 1-rank≡serial") and ok;
+        }
     } else {
         if (mink_nz % wsize != 0) {
             std.debug.print("mpi-gates: run with -n dividing {d} (1,2,3,4)\n", .{mink_nz});
@@ -823,6 +1042,14 @@ pub fn main(init: std.process.Init) !void {
         ok = try gate4(allocator, &comm, dc) and ok;
         ok = try gate5(allocator, &comm) and ok;
         ok = try gate6(allocator, init.io, &comm, dc) and ok;
+        if (wsize % 2 == 0 and pole_nz % wsize == 0) {
+            const dcp = try koral.comm.decompose(poleGrid(), wsize, comm.rank());
+            ok = try Pole(true).roundtrip(allocator, &comm, dcp) and ok;
+            ok = try Pole(false).shell(allocator, &comm, dcp, "gate7b pole hydro bitwise") and ok;
+            ok = try Pole(true).shell(allocator, &comm, dcp, "gate7c pole mhd tolerance") and ok;
+        } else if (comm.rank() == 0) {
+            std.debug.print("mpi-gates: gate 7 (transmitting pole) skipped at {d} ranks: it needs an even ring dividing {d}\n", .{ wsize, pole_nz });
+        }
     }
     if (!ok) return error.GateFailed;
     if (comm.rank() == 0) std.debug.print("mpi-gates: all gates green at {d} rank(s)\n", .{wsize});

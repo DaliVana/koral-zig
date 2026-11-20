@@ -20,6 +20,11 @@ const Grid = @import("../../grid.zig").Grid;
 /// neighbors are the same rank) unambiguous.
 const tag_down: c_int = 100;
 const tag_up: c_int = 101;
+/// Cross-pole messages (a transmitting polar axis): the rows next to the
+/// upper (+0) and lower (+1) pole, traded with the rank half a ring away.
+/// Distinct from the ring tags because at ntz == 2 that rank is also both
+/// ring neighbors.
+const tag_pole: c_int = 110;
 
 /// Any MPI failure mid-run is unrecoverable for a synchronous stencil code:
 /// print and MPI_Abort (mirrors every surveyed production code).
@@ -154,6 +159,25 @@ pub const Mpi = struct {
         if (self.n_reqs == 0) return;
         check(core.MPI_Startall(@intCast(self.n_reqs), &self.reqs), "MPI_Startall");
         check(core.MPI_Waitall(@intCast(self.n_reqs), &self.reqs, abi.statusesIgnore()), "MPI_Waitall");
+    }
+
+    /// Trade one buffer with the rank on the opposite side of the phi ring
+    /// (C: tz = TK + NTZ/2), the slab across the polar axis. `which`
+    /// separates the two poles' messages. Blocking and symmetric: every
+    /// rank calls it with the same `which` at the same point, each pair is
+    /// its own two-party Sendrecv, so there is nothing to deadlock on.
+    /// Needs an even ring (Options.validate).
+    pub fn sendrecvOpposite(self: *Mpi, send: []const f64, recv: []f64, which: u8) void {
+        std.debug.assert(self.ntz % 2 == 0 and send.len == recv.len);
+        if (send.len > std.math.maxInt(c_int)) {
+            std.debug.print("koral/mpi: pole message of {d} doubles exceeds the MPI count limit\n", .{send.len});
+            _ = core.MPI_Abort(abi.commWorld(), 1);
+            std.process.exit(1);
+        }
+        const partner: c_int = @intCast((self.tk + self.ntz / 2) % self.ntz);
+        const n: c_int = @intCast(send.len);
+        const tag = tag_pole + @as(c_int, which);
+        check(core.MPI_Sendrecv(send.ptr, n, abi.dtDouble(), partner, tag, recv.ptr, n, abi.dtDouble(), partner, tag, self.cart, abi.statusIgnore()), "MPI_Sendrecv(pole)");
     }
 
     pub fn allreduceMax(self: *const Mpi, buf: []f64) void {

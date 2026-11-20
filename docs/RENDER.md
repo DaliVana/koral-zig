@@ -40,10 +40,13 @@ zig build -Doptimize=ReleaseFast
 | `render/sweep.zig` | Slow light: 3-phase streaming sweep `renderSlow`, ray plans (`RaySpec`, `uniformPlan`), batched multi-epoch rendering |
 | `render/adaptive.zig` | Photon-ring image-plane refinement: vacuum pre-pass + per-pixel quadtree `planRays`, `renderPlan` |
 | `render/fits.zig` | FITS image writer (Jy/pixel, ehtim-compatible headers) |
-| `render/verify.zig` | Gold et al. 2020 standardized verification scenes |
+| `render/verify.zig` | Gold et al. 2020 verification: the five standardized scenes and the equatorial deflection-angle test (exact quadrature + production stepper) |
 | `tools/kdmp2png.zig` | The imaging CLI (fast/slow/adaptive/FITS, `--orders` image-order layers) |
 | `tools/kdmp2lc.zig` | Light curves + movie frames (one streaming sweep for all epochs; `--orders` per-order light curves) |
 | `tools/goldtest.zig` | The verification runner vs the published flux tables |
+| `tools/mhdtorus.zig` | Makes the snapshot of the ipole cross-check: a non-radiative (hydro + MHD) evolution of a hot torus, written as a PUFFY KDMP |
+| `tools/kdmp2ipole.zig` | Exports a KDMP snapshot as the arrays ipole's KORAL reader needs (Kerr-Schild components, this renderer's n_e and T_e) |
+| `tools/ipolecheck.py` | Packs that export into HDF5, writes the matching ipole parameter file, and compares the two images |
 
 Tests live in `koral/tests/render_tests.zig` (registered in `koral.zig`).
 
@@ -157,10 +160,174 @@ python3 tools/goldfig.py DIR        # writes DIR/goldfig.png
 A CI gate runs all five scenes at 16² within 2.5% of the exact flux (measured
 +0.9…+1.8% there; any real physics error shifts these by tens of %).
 
-Not implemented from the paper: the §3.1 deflection-angle quadrature (our
-Bardeen-curve, E/L-conservation and null-norm gates cover geodesic
-accuracy), the §5.4 GRMHD-snapshot cross-test (non-public data), and
-polarized variants (no polarization yet).
+Not implemented from the paper: the polarized variants (no polarization;
+see "Known limitations"). Its §3.1 ray-tracing test and a snapshot
+comparison in the spirit of its §5.4 are the next two sections.
+
+### Deflection angles (Gold et al. 2020, §3.1)
+
+The paper's first test is the deflection angle of equatorial light rays in
+a highly spinning Kerr metric as a function of impact parameter, against
+the exact result of Iyer & Hansen (2009). It gives no further setup;
+Blacklight (White 2022) uses a = 0.9 and a camera at r = 1000, and so does
+this test.
+
+* **Exact side** (`verify.sweepExact`). With E = 1, L = b and u = 1/r an
+  equatorial null geodesic has (dr/dλ)² = P(u) = 1 + (a² − b²)u² +
+  2(b − a)²u³ and dφ/dλ = u²N/D, N = (1 − 2u)b + 2au, D = 1 − 2u + a²u²,
+  so the azimuth swept from radius R through the pericentre u₀ and back is
+  Δφ(R) = 2∫ N/(D√P) du over [1/R, u₀]; the deflection angle is Δφ(∞) − π.
+  The substitution u = u₀ − w t² removes the endpoint singularity and
+  adaptive Gauss-Kronrod converges to roundoff. No elliptic functions are
+  transcribed. The reference is checked against the weak-field series of
+  Iyer & Hansen through fourth order (for a = 0, 0.5, 0.9, both senses of
+  rotation; a 40-digit evaluation with mpmath confirmed the quadrature to
+  14 digits and the series coefficients), and capture sets in exactly at
+  b_c = −a ± 6 cos(arccos(∓a)/3).
+* **Numerical side** (`verify.sweepNumeric`). The production stepper
+  (`rk4Step` + `stepSize`), traced backward from r = R like an image ray,
+  with the last step shortened so the ray ends on r = R to roundoff.
+* **What is compared.** Δφ(R) at the *same* finite R. The Kerr-Schild and
+  Boyer-Lindquist azimuths differ by a function of r only, so the sweep
+  between two points of equal radius is chart-independent. This removes
+  the finite-camera-distance error that limits the comparison in the paper
+  (its "slight discrepancy at larger radii of order 10⁻⁴"; here 2×10⁻⁶ at
+  small b rising to 3×10⁻⁴ at b = 100 b_c, the dashed line in the figure)
+  and leaves the integration error alone.
+
+Result, a = 0.9, R = 1000, b/b_c − 1 from 10⁻³ (more than 2½ turns around
+the hole for the prograde ray) to 10², both senses of rotation:
+
+| `--eps` | max sweep error [rad] | worst null-norm or L/E drift |
+|---|---|---|
+| 0.25 (validation-grade renders) | 1.8×10⁻⁴ | 7×10⁻⁵ |
+| 0.125 | 9.5×10⁻⁶ | 2.5×10⁻⁶ |
+| 0.05 | 2.3×10⁻⁷ | 3×10⁻⁸ |
+
+Fourth-order convergence, as RK4 should give. At a given step the error
+is set near the pericentre: there the radial term of the step controller
+vanishes and the azimuthal one allows 0.4 rad per step on an axisymmetric
+grid (its φ-cell is the whole wedge), so the error is ragged in b. For
+comparison Blacklight quotes 10⁻⁶–10⁻⁵ on this test. Gated in
+`render_tests.zig` ("verify: equatorial deflection angles ..."); the figure
+is `fig_deflection` of `tools/paperfig.py` from a `-Dfig-dir` test run.
+
+![Deflection angles](figures/fig_deflection.png)
+
+### Snapshot cross-check against ipole
+
+The paper's §5.4 compares codes on GRMHD snapshots that are not public.
+The equivalent done here: this imager and ipole (Mościbrodzka & Gammie
+2018; `github.com/AFD-Illinois/ipole`, commit `7f7a482`) image the same
+snapshot, cell for cell. ipole reads KORAL dumps natively, in KORAL's own
+MKS2 coordinates, so nothing is resampled.
+
+**The snapshot.** PUFFY's torus is radiation-supported and far too cold to
+emit synchrotron light (θ_e < 0.1), so `tools/mhdtorus.zig` evolves a hot
+flow with the same code and without the radiation module: hydro + MHD,
+Γ = 4/3, the limotorus solution with the thick sub-Keplerian shape of
+Penna, Kulkarni & Narayan (2013) (ξ = 0.708, r₁ = 42, r₂ = 1000, inner
+edge at 10 M), a single poloidal field loop, a = 0.9375, 128 × 120 cells
+to r = 200 M, axisymmetric. The initial torus has θ_e = 5–24; by
+t = 300 M the field has been wound up and gas is falling in. The density-scale
+symmetry of ideal MHD, (ρ, u, B²) → s(ρ, u, B²), sets the physical scale
+(ipole's `M_unit`): s = 10⁻²¹ gives n_e ≤ 10⁷ cm⁻³ and B ≤ 19 G around a
+4.297×10⁶ M☉ hole, an image with half its flux from optical depth above 1;
+s = 3×10⁻²⁴ gives an optically thin one (τ ≤ 10⁻⁵).
+
+**Matched by construction.** Both codes get the same electron density and
+temperature (`tools/kdmp2ipole.zig` exports the ones this renderer
+derives; ipole takes T_e in Kelvin and a density that reproduces n_e), the
+same field strength (ipole's B unit, c√(4πρ_unit), is KORAL's), the same
+GM/c² to the last digit, and, with ipole's `-unpol`, the same thermal
+synchrotron emissivity fit (Leung, Gammie & Noble 2011) with absorption
+from Kirchhoff's law. `puffy_ipole.toml` switches this renderer's
+free-free and scattering off (the monochromatic free-free channel now
+follows the `bremsstrahlung` opacity switch), and both codes run without
+σ or floor cuts.
+
+**What the comparison therefore tests:** the geodesic integration (ipole
+traces in exponential Kerr-Schild coordinates with its own stepper), the
+camera, the interpolation of the snapshot along the ray, the
+transformation to the fluid frame, the pitch angle, and the transfer
+integration.
+
+Result at 230 GHz, camera at r = 1000 M, field of view 60 M, one ray per
+pixel in both codes, `--eps 0.25` here and `eps 0.01` in ipole:
+
+| case | pixels | koral-zig | ipole | flux difference | NMSE (I) | median \|ΔI\|/I |
+|---|---|---|---|---|---|---|
+| thick, i = 60° | 80² | 98.755 Jy | 98.881 Jy | −0.13 % | 8.7×10⁻⁵ | 0.57 % |
+| thick, i = 60° | 160² | 98.839 Jy | 98.967 Jy | −0.13 % | 5.0×10⁻⁴ | 0.57 % |
+| thick, i = 60° | 320² | 98.818 Jy | 98.938 Jy | −0.12 % | 2.2×10⁻⁴ | 0.57 % |
+| thick, i = 20° | 160² | 109.81 Jy | 109.98 Jy | −0.15 % | 4.5×10⁻⁴ | 1.0 % |
+| thin, i = 60° | 160² | 1.75×10⁻⁴ Jy | 1.76×10⁻⁴ Jy | −0.58 % | 9.8×10⁻⁴ | 1.2 % |
+| thick, t = 600 M, i = 60° | 160² | 170.14 Jy | 170.39 Jy | −0.15 % | 2.2×10⁻⁴ | 0.54 % |
+
+(Median over the pixels brighter than 1 % of the peak. All rows but the
+last use the t = 300 M snapshot; the last uses the same run at t = 600 M,
+with the accretion flow established and the funnel magnetised, at the
+s = 10⁻²¹ scale.) The image
+orientation is unambiguous: this renderer's FITS image is ipole's
+`unpol[i][j]` transposed, with no flip (NMSE 3×10⁻¹ for the next-best of
+the eight orientations). For scale: the six-code comparison of Prather et
+al. (2023) budgets an NMSE of 0.02 in Stokes I, RAPTOR and BHOSS differ by
+1.07 % in flux at 128² (Bronzwaer et al. 2018), and ipole and grtrans by
+an MSE of 4×10⁻⁵ (Mościbrodzka & Gammie 2018). The residual here sits on
+the photon ring, where one ray per pixel aliases a sub-pixel feature
+differently in the two codes (right panel).
+
+![koral-zig and ipole on the same snapshot](figures/fig_ipole.png)
+
+Workflow (ipole and HDF5 are external; `tools/ipolecheck.py` needs h5py):
+
+```
+T=koral/problems/puffy/puffy_ipole.toml ; D=dumps/ipole
+./zig-out/bin/mhdtorus   $T $D/snap.kdmp --tmax 300 --scale 1e-21
+./zig-out/bin/kdmp2ipole $T $D/snap.kdmp $D/snap.kipl
+python3 tools/ipolecheck.py pack $D/snap.kipl $D/snap.h5
+python3 tools/ipolecheck.py par  $D/snap.h5 $D/ipole.par --size 160 --fov 60 --incl 60
+ipole -unpol -par $D/ipole.par
+./zig-out/bin/kdmp2png $T $D/snap.kdmp $D/ours.png --nu 230 --dist 8.127 \
+    --fits $D/ours.fits --size 160 --fov 60 --incl 60 --rcam 1000 --ss 1 \
+    --sigma-cut 0 --floor-cut 0 --fcol off --eps 0.25
+python3 tools/ipolecheck.py compare $D/ipole_image.h5 $D/ours.fits --dump dumps/figdata
+python3 tools/paperfig.py dumps/figdata --only ipole
+```
+
+Caveats, all of which a reader repeating this will meet:
+
+* **ipole's KORAL reader has an uninitialised variable** (`size_t n3` in
+  `load_simcoord_info_from_file` is filled through a 32-bit read). With
+  gcc 16 at `-O3` the HDF5 read then fails; building ipole with
+  `-ftrivial-auto-var-init=zero` avoids it without touching its source.
+  The reader also carries the comment that it "has not been validated to
+  have the right units and four-vector recovery"; the agreement above is
+  evidence that, for MKS2 dumps, it has both right.
+* **Which snapshot.** The main one is early (t = 300 M): a wound-up torus
+  with a young accretion stream, not saturated turbulence. For a transfer
+  comparison any common fluid state serves, and the t = 600 M row shows the
+  agreement does not depend on the choice. Later than about t = 700 M this
+  particular torus is a poor EHT analogue for a reason of its own: it
+  closes over the poles beyond r ≈ 60 M, the gas standing there falls in
+  along the axis, and the funnel is no longer evacuated
+  (`tools/mhdtorus.zig` header).
+* **The non-radiative run used to blow up, and no longer does.** Until
+  2026-11-20 it ended in `NanInFlux` near t = 900 M: from t ≈ 400 M the
+  density at the inner polar corner grew without bound through the b²/ρ
+  floor. The cause was a gap in the port, not the floors: C's flux-CT
+  zeroes the corner EMFs on the polar faces (`adjust_fluxcttoth_emfs`),
+  and that step had not been transcribed, so magnetic flux leaked through
+  the axis once the funnel carried a field
+  (`koral/sim/polaraxis.zig`, `zeroAxisEmfs`). With it the run is stable to
+  t = 1000 M (the longest tried) with b²/ρ at or below the floor ratio.
+  The rows above were recomputed with the fix; the t = 300 M ones did not
+  change in any printed digit, because the field had not yet reached the
+  axis.
+* **Axisymmetric only.** ipole requires the KORAL φ-extent to be 2π, so a
+  π/2 wedge cannot be handed over; `tools/ipolecheck.py pack` refuses
+  n₃ > 1.
+* **Unpolarized only**, see "Known limitations".
 
 ### Other physics gates (render_tests.zig)
 
@@ -344,13 +511,22 @@ plus the shared camera/slow-light flags.
 `goldtest [outdir] --size N --ss N --eps E --tests 12345`, the
 verification suite vs the published tables; writes per-test PNGs.
 
+`mhdtorus <toml> <out.kdmp> [--tmax T] [--scale S]`, `kdmp2ipole <toml>
+<kdmp> <out.kipl>` and `tools/ipolecheck.py pack|par|compare`: the ipole
+cross-check, see "Snapshot cross-check against ipole".
+
 KDMP v1 (32-byte header) is accepted by the renderer's loader only;
 `io/dump.zig` stays v2-strict on purpose (restart contract).
 
 ## Known limitations / next
 
-* No polarization. This blocks EHT β₂/EVPA comparison, a strong MAD/spin
-  discriminator.
+* No polarization. The transfer is for Stokes I only: no Q, U, V, no
+  Faraday rotation or conversion. This blocks EHT β₂/EVPA comparison, a
+  strong MAD/spin discriminator, and it leaves the polarized halves of the
+  standard verification untested here: the constant-coefficient polarized
+  transfer tests (Dexter 2016; Mościbrodzka & Gammie 2018), the polarized
+  thin-disc test and the polarized snapshot comparison of Prather et al.
+  (2023). The ipole cross-check below is run with ipole's `-unpol`.
 * Single-temperature electrons (T_e = T_gas), dominates 230 GHz
   synchrotron uncertainty for RIAF-regime sources.
 * No Comptonization beyond the colour correction of the scattered source

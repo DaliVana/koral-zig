@@ -27,6 +27,9 @@ Figures (dump file -> figure):
   orszag        k14_orszag_{map,cut}     Sadowski+ 2014 Fig. 6
   bondi         bondi_1d, bondi_2d[_fast], bondi_mag[_fast]
   alfven        alfven_wave
+  deflection    grrt_deflection          Gold+ 2020 Fig. 1 (imager)
+  ipole         grrt_ipole               koral-zig vs ipole on one snapshot;
+                                         written by tools/ipolecheck.py compare
 
 Colour: categorical series take the first four slots of the validated
 palette in fixed order (blue, orange, aqua, yellow) and always carry a
@@ -634,7 +637,70 @@ def fig_alfven(d):
     return fig
 
 
+def fig_deflection(d):
+    D = load(d, "grrt_deflection")
+    fig, axes = plt.subplots(1, 2, figsize=(9.8, 3.6), constrained_layout=True)
+    ax = axes[0]
+    for j, b in enumerate(D.blocks):
+        a = b.data
+        ax.loglog(a[:, 1], a[:, 2], color=C[j], ls=DASH[j], label=b.label)
+    ax.axhline(2 * np.pi, color=INK2, lw=0.6, ls=":")
+    ax.text(ax.get_xlim()[1] * 0.8, 2 * np.pi * 1.15, r"$2\pi$", fontsize=7, color=INK2, ha="right")
+    ax.set_xlabel(r"$b/b_c-1$")
+    ax.set_ylabel(r"deflection angle $\hat\alpha$ [rad]")
+    ax.set_title("exact (quadrature of the geodesic equation)", fontsize=9)
+    ax.legend()
+    ax = axes[1]
+    labs = [r"$\epsilon=0.25$ (production)", r"$\epsilon=0.125$", r"$\epsilon=0.05$"]
+    for k in range(3):
+        err = np.maximum.reduce([b.data[:, 3 + k] for b in D.blocks])
+        ax.loglog(D.blocks[0].data[:, 1], np.maximum(err, 1e-13), color=C[k], ls=DASH[k], label=labs[k])
+    fin = np.maximum.reduce([b.data[:, 6] for b in D.blocks])
+    ax.loglog(D.blocks[0].data[:, 1], fin, color=INK2, lw=0.9, ls=(0, (4, 3)), label="finite camera distance, $r=1000$")
+    ax.set_xlabel(r"$b/b_c-1$")
+    ax.set_ylabel("error [rad]")
+    ax.set_title("integration error, worse of prograde and retrograde", fontsize=9)
+    ax.legend(fontsize=7)
+    src = D.meta.get("source", "")
+    spin = re.search(r"a = (" + FLOAT + ")", src)
+    fig.suptitle(f"Deflection of equatorial light rays in Kerr, $a={float(spin.group(1)):g}$ (Gold et al. 2020, Fig. 1)", fontsize=10)
+    return fig
+
+
+def fig_ipole(d):
+    D = load(d, "grrt_ipole")
+    b = D.blocks[0]
+    n = int(D.meta["shape"].split()[0])
+    ours = b.data[:, 2].reshape(n, n)
+    ip = b.data[:, 3].reshape(n, n)
+    fov = float(D.meta.get("fov_M", "nan"))
+    half = 0.5 * fov if np.isfinite(fov) else 0.5 * n
+    ext = [half, -half, -half, half]  # east to the left
+    s_ours, s_ip = (float(v) for v in D.meta["flux"].split())
+    fig, axes = plt.subplots(1, 3, figsize=(11.6, 3.7), constrained_layout=True)
+    vmax = max(ours.max(), ip.max())
+    for ax, img, name, s in ((axes[0], ours, "koral-zig", s_ours), (axes[1], ip, "ipole", s_ip)):
+        im = ax.imshow(img / vmax, origin="lower", extent=ext, cmap=SEQ, vmin=0, vmax=1)
+        ax.set_title(f"{name}: {s:.4f} Jy", fontsize=9)
+        ax.set_xlabel(r"$x$ [$GM/c^2$]")
+        ax.grid(False)
+    axes[0].set_ylabel(r"$y$ [$GM/c^2$]")
+    fig.colorbar(im, ax=axes[:2], pad=0.01, aspect=30, label=r"$I_\nu/I_{\nu,\max}$")
+    ax = axes[2]
+    diff = (ours - ip) / vmax
+    lim = np.max(np.abs(diff))
+    im = ax.imshow(diff, origin="lower", extent=ext, cmap=DIV, vmin=-lim, vmax=lim)
+    ax.set_title(rf"difference; NMSE $={float(D.meta['nmse']):.1e}$, flux {100 * (s_ours / s_ip - 1):+.2f} %", fontsize=9)
+    ax.set_xlabel(r"$x$ [$GM/c^2$]")
+    ax.grid(False)
+    fig.colorbar(im, ax=ax, pad=0.01, aspect=30, label=r"$(I_\mathrm{koral\text{-}zig}-I_\mathrm{ipole})/I_{\nu,\max}$")
+    fig.suptitle(f"The same GRMHD snapshot imaged at 230 GHz by koral-zig and by ipole, ${n}^2$ pixels, thermal synchrotron", fontsize=10)
+    return fig
+
+
 FIGURES = {
+    "deflection": fig_deflection,
+    "ipole": fig_ipole,
     "shocktube": fig_shocktube,
     "torus": fig_torus,
     "radtubes": fig_radtubes,

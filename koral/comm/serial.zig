@@ -37,6 +37,9 @@ pub const Serial = struct {
     pub fn bindExchange(_: *Serial, _: []f64, _: Grid, _: usize) !void {}
     pub fn unbindExchange(_: *Serial) void {}
     pub fn exchange(_: *Serial) void {}
+    /// Cross-pole trade with the rank half a ring away. Never reached
+    /// serially: a one-rank transmitting pole is a local boundary fill.
+    pub fn sendrecvOpposite(_: *Serial, _: []const f64, _: []f64, _: u8) void {}
 
     pub fn allreduceMax(_: *const Serial, _: []f64) void {}
     pub fn allreduceMin(_: *const Serial, _: []f64) void {}

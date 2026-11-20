@@ -18,8 +18,11 @@
 //!  * coefemf is 0.5 unless *both* transverse dimensions are active (0.25).
 //!  * calc_divB divides the x-differences by 2·(x(ix+1)−x(ix)); the
 //!    *forward* center distance; while differencing (ix)−(ix−1).
-//!  * adjust_fluxcttoth_emfs (polar-axis EMF zeroing) is CORRECT_POLARAXIS
-//!    machinery and lands with M11; none of the M6 problems define it.
+//!  * adjust_fluxcttoth_emfs (magn.c:388): with CORRECT_POLARAXIS and a
+//!    reflecting pole, EMF1 and EMF3 are zeroed on the corners of the two
+//!    polar faces, so no magnetic flux crosses the axis. Active whenever
+//!    the polar-axis band is (`num.polaraxis`); the body is
+//!    sim/polaraxis.zig `zeroAxisEmfs`, called between the two passes.
 
 const std = @import("std");
 const relele = @import("../relele.zig");
@@ -28,6 +31,7 @@ const threading = @import("../threading.zig");
 const field_mod = @import("../field.zig");
 const Grid = @import("../grid.zig").Grid;
 const storage = @import("storage.zig");
+const polaraxis = @import("polaraxis.zig");
 
 /// flux_ct's view: the Core, the CT scratch (EMFs) and the explicit
 /// operator's combined face fluxes whose B rows it rewrites.
@@ -105,7 +109,8 @@ pub fn fluxCt(comptime CoreT: type, core: *CoreT, cts: *Scratch, flb: *[3]storag
     var ctx = FluxCtx(CoreT){ .core = core, .cts = cts, .flb = flb };
     _ = threading.parallelRange(FluxCtx(CoreT), &ctx, core.team, 0, ny + 1, emfBandWorker(CoreT));
 
-    // adjust_fluxcttoth_emfs: CORRECT_POLARAXIS only (M11)
+    // adjust_fluxcttoth_emfs: no magnetic flux through the polar faces
+    polaraxis.zeroAxisEmfs(CoreT, core, cts);
 
     _ = threading.parallelRange(FluxCtx(CoreT), &ctx, core.team, 0, ny + 1, rebuildBandWorker(CoreT));
 }

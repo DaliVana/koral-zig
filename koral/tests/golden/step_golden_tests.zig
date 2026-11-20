@@ -28,6 +28,7 @@ const implicit = @import("../../solve/implicit.zig");
 const units_mod = @import("../../units.zig");
 const golden = @import("../../testing/golden.zig");
 const tubes = @import("../../testing/tubes.zig");
+const bcs = @import("../../problems/common/bcs.zig");
 
 const Grid = grid_mod.Grid;
 
@@ -134,6 +135,8 @@ fn runStepTest(
         var step_max: f64 = 0;
         var worst_iv: usize = 0;
         var worst_ix: usize = 0;
+        var worst_iy: usize = 0;
+        var worst_iz: usize = 0;
         var worst_scale: f64 = 0;
         var ncell: usize = 0;
         for (0..k.nz) |iz| {
@@ -155,6 +158,8 @@ fn runStepTest(
                             step_max = @max(du, dp);
                             worst_iv = iv;
                             worst_ix = ix;
+                            worst_iy = iy;
+                            worst_iz = iz;
                             worst_scale = if (du > dp) scale[iv] else scale_p[iv];
                         }
                     }
@@ -182,14 +187,17 @@ fn runStepTest(
             std.debug.print("[{s}] per-step max devs: ", .{what});
             for (1..istep + 1) |i| std.debug.print("{e:.2} ", .{per_step[i]});
             std.debug.print(
-                "\nstep {d}: max dev {e:.3} exceeds budget {e:.3} at iv={d} ix={d} (scale {e:.2}) " ++
+                "\nstep {d}: max dev {e:.3} exceeds budget {e:.3} at iv={d} ix={d} iy={d} iz={d} (scale {e:.2}) " ++
                     "cu={e:.6} zu={e:.6} cp={e:.6} zp={e:.6}\n",
                 .{
-                    istep,                                step_max,
-                    budget,                               worst_iv,
-                    worst_ix,                             worst_scale,
-                    r.u[k.idx(worst_iv, worst_ix, 0, 0)], s.core.u.get(worst_iv, wx, 0, 0),
-                    r.p[k.idx(worst_iv, worst_ix, 0, 0)], s.core.p.get(worst_iv, wx, 0, 0),
+                    istep,       step_max,
+                    budget,      worst_iv,
+                    worst_ix,    worst_iy,
+                    worst_iz,    worst_scale,
+                    r.u[k.idx(worst_iv, worst_ix, worst_iy, worst_iz)],
+                    s.core.u.get(worst_iv, wx, @intCast(worst_iy), @intCast(worst_iz)),
+                    r.p[k.idx(worst_iv, worst_ix, worst_iy, worst_iz)],
+                    s.core.p.get(worst_iv, wx, @intCast(worst_iy), @intCast(worst_iz)),
                 },
             );
             return error.GoldenMismatch;
@@ -229,6 +237,72 @@ test "golden step: ot32 (SR Orszag-Tang 32², periodic, 10 forced-dt steps) vs C
     try runStepTest(SimT, "step/ot32.kstp", "step ot32", g, .{}, .{
         .phys = .{ .coords = .mink, .gam = 5.0 / 3.0 },
         .bc = .{ .x = .periodic, .y = .periodic },
+    });
+}
+
+//
+// ---- the transmitting polar axis (C: TRANSMITTING_YBC) ---------------------
+//
+
+const cfg_pole = config.Config{
+    .modules = &.{ .hydro, .mhd },
+    .reconstruction = .ppm,
+    .flux = .laxf,
+    .timestepping = .rk2imex,
+    .coords = .mks2,
+};
+const SimPole = sim_mod.Sim(cfg_pole);
+
+/// ZIGPOLE/bc.c on the two polar faces (x is COPY, z periodic).
+fn poleBc(
+    ctx: ?*const anyopaque,
+    s: *const SimPole.CoreT,
+    ix: i64,
+    iy: i64,
+    iz: i64,
+    t: f64,
+    ifinit: bool,
+    face: sim_mod.BcFace,
+) relele.Error![SimPole.nv]f64 {
+    _ = ctx;
+    _ = t;
+    _ = ifinit;
+    return bcs.polarAxis(SimPole.CoreT, s, ix, iy, iz, face);
+}
+
+// ZIGPOLE (oracle/problems/ZIGPOLE): a 12x12x8 MKS2 shell around an a = 0.5
+// hole, the full 2 pi, hydro + MHD, with a smooth state that is not
+// axisymmetric and carries v and B through both poles. C is built with
+// `#define TRANSMITTING_YBC` and nothing else pole-related, so its defaults
+// apply (NCCORRECTPOLAR 1, CORRECTMAGNFIELD). Six forced-dt steps exercise
+// every piece of the port at once: the ghost fill from iz + NZ/2 with the
+// theta and phi components flipped, the theta stencils that read the ghost
+// row in place of row 0, flux-CT keeping E_r and zeroing E_phi on the polar
+// faces, and the overwrite of B in the corrected row.
+//
+// Agreement is at the level of the flat-space problems (2e-14 after the
+// first step, 8e-13 after six). Broken on purpose, each sign flip, the half
+// turn, the stencil substitution (even a single slot) and the B overwrite
+// move step 1 to between 1e-7 and 0.7. The one piece this cannot see is the
+// E_r exemption: with B in the first row overwritten every step the
+// polar-face EMFs never reach the evolved state, in C or here.
+test "golden step: pole3d (transmitting polar axis, 12x12x8 MKS2, 6 forced-dt steps) vs C" {
+    const g = Grid.init(.{
+        .nx = 12,
+        .ny = 12,
+        .nz = 8,
+        .ng = 3,
+        .minx = @log(4.0 - 0.1),
+        .maxx = @log(40.0 - 0.1),
+        .miny = 0.005,
+        .maxy = 1.0 - 0.005,
+        .minz = -std.math.pi,
+        .maxz = std.math.pi,
+    });
+    try runStepTest(SimPole, "step/pole3d.kstp.gz", "step pole3d", g, .{ .base = 3.0e-13, .steps_per_decade = 3.0 }, .{
+        .phys = .{ .coords = .mks2, .mp = .{ .a = 0.5, .mksr0 = 0.1, .mksh0 = 0.9 }, .gam = 5.0 / 3.0 },
+        .num = .{ .polaraxis = sim_mod.PolarAxis.transmitting_default },
+        .bc = .{ .x = .copy, .y = .{ .specific = .{ .f = &poleBc } }, .z = .periodic },
     });
 }
 

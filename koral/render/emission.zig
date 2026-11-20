@@ -188,6 +188,10 @@ pub const MonoIn = struct {
     /// effective colour correction of the scattered field (blendFcol of
     /// the prescription with the cell's albedo); 1 = plain blackbody at T_rad
     fcol: f64 = 1.0,
+    /// thermal free-free channel on/off: the scene's `bremsstrahlung`
+    /// opacity channel, so a run (or a comparison) without it images
+    /// without it too
+    freefree: bool = true,
 };
 
 pub const MonoOut = struct {
@@ -225,7 +229,7 @@ pub fn monoJChi(in: MonoIn) MonoOut {
     // gray opacity's relativistic correction; j via Kirchhoff. With the ν³
     // factors cancelling, j_ν = α_ν B_ν ∝ ḡ(u) e^{−u} at fixed T_e — the
     // spectral shape is the Gaunt factor itself (pinned by test).
-    if (in.te > 0 and in.ne_cgs > 0 and in.nu > 0) {
+    if (in.freefree and in.te > 0 and in.ne_cgs > 0 and in.nu > 0) {
         const x = h_cgs * in.nu / (k_cgs * in.te);
         const one_m_emx = if (x > 1e-6) -std.math.expm1(-x) else x;
         const aff = 3.7e8 * in.ne_cgs * in.ni_cgs * gauntFF(x) * relFF(in.te) * one_m_emx /

@@ -269,3 +269,204 @@ pub fn renderGold(td: *const TestDef, npix: usize, ss: usize, opts: TraceOpts, n
     Ctx.run(&ctx);
     for (threads[0..spawned]) |t| t.join();
 }
+
+// ---- Gold et al. §3.1: pure ray-tracing test --------------------------------
+//
+// "The deflection angles for light rays as a function of their impact
+// parameter b ... for photons moving in the equatorial plane" of a highly
+// spinning Kerr hole, against the exact result (Iyer & Hansen 2009, by
+// quadrature of elliptic integrals). The paper does not describe its setup
+// further (its Figure 1 caption says so); Blacklight (White 2022, §III.1)
+// uses a = 0.9 and a camera at r = 1000, which is what `goldtest` runs.
+//
+// EXACT SIDE. With E = 1, L = b (b > 0 prograde for a > 0), M = 1 and
+// u = 1/r, an equatorial null geodesic obeys
+//
+//     (dr/dλ)² = P(u) = 1 + (a² − b²) u² + 2 (b − a)² u³,
+//     dφ/dλ    = u² N(u) / D(u),   N = (1 − 2u) b + 2 a u,
+//                                  D = 1 − 2u + a² u²,
+//
+// so the azimuth swept between radius R, the pericentre u0 (the smallest
+// positive root of P) and R again is
+//
+//     Δφ(R) = 2 ∫_{1/R}^{u0} N / (D √P) du.
+//
+// The deflection angle of Iyer & Hansen is α̂ = Δφ(∞) − π. The integrand's
+// inverse-square-root singularity at u0 is removed by u = u0 − w t², after
+// which adaptive Gauss-Kronrod converges to roundoff; no elliptic functions
+// are transcribed. The reference is checked independently against the
+// weak-field expansion of Iyer & Hansen and against the critical impact
+// parameter (render_tests.zig).
+//
+// The azimuth of the ingoing Kerr-Schild chart differs from the
+// Boyer-Lindquist one by a function of r alone, so Δφ between two points of
+// equal radius is the same in both; the integrator's own φ can be compared
+// directly.
+//
+// NUMERICAL SIDE. The production stepper (rk4Step + stepSize), integrating
+// backward from r = R exactly as an image ray does, with the last step
+// shortened so the ray ends on r = R to roundoff. Comparing Δφ(R) at the
+// SAME finite R removes the finite-camera-distance error that limits the
+// comparison in the paper (its 1e-4 "slight discrepancy at larger radii"),
+// leaving the integration error alone.
+
+const quad = @import("../math/quad.zig");
+
+/// Critical impact parameter of equatorial photons, signed like b:
+/// b_c = −a + 6 s cos(arccos(−s a) / 3), s = +1 prograde, −1 retrograde.
+pub fn bCritical(a: f64, prograde: bool) f64 {
+    const s: f64 = if (prograde) 1.0 else -1.0;
+    return -a + 6.0 * s * @cos(std.math.acos(-s * a) / 3.0);
+}
+
+const EquatorialOrbit = struct {
+    a: f64,
+    b: f64,
+    /// pericentre, u0 = 1 / r0
+    upc: f64,
+    /// P(u) = c3 (u0 − u) Q(u), Q = −(u² + p u + q) > 0 on [0, u0]
+    c3: f64,
+    p: f64,
+    q: f64,
+    /// lower limit of the quadrature (1 / R, or 0)
+    ufar: f64,
+
+    fn poly(a: f64, b: f64, u: f64) f64 {
+        return 1.0 + (a * a - b * b) * u * u + 2.0 * (b - a) * (b - a) * u * u * u;
+    }
+
+    /// null when the photon is captured (b inside the critical value).
+    fn init(a: f64, b: f64, r_far: ?f64) ?EquatorialOrbit {
+        const c3 = 2.0 * (b - a) * (b - a);
+        const c2 = a * a - b * b;
+        if (c2 >= 0 or c3 == 0) return null;
+        // P falls from P(0) = 1 to its minimum at um; a turning point
+        // exists iff P(um) < 0
+        const um = -c2 / (1.5 * c3);
+        if (poly(a, b, um) >= 0) return null;
+        var lo: f64 = 0;
+        var hi: f64 = um;
+        for (0..200) |_| {
+            const mid = 0.5 * (lo + hi);
+            if (poly(a, b, mid) > 0) lo = mid else hi = mid;
+        }
+        const upc = 0.5 * (lo + hi);
+        const p = upc + c2 / c3;
+        return .{ .a = a, .b = b, .upc = upc, .c3 = c3, .p = p, .q = p * upc, .ufar = if (r_far) |r| 1.0 / r else 0.0 };
+    }
+
+    /// integrand in t, u = u0 − w t²
+    pub fn eval(o: EquatorialOrbit, t: f64) f64 {
+        const w = o.upc - o.ufar;
+        const u = o.upc - w * t * t;
+        const n = (1.0 - 2.0 * u) * o.b + 2.0 * o.a * u;
+        const d = 1.0 - 2.0 * u + o.a * o.a * u * u;
+        const qv = -(u * u + o.p * u + o.q);
+        return 2.0 * @sqrt(w) * n / (d * @sqrt(o.c3 * qv));
+    }
+};
+
+/// Exact azimuth swept by an equatorial photon of impact parameter b from
+/// radius `r_far` (null = infinity) through pericentre and back out to it.
+/// Signed like b. null if the photon is captured.
+pub fn sweepExact(a: f64, b: f64, r_far: ?f64) ?f64 {
+    const o = EquatorialOrbit.init(a, b, r_far) orelse return null;
+    if (o.ufar >= o.upc) return null;
+    const res = quad.integrate(o, 0.0, 1.0, 0.0, 1.0e-14);
+    return 2.0 * res.value;
+}
+
+/// The Iyer & Hansen deflection angle, |Δφ(∞)| − π.
+pub fn deflectionExact(a: f64, b: f64) ?f64 {
+    const s = sweepExact(a, b, null) orelse return null;
+    return @abs(s) - std.math.pi;
+}
+
+pub const SweepNumeric = struct {
+    phi: f64,
+    steps: usize,
+    /// |g_μν k^μ k^ν| at the end, relative to (k^t)²: the null-norm drift
+    null_drift: f64,
+    /// relative drift of the conserved L / E = b
+    b_drift: f64,
+};
+
+/// The same sweep with the production geodesic stepper, traced backward
+/// from r = r_far as an image ray is. null if the ray is captured or runs
+/// out of steps.
+pub fn sweepNumeric(a: f64, b: f64, r_far: f64, eps: f64) ?SweepNumeric {
+    const mp = metric.MetricParams{ .a = a, .mksr0 = 0.1, .mksh0 = 0.9 };
+    const g = goldGrid(mp);
+    const x1_far = @log(r_far - mp.mksr0);
+    var x = [4]f64{ 0, x1_far, 0.5, 0 };
+
+    // k_t = −1, k_φ = b, k_θ = 0; k_1 from the null condition, outgoing root
+    const cd0 = metric.compute(.mks2, mp, x);
+    const G = &cd0.gcon;
+    const qa = G[1][1];
+    const qb = 2.0 * (-G[0][1] + b * G[1][3]);
+    const qc = G[0][0] - 2.0 * b * G[0][3] + b * b * G[3][3];
+    const disc = qb * qb - 4.0 * qa * qc;
+    if (disc < 0) return null;
+    var k: [4]f64 = undefined;
+    var found = false;
+    for ([_]f64{ 1.0, -1.0 }) |sgn| {
+        const k1 = (-qb + sgn * @sqrt(disc)) / (2.0 * qa);
+        const kcov = [4]f64{ -1.0, k1, 0.0, b };
+        for (0..4) |mu| {
+            k[mu] = 0;
+            for (0..4) |nu| k[mu] += G[mu][nu] * kcov[nu];
+        }
+        if (k[1] > 0) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) return null;
+
+    const r_capture = metric.rHorizonBL(a) + 1.0e-4;
+    var steps: usize = 0;
+    var turned = false;
+    while (steps < 2_000_000) : (steps += 1) {
+        const cd = metric.compute(.mks2, mp, x);
+        const h = render.stepSize(&g, x, k, eps);
+        const next = render.rk4Step(mp, &cd, x, k, -h);
+        if (!next.ok) return null;
+        if (@exp(next.x[1]) + mp.mksr0 < r_capture) return null;
+        // backward in λ the ray first falls (x1 decreasing), then rises
+        if (next.x[1] > x[1]) turned = true;
+        if (turned and next.x[1] >= x1_far) {
+            // shorten the last step to land on r_far: secant on its length
+            var frac = (x1_far - x[1]) / (next.x[1] - x[1]);
+            var last = next;
+            for (0..6) |_| {
+                last = render.rk4Step(mp, &cd, x, k, -h * frac);
+                const miss = last.x[1] - x1_far;
+                if (@abs(miss) < 1.0e-15) break;
+                frac -= miss / ((next.x[1] - x[1]) / 1.0);
+            }
+            x = last.x;
+            k = last.k;
+            break;
+        }
+        x = next.x;
+        k = next.k;
+    } else return null;
+
+    const cd = metric.compute(.mks2, mp, x);
+    var norm: f64 = 0;
+    var kt: f64 = 0;
+    var kphi: f64 = 0;
+    for (0..4) |mu| {
+        kt += cd.gcov[0][mu] * k[mu];
+        kphi += cd.gcov[3][mu] * k[mu];
+        for (0..4) |nu| norm += cd.gcov[mu][nu] * k[mu] * k[nu];
+    }
+    return .{
+        // traced backward, so the sweep has the opposite sign
+        .phi = -x[3],
+        .steps = steps,
+        .null_drift = @abs(norm) / (k[0] * k[0]),
+        .b_drift = @abs(kphi / -kt / b - 1.0),
+    };
+}

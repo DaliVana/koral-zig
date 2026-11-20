@@ -26,6 +26,7 @@ pub extern fn MPI_Startall(count: c_int, requests: [*]abi.RawRequest) c_int;
 // address 1, which no aligned pointer type can hold (see abi_mpich.zig).
 pub extern fn MPI_Waitall(count: c_int, requests: [*]abi.RawRequest, statuses: ?[*]align(1) abi.Status) c_int;
 pub extern fn MPI_Request_free(request: *abi.RawRequest) c_int;
+pub extern fn MPI_Sendrecv(sendbuf: ?*const anyopaque, sendcount: c_int, sendtype: abi.RawDatatype, dest: c_int, sendtag: c_int, recvbuf: ?*anyopaque, recvcount: c_int, recvtype: abi.RawDatatype, source: c_int, recvtag: c_int, comm: abi.RawComm, status: ?*align(1) abi.Status) c_int;
 
 pub extern fn MPI_Allreduce(sendbuf: ?*const anyopaque, recvbuf: ?*anyopaque, count: c_int, datatype: abi.RawDatatype, op: abi.RawOp, comm: abi.RawComm) c_int;
 pub extern fn MPI_Barrier(comm: abi.RawComm) c_int;

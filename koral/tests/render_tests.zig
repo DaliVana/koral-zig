@@ -33,6 +33,7 @@
 //!    criterion marking every subring boundary.
 
 const std = @import("std");
+const figdata = @import("../testing/figdata.zig");
 const render = @import("../render/render.zig");
 const image = @import("../render/image.zig");
 const metric = @import("../metric/metric.zig");
@@ -2046,4 +2047,96 @@ test "adaptive: image-order disagreement marks every subring boundary; per-order
     a3_an /= px_b * px_b;
     try std.testing.expect(@abs(area[2] / a2_an - 1.0) < 0.05);
     try std.testing.expect(@abs(area[3] / a3_an - 1.0) < 0.30);
+}
+
+// ---- Gold et al. §3.1: deflection angle of equatorial rays -------------------
+
+test "verify: the exact deflection reference matches Iyer & Hansen's weak-field series and b_crit" {
+    const v = render.verify;
+    // Iyer & Hansen (2009): alpha = 4/b' + (15 pi/4 - 4 s a)/b'^2
+    //   + (128/3 - 10 pi s a + 4 a^2)/b'^3 + (3465 pi/64 - 192 s a
+    //   + 285 pi a^2/16 - 4 s a^3)/b'^4 + O(b'^-5), b' = |b|, s = sign(b).
+    for ([_]f64{ 0.0, 0.5, 0.9 }) |a| {
+        for ([_]f64{ 200.0, -200.0, 1000.0, -1000.0 }) |b| {
+            const s: f64 = if (b > 0) 1.0 else -1.0;
+            const x = 1.0 / @abs(b);
+            const series = 4.0 * x + (15.0 * pi / 4.0 - 4.0 * s * a) * x * x +
+                (128.0 / 3.0 - 10.0 * pi * s * a + 4.0 * a * a) * x * x * x +
+                (3465.0 * pi / 64.0 - 192.0 * s * a + 285.0 * pi * a * a / 16.0 - 4.0 * s * a * a * a) * x * x * x * x;
+            const exact = v.deflectionExact(a, b).?;
+            // the neglected term is O(1e3 x^5)
+            // the next term: 3584/5 x^5 at a = 0, 2.2e3 x^5 for the
+            // retrograde ray at a = 0.9
+            try std.testing.expectApproxEqAbs(series, exact, 4.0e3 * x * x * x * x * x);
+        }
+        // capture sets in exactly at the critical impact parameter
+        for ([_]bool{ true, false }) |pro| {
+            const bc = v.bCritical(a, pro);
+            try std.testing.expect(v.deflectionExact(a, bc * (1.0 + 1.0e-9)) != null);
+            try std.testing.expect(v.deflectionExact(a, bc * (1.0 - 1.0e-9)) == null);
+        }
+    }
+    try std.testing.expectApproxEqAbs(@sqrt(27.0), v.bCritical(0.0, true), 1e-12);
+    // strong deflection: more than a full turn just outside b_crit
+    try std.testing.expect(v.deflectionExact(0.9, v.bCritical(0.9, true) * 1.0001).? > 2.0 * std.math.pi);
+}
+
+test "verify: equatorial deflection angles in Kerr a = 0.9 against the exact quadrature (Gold et al. 2020 §3.1)" {
+    const v = render.verify;
+    const a: f64 = 0.9;
+    const r_far: f64 = 1000.0;
+    const offsets = [_]f64{ 1.0e-3, 1.0e-2, 0.1, 0.5, 2.0, 10.0, 30.0 };
+    const eps_list = [_]f64{ 0.25, 0.125, 0.05 };
+    var worst: [3]f64 = @splat(0);
+    var worst_drift: [3]f64 = @splat(0);
+    for (eps_list, 0..) |eps, ie| {
+        for ([_]bool{ true, false }) |pro| {
+            const bc = v.bCritical(a, pro);
+            for (offsets) |d| {
+                const b = bc * (1.0 + d);
+                const exact = v.sweepExact(a, b, r_far).?;
+                const num = v.sweepNumeric(a, b, r_far, eps).?;
+                worst[ie] = @max(worst[ie], @abs(num.phi - exact));
+                worst_drift[ie] = @max(worst_drift[ie], @max(num.null_drift, num.b_drift));
+            }
+        }
+    }
+
+    // figure data (Gold et al. 2020, Figure 1): a fine scan in b
+    if (figdata.enabled()) {
+        var fig = figdata.Table.init("grrt_deflection");
+        defer fig.finish();
+        fig.meta("source", "Gold et al. 2020 section 3.1 / Figure 1: equatorial deflection angle in Kerr a = {d}, camera at r = {d}", .{ a, r_far });
+        fig.meta("columns", "b b/b_c-1 deflection_exact(infinite distance) |sweep error| at eps 0.25, 0.125, 0.05 |finite-camera estimate - exact|", .{});
+        for ([_]bool{ true, false }) |pro| {
+            fig.block("{s}", .{if (pro) "prograde" else "retrograde"});
+            const bc = v.bCritical(a, pro);
+            for (0..61) |j| {
+                // b / b_c - 1 from 1e-3 to 1e2, logarithmic
+                const d = std.math.pow(f64, 10.0, -3.0 + 5.0 * @as(f64, @floatFromInt(j)) / 60.0);
+                const b = bc * (1.0 + d);
+                const exact = v.sweepExact(a, b, r_far).?;
+                var errs: [3]f64 = undefined;
+                for (eps_list, 0..) |eps, ie| errs[ie] = @abs(v.sweepNumeric(a, b, r_far, eps).?.phi - exact);
+                // what a code measuring the deflection at the camera itself
+                // would report: the flat-space completion of the finite sweep
+                const alpha_inf = v.deflectionExact(a, b).?;
+                const finite = @abs(exact) - pi + 2.0 * std.math.asin(@abs(b) / r_far);
+                fig.row(&.{ b, d, alpha_inf, errs[0], errs[1], errs[2], @abs(finite - alpha_inf) });
+            }
+        }
+    }
+    std.debug.print(
+        "deflection a=0.9, camera r=1000, b/b_c - 1 from 1e-3 to 30, both senses: max |dphi| {e:.2} / {e:.2} / {e:.2} rad at eps 0.25 / 0.125 / 0.05; worst null-norm or L/E drift {e:.1} / {e:.1} / {e:.1}\n",
+        .{ worst[0], worst[1], worst[2], worst_drift[0], worst_drift[1], worst_drift[2] },
+    );
+    // Production step (eps 0.25): 1e-4 rad. The error is set near the
+    // pericentre, where the radial term of the step controller vanishes and
+    // the azimuthal one allows 0.4 rad per step on an axisymmetric grid.
+    try std.testing.expect(worst[0] < 3.0e-4);
+    // RK4: halving eps must gain an order of magnitude, and eps 0.05 is
+    // at the 1e-7 level.
+    try std.testing.expect(worst[1] < 0.2 * worst[0]);
+    try std.testing.expect(worst[2] < 1.0e-6);
+    try std.testing.expect(worst_drift[0] < 1.0e-3 and worst_drift[2] < 1.0e-6);
 }

@@ -73,6 +73,9 @@ pub const Error = core_mod.Error;
 // Re-exported so external code keeps referencing sim.BcFace / sim.Flag /
 // sim.FaceStore / sim.PassTimers / sim.Pass / sim.nowNs.
 pub const BcFace = bc.BcFace;
+/// The polar-axis option record (sim/options.zig), for
+/// `PolarAxis.transmitting_default`.
+pub const PolarAxis = @import("sim/options.zig").PolarAxis;
 pub const FaceStore = storage.FaceStore;
 pub const Flag = storage.Flag;
 pub const PassTimers = timers_mod.PassTimers;

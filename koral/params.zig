@@ -101,6 +101,19 @@ pub const Params = struct {
     /// (raises numerical diffusion near the axis for stability). null/0 = off.
     /// koral_lite_puffy: 2.
     dampradwavespeednearaxis: ?usize = null,
+    /// C: TRANSMITTING_YBC. The polar axis passes gas, field and radiation
+    /// to the far side (phi + pi) instead of reflecting them; switches on
+    /// C's defaults under that macro (NCCORRECTPOLAR 1, CORRECTMAGNFIELD).
+    /// Needs `phiwedge` = 2 pi, an even nz and, under MPI, one rank or an
+    /// even number of them. null = keep the built-in (reflecting).
+    transmitting_ybc: ?bool = null,
+    /// C: NCCORRECTPOLAR, the number of theta rows next to each pole that
+    /// are overwritten from their neighbour every step. null = keep the
+    /// built-in (2; 1 with `transmitting_ybc`).
+    nccorrectpolar: ?usize = null,
+    /// C: PHIWEDGE, the azimuthal extent of a 3D grid in radians, centred
+    /// on phi = 0. null = keep the built-in (pi/2).
+    phiwedge: ?f64 = null,
 
     // opacity channels (C: BREMSSTRAHLUNG / KLEINNISHINA on/off)
     bremsstrahlung: ?bool = null,
